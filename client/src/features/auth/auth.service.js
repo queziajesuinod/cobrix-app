@@ -1,41 +1,84 @@
-import api from '@/lib/api-client'
+// client/src/features/auth/auth.service.js
 
-function readAuth() {
+const AUTH_KEY = 'auth';
+const BASE = '/api';
+
+/** Lê o objeto { token, user } do storage */
+function getAuth() {
   try {
-    const raw = localStorage.getItem('auth')
-    return raw ? JSON.parse(raw) : null
-  } catch { return null }
+    const raw = localStorage.getItem(AUTH_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
 }
 
-function writeAuth(data) {
+/** Persiste { token, user } no storage */
+function setAuth(data) {
+  if (!data || !data.token || !data.user) return;
   try {
-    localStorage.setItem('auth', JSON.stringify(data))
+    localStorage.setItem(
+      AUTH_KEY,
+      JSON.stringify({ token: data.token, user: data.user })
+    );
   } catch {}
 }
 
-function clearAuth() {
-  try {
-    localStorage.removeItem('auth')
-  } catch {}
+/** Retorna o token atual (ou null) */
+function getToken() {
+  return getAuth()?.token ?? null;
+}
+
+/** Limpa sessão */
+function clearToken() {
+  try { localStorage.removeItem(AUTH_KEY); } catch {}
+}
+
+/** Faz login e persiste { token, user } */
+async function login(email, password) {
+  const res = await fetch(`${BASE}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = data?.error || `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  if (!data?.token || !data?.user) {
+    throw new Error('Resposta inválida do servidor');
+  }
+
+  setAuth(data);
+  return data; // { token, user }
+}
+
+/** Valida o token atual no backend */
+async function verify() {
+  const token = getToken();
+  if (!token) throw new Error('Sem token');
+
+  const res = await fetch(`${BASE}/auth/verify`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = data?.error || `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  return data; // ex.: { ok: true, user }
 }
 
 export const authService = {
-  login: async ({ email, password }) => {
-    const { data } = await api.post('/auth/login', { email, password })
-    if (data?.token) writeAuth(data)
-    return data
-  },
-  verify: async () => {
-    const { data } = await api.get('/auth/verify')
-    return data
-  },
-  // helper used by api-client
-  getToken: () => {
-    const a = readAuth()
-    return a?.token ?? null
-  },
-  setAuth: (data) => writeAuth(data),
-  clearToken: () => clearAuth()
-}
+  getAuth,
+  setAuth,
+  getToken,
+  clearToken,
+  login,
+  verify,
+};
 
-export default authService
+export default authService;

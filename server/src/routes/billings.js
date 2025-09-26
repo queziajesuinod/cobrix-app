@@ -1,27 +1,81 @@
+// server/src/routes/billings.js
 const express = require('express');
 const { query } = require('../db');
 const { requireAuth, companyScope } = require('./auth');
 const { runDaily } = require('../jobs/billing-cron');
-const { sendTextMessage } = require('../services/messenger');
+const { sendWhatsapp } = require('../services/messenger'); // <— usa a função existente
 const { msgPre, msgDue, msgLate } = require('../services/message-templates');
 
 const router = express.Router();
+const SCHEMA = process.env.DB_SCHEMA || 'public';
 
 function validStatus(s){ return ['pending','paid','canceled'].includes(String(s||'').toLowerCase()) }
 function pad2(n){ return String(n).padStart(2,'0') }
 function isoDate(d){ return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}` }
 function monthBounds(ym){
-  const [y,m] = ym.split('-').map(Number); 
+  const [y,m] = ym.split('-').map(Number);
   const start = new Date(y, m-1, 1);
   const end = new Date(y, m, 1);
-  return { y, m, start: isoDate(start), end: isoDate(end) }
+  return { y, m, start: isoDate(start), end: isoDate(end) };
 }
 
-// LIST with filters (ym / clientId / contractId / status)
+// helper para inserir na billing_notifications (todas colunas)
+async function insertBillingNotification({
+  companyId,
+  billingId = null,
+  contractId = null,
+  clientId = null,
+  kind = 'manual',               // 'manual' ou 'auto'
+  targetDate,                    // 'YYYY-MM-DD'
+  status = 'queued',             // 'queued' | 'sent' | 'failed' | 'skipped'
+  provider = 'evo',
+  toNumber = null,
+  message = '',
+  providerStatus = null,
+  providerResponse = null,       // objeto -> jsonb
+  error = null,
+  sentAt = null,                 // Date | null
+  type,                          // 'pre' | 'due' | 'late' | 'manual'
+  dueDate                        // 'YYYY-MM-DD'
+}) {
+  const sql = `
+    INSERT INTO ${SCHEMA}.billing_notifications
+      (company_id, billing_id, contract_id, client_id, kind, target_date,
+       status, provider, to_number, message, provider_status, provider_response,
+       error, created_at, sent_at, type, due_date)
+    VALUES
+      ($1,$2,$3,$4,$5,$6,
+       $7,$8,$9,$10,$11,$12,
+       $13, NOW(), $14, $15, $16)
+    RETURNING id
+  `;
+  const params = [
+    Number(companyId),
+    billingId != null ? Number(billingId) : null,
+    contractId != null ? Number(contractId) : null,
+    clientId != null ? Number(clientId) : null,
+    String(kind),
+    String(targetDate),
+    String(status),
+    String(provider),
+    toNumber != null ? String(toNumber) : null,
+    message != null ? String(message) : '',
+    providerStatus != null ? String(providerStatus) : null,
+    providerResponse ?? null,
+    error != null ? String(error) : null,
+    sentAt ?? null,
+    String(type),
+    String(dueDate),
+  ];
+  const r = await query(sql, params);
+  return r.rows[0].id;
+}
+
+// LIST com filtros
 router.get('/', requireAuth, companyScope(true), async (req, res) => {
   try {
     const { ym, clientId, contractId, status } = req.query;
-    let cond = ['c.company_id = $1']; 
+    let cond = ['c.company_id = $1'];
     const params = [req.companyId];
 
     if (ym && /^\d{4}-\d{2}$/.test(ym)) {
@@ -36,9 +90,9 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
     const where = cond.length ? `WHERE ${cond.join(' AND ')}` : '';
     const r = await query(`
       SELECT b.*, c.description AS contract_description, cl.name AS client_name
-      FROM billings b
-      JOIN contracts c ON c.id = b.contract_id
-      JOIN clients cl ON cl.id = c.client_id
+      FROM ${SCHEMA}.billings b
+      JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
+      JOIN ${SCHEMA}.clients   cl ON cl.id = c.client_id
       ${where}
       ORDER BY b.billing_date DESC, b.id DESC
     `, params);
@@ -48,7 +102,7 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
   }
 });
 
-// KPIs for a month
+// KPIs do mês
 router.get('/kpis', requireAuth, companyScope(true), async (req, res) => {
   try {
     const { ym, clientId, contractId } = req.query;
@@ -59,21 +113,22 @@ router.get('/kpis', requireAuth, companyScope(true), async (req, res) => {
     let pC = [req.companyId, end, start];
     if (clientId) { pC.push(Number(clientId)); condC.push(`cl.id = $${pC.length}`); }
     if (contractId) { pC.push(Number(contractId)); condC.push(`c.id = $${pC.length}`); }
+
     const active = await query(`
       SELECT c.id
-      FROM contracts c JOIN clients cl ON cl.id = c.client_id
+      FROM ${SCHEMA}.contracts c JOIN ${SCHEMA}.clients cl ON cl.id = c.client_id
       WHERE ${condC.join(' AND ')}
     `, pC);
 
     const activeIds = active.rows.map(r => r.id);
-    const idsSql = activeIds.length ? `AND b.contract_id = ANY($4)` : '';
+    const idsSql = activeIds.length ? `AND b.contract_id = ANY($4::int[])` : '';
     const pB = [req.companyId, start, end];
     if (activeIds.length) pB.push(activeIds);
 
     const bills = await query(`
       SELECT b.status, COUNT(*)::int AS cnt
-      FROM billings b
-      JOIN contracts c ON c.id = b.contract_id
+      FROM ${SCHEMA}.billings b
+      JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
       WHERE c.company_id = $1
         AND b.billing_date >= $2 AND b.billing_date < $3
         ${idsSql}
@@ -82,7 +137,7 @@ router.get('/kpis', requireAuth, companyScope(true), async (req, res) => {
 
     const cms = await query(`
       SELECT status, COUNT(*)::int AS cnt
-      FROM contract_month_status
+      FROM ${SCHEMA}.contract_month_status
       WHERE company_id = $1 AND year = $2 AND month = $3
       GROUP BY status
     `, [req.companyId, y, m]);
@@ -109,7 +164,7 @@ router.get('/kpis', requireAuth, companyScope(true), async (req, res) => {
   }
 });
 
-// Manual notify (PRE/DUE/LATE)
+// Notificação MANUAL (pre/due/late)
 router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
   try {
     const { contract_id, date, type } = req.body || {};
@@ -119,29 +174,39 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
 
     const c = await query(`
       SELECT c.*, cl.name AS client_name, cl.phone AS client_phone
-      FROM contracts c JOIN clients cl ON cl.id = c.client_id
+      FROM ${SCHEMA}.contracts c
+      JOIN ${SCHEMA}.clients   cl ON cl.id = c.client_id
       WHERE c.id = $1 AND c.company_id = $2
     `, [contract_id, req.companyId]);
     const row = c.rows[0];
     if (!row) return res.status(404).json({ error: 'Contrato não encontrado' });
 
     const due = new Date(date);
-    const dueStr = date.slice(0,10);
+    const dueStr = String(date).slice(0,10);
 
+    // se mês já pago/cancelado, bloqueia
     const cms = await query(`
-      SELECT status FROM contract_month_status
+      SELECT status FROM ${SCHEMA}.contract_month_status
       WHERE contract_id=$1 AND year=$2 AND month=$3
     `, [contract_id, due.getFullYear(), due.getMonth()+1]);
     if (cms.rows[0] && (cms.rows[0].status === 'paid' || cms.rows[0].status === 'canceled')) {
       return res.status(409).json({ error: 'Mês já está PAGO/CANCELADO — notificação bloqueada' });
     }
 
+    // se for due/late, não envia se já houver billing pago/cancelado
     if (typ !== 'pre') {
-      const b = await query(`SELECT 1 FROM billings WHERE contract_id=$1 AND billing_date=$2 AND status IN ('paid','canceled')`, [contract_id, dueStr]);
+      const b = await query(`
+        SELECT 1 FROM ${SCHEMA}.billings
+        WHERE contract_id=$1 AND billing_date=$2 AND status IN ('paid','canceled') LIMIT 1
+      `, [contract_id, dueStr]);
       if (b.rowCount) return res.status(409).json({ error: 'Cobrança já está PAGA/CANCELADA — notificação bloqueada' });
     }
 
-    const exists = await query(`SELECT 1 FROM billing_notifications WHERE contract_id=$1 AND due_date=$2 AND type=$3`, [contract_id, dueStr, typ]);
+    // dedupe
+    const exists = await query(`
+      SELECT 1 FROM ${SCHEMA}.billing_notifications
+      WHERE contract_id=$1 AND due_date=$2 AND type=$3 LIMIT 1
+    `, [contract_id, dueStr, typ]);
     if (exists.rowCount) return res.status(409).json({ error: 'Notificação já enviada para esse tipo/data' });
 
     if (!row.client_phone) return res.status(400).json({ error: 'Contrato sem telefone do cliente' });
@@ -157,23 +222,44 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
       pix: process.env.PIX_CHAVE || 'SUA_CHAVE_PIX'
     });
 
-   await sendTextMessage({ number: row.client_phone, text, companyId: req.companyId })
-  await query(`INSERT INTO billing_notifications (contract_id, due_date, type) VALUES ($1,$2,$3)`, [contract_id, dueStr, typ]);
+    // envia via EVO com config da empresa
+    const evo = await sendWhatsapp(req.companyId, { number: row.client_phone, text });
 
-    res.json({ ok: true });
+    // registra completo
+    await insertBillingNotification({
+      companyId: req.companyId,
+      billingId: null,                         // manual direto, sem billing atrelado
+      contractId: Number(contract_id),
+      clientId: Number(row.client_id),
+      kind: 'manual',
+      targetDate: isoDate(new Date()),
+      status: evo.ok ? 'sent' : 'failed',
+      provider: 'evo',
+      toNumber: row.client_phone,
+      message: text,
+      providerStatus: evo.status != null ? String(evo.status) : null,
+      providerResponse: evo.data ?? null,
+      error: evo.ok ? null : (evo.error || null),
+      sentAt: evo.ok ? new Date() : null,
+      type: typ,
+      dueDate: dueStr,
+    });
+
+    res.json({ ok: true, provider: { ok: evo.ok, status: evo.status, data: evo.data } });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
+// Atualiza status da cobrança
 router.put('/:id/status', requireAuth, companyScope(true), async (req, res) => {
   const status = String(req.body?.status || '').toLowerCase();
   if (!validStatus(status)) return res.status(400).json({ error: 'status inválido' });
   try {
     const r = await query(`
-      UPDATE billings b
+      UPDATE ${SCHEMA}.billings b
       SET status=$1
-      FROM contracts c
+      FROM ${SCHEMA}.contracts c
       WHERE b.id=$2 AND c.id=b.contract_id AND c.company_id=$3
       RETURNING b.id, b.status
     `, [status, req.params.id, req.companyId]);
@@ -184,19 +270,23 @@ router.put('/:id/status', requireAuth, companyScope(true), async (req, res) => {
   }
 });
 
+// Histórico de notificações de uma cobrança
 router.get('/:id/notifications', requireAuth, companyScope(true), async (req, res) => {
   try {
     const b = await query(`
       SELECT b.contract_id, b.billing_date, c.company_id
-      FROM billings b JOIN contracts c ON c.id = b.contract_id
+      FROM ${SCHEMA}.billings b
+      JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
       WHERE b.id = $1
     `, [req.params.id]);
     const row = b.rows[0];
-    if (!row || row.company_id !== req.companyId) return res.status(404).json({ error: 'Cobrança não encontrada' });
+    if (!row || Number(row.company_id) !== Number(req.companyId)) {
+      return res.status(404).json({ error: 'Cobrança não encontrada' });
+    }
 
     const n = await query(`
       SELECT type, sent_at
-      FROM billing_notifications
+      FROM ${SCHEMA}.billing_notifications
       WHERE contract_id = $1 AND due_date = $2
       ORDER BY sent_at ASC
     `, [row.contract_id, row.billing_date]);
@@ -206,6 +296,7 @@ router.get('/:id/notifications', requireAuth, companyScope(true), async (req, re
   }
 });
 
+// Marca status do mês por contrato (sincroniza billings do mês)
 router.put('/by-contract/:contractId/month/:year/:month/status', requireAuth, companyScope(true), async (req, res) => {
   const contractId = Number(req.params.contractId);
   const year = Number(req.params.year);
@@ -215,17 +306,18 @@ router.put('/by-contract/:contractId/month/:year/:month/status', requireAuth, co
   if (!contractId || !year || !month) return res.status(400).json({ error: 'parâmetros inválidos' });
 
   try {
-    const c = await query(`SELECT id FROM contracts WHERE id=$1 AND company_id=$2`, [contractId, req.companyId]);
+    const c = await query(`SELECT id FROM ${SCHEMA}.contracts WHERE id=$1 AND company_id=$2`, [contractId, req.companyId]);
     if (!c.rows[0]) return res.status(404).json({ error: 'Contrato não encontrado' });
 
     await query(`
-      INSERT INTO contract_month_status (contract_id, company_id, year, month, status)
+      INSERT INTO ${SCHEMA}.contract_month_status (contract_id, company_id, year, month, status)
       VALUES ($1,$2,$3,$4,$5)
-      ON CONFLICT (contract_id, year, month) DO UPDATE SET status=EXCLUDED.status, updated_at=now()
+      ON CONFLICT (contract_id, year, month)
+      DO UPDATE SET status=EXCLUDED.status, updated_at=now()
     `, [contractId, req.companyId, year, month, status]);
 
     const r = await query(`
-      UPDATE billings b
+      UPDATE ${SCHEMA}.billings b
       SET status = $1
       WHERE b.contract_id = $2
         AND EXTRACT(YEAR FROM b.billing_date) = $3
@@ -239,6 +331,7 @@ router.put('/by-contract/:contractId/month/:year/:month/status', requireAuth, co
   }
 });
 
+// Visão agrupada do mês (para o front)
 router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
   const ym = String(req.query.ym || '').trim();
   if (!/^\d{4}-\d{2}$/.test(ym)) return res.status(400).json({ error: 'Parâmetro ym (YYYY-MM) obrigatório' });
@@ -246,8 +339,8 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
   try {
     const notif = await query(`
       SELECT bn.contract_id, bn.type, COUNT(*) AS cnt, MAX(bn.sent_at) AS last_sent_at
-      FROM billing_notifications bn
-      JOIN contracts c ON c.id = bn.contract_id
+      FROM ${SCHEMA}.billing_notifications bn
+      JOIN ${SCHEMA}.contracts c ON c.id = bn.contract_id
       WHERE c.company_id = $1
         AND EXTRACT(YEAR FROM bn.due_date) = $2
         AND EXTRACT(MONTH FROM bn.due_date) = $3
@@ -256,15 +349,15 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
 
     const cms = await query(`
       SELECT contract_id, status
-      FROM contract_month_status
+      FROM ${SCHEMA}.contract_month_status
       WHERE company_id = $1 AND year = $2 AND month = $3
     `, [req.companyId, year, month]);
 
     const bills = await query(`
       SELECT b.*, c.description AS contract_description, cl.name AS client_name
-      FROM billings b
-      JOIN contracts c ON c.id = b.contract_id
-      JOIN clients cl ON cl.id = c.client_id
+      FROM ${SCHEMA}.billings b
+      JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
+      JOIN ${SCHEMA}.clients   cl ON cl.id = c.client_id
       WHERE c.company_id = $1
         AND EXTRACT(YEAR FROM b.billing_date) = $2
         AND EXTRACT(MONTH FROM b.billing_date) = $3
@@ -274,7 +367,14 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
     const byContract = {};
     for (const r of bills.rows) {
       const key = r.contract_id;
-      byContract[key] ??= { contract_id: key, contract_description: r.contract_description, client_name: r.client_name, month_status: 'pending', notifications: {}, billings: [] };
+      byContract[key] ??= {
+        contract_id: key,
+        contract_description: r.contract_description,
+        client_name: r.client_name,
+        month_status: 'pending',
+        notifications: {},
+        billings: []
+      };
       byContract[key].billings.push(r);
     }
     for (const n of notif.rows) {
@@ -293,6 +393,7 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
   }
 });
 
+// Rodar pipeline (manual)
 router.post('/check/run', requireAuth, async (req, res) => {
   try {
     let { date, generate = true, pre = true, due = true, late = true } = (req.body || {});
