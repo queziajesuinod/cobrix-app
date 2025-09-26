@@ -1,76 +1,84 @@
-// client/src/lib/api-client.js
-import axios from 'axios';
+// ...existing code...
+import axios from 'axios'
+import { authService } from '../features/auth/auth.service'
 
-export const api = axios.create({ baseURL: '/api', withCredentials: true });
+const api = axios.create({ baseURL: import.meta.env.VITE_API_BASE || '/api' })
 
-const isDev = import.meta?.env?.DEV ?? false;
+const isDev = import.meta?.env?.DEV ?? false
 
 function readAuth() {
   try {
-    const raw = localStorage.getItem('auth');
-    return raw ? JSON.parse(raw) : null;
-  } catch { return null; }
+    const raw = localStorage.getItem('auth')
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
 }
 
 function readSelectedCompanyId() {
   try {
-    const raw = localStorage.getItem('selectedCompanyId');
-    return raw ? Number(raw) : null;
-  } catch { return null; }
+    const raw = localStorage.getItem('selectedCompanyId')
+    return raw ? Number(raw) : null
+  } catch { return null }
 }
 
 export function writeAuth(data) {
-  localStorage.setItem('auth', JSON.stringify(data));
+  localStorage.setItem('auth', JSON.stringify(data))
 }
 export function clearAuth() {
-  localStorage.removeItem('auth');
+  localStorage.removeItem('auth')
 }
 
+// attach token + X-Company-Id to requests
 api.interceptors.request.use((config) => {
-  const auth = readAuth();
-  config.headers = config.headers || {};
+  config.headers = config.headers || {}
 
-  // Não injeta token nas rotas de auth
-  const url = config.url || '';
-  const isAuthRoute = url.startsWith('/auth/');
+  const url = config.url || ''
+  const isAuthRoute = url.startsWith('/auth/')
 
-  if (!isAuthRoute && auth?.token) {
-    config.headers.Authorization = `Bearer ${auth.token}`;
+  // prefer authService token, fallback to localStorage 'auth'
+  const svcToken = authService?.getToken ? authService.getToken() : null
+  const auth = readAuth()
+  const token = svcToken || auth?.token
+
+  if (!isAuthRoute && token) {
+    config.headers.Authorization = `Bearer ${token}`
   }
 
-  // X-Company-Id: se master e tiver escolhido uma empresa, priorize-a
-  const selected = readSelectedCompanyId();
-  const fromAuth = auth?.user?.company_id ?? null;
-  const companyId = config.companyId ?? selected ?? fromAuth;
+  // X-Company-Id: prefer explicit config.companyId, then selectedCompanyId, then auth.user.company_id
+  const selected = readSelectedCompanyId()
+  const fromAuth = auth?.user?.company_id ?? null
+  const companyId = config.companyId ?? selected ?? fromAuth
   if (companyId && !config.headers['X-Company-Id']) {
-    config.headers['X-Company-Id'] = companyId;
+    config.headers['X-Company-Id'] = companyId
   }
 
-  return config;
-});
+  return config
+}, (err) => Promise.reject(err))
 
-// Redireciona só quando realmente é perda de sessão
+// response interceptor: only clear session on explicit 401 (not network errors)
+// and only for auth/verify or auth/login failures
 api.interceptors.response.use(
   (resp) => resp,
   (err) => {
-    const status = err?.response?.status;
-    const reqUrl = err?.config?.url || '';
+    const status = err?.response?.status
+    const reqUrl = err?.config?.url || ''
 
-    // Se o server caiu / conexão recusada, não limpe auth
-    const net = err?.code || '';
-    const isNetworkDown = ['ECONNABORTED', 'ECONNREFUSED', 'ERR_NETWORK'].includes(net);
+    const net = err?.code || ''
+    const isNetworkDown = ['ECONNABORTED', 'ECONNREFUSED', 'ERR_NETWORK'].includes(net)
 
-    // Só limpa o auth se foi 401 explícito e não é problema de rede
     if (status === 401 && !isNetworkDown) {
-      // evite “derrubar” por 401 de rotas que só falharam por falta de X-Company-Id,
-      // concentre a checagem no /auth/verify
       if (reqUrl.startsWith('/auth/verify') || reqUrl.startsWith('/auth/login')) {
-        clearAuth();
+        clearAuth()
+        // redirect to login if not already there
         if (!location.pathname.startsWith('/login')) {
-          window.location.assign('/login');
+          window.location.assign('/login')
         }
       }
     }
-    return Promise.reject(err);
+
+    return Promise.reject(err)
   }
-);
+)
+
+export default api
+export { api }
+// ...existing code...

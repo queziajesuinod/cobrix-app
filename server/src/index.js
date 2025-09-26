@@ -10,6 +10,7 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`API rodando em http://localhost:${PORT}`);
 });
 
+
 function shutdown(sig) {
   console.log(`\nRecebido ${sig}. Encerrando...`);
   server.close(async () => {

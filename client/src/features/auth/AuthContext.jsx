@@ -1,45 +1,65 @@
-// client/src/features/auth/AuthContext.jsx
-import React from 'react';
-import api, { writeAuth, clearAuth } from '@/lib/api-client';
+import React from 'react'
+import { authService } from './auth.service'
 
-const AuthCtx = React.createContext(null);
-export const useAuth = () => React.useContext(AuthCtx);
+const AuthContext = React.createContext()
 
 export function AuthProvider({ children }) {
-  const [auth, setAuth] = React.useState(null);
-  const [loading, setLoading] = React.useState(true);
+  const [user, setUser] = React.useState(null)
+  const [loading, setLoading] = React.useState(true)
+  const [selectedCompanyId, setSelectedCompanyId] = React.useState(() => {
+    try { const raw = localStorage.getItem('selectedCompanyId'); return raw ? Number(raw) : null } catch { return null }
+  })
 
-  // hidrata do storage
   React.useEffect(() => {
-    try {
-      const raw = localStorage.getItem('auth');
-      if (raw) setAuth(JSON.parse(raw));
-    } catch {}
-    setLoading(false);
-  }, []);
-
-  const login = async (email, password) => {
-    const { data } = await api.post('/auth/login', { email, password });
-    const next = { token: data.token, user: data.user };
-    writeAuth(next);
-    setAuth(next);
-    return next;
-  };
+    let mounted = true
+    async function init() {
+      const token = authService.getToken()
+      if (!token) { if (mounted) setLoading(false); return }
+      try {
+        const data = await authService.verify()
+        if (mounted) {
+          setUser(data.user ?? data)
+          if (data?.token) authService.setAuth(data)
+          if (data?.user?.company_id && !selectedCompanyId) {
+            setSelectedCompanyId(data.user.company_id)
+            try { localStorage.setItem('selectedCompanyId', String(data.user.company_id)) } catch {}
+          }
+        }
+      } catch (e) {
+        authService.clearToken()
+        if (mounted) setUser(null)
+      } finally {
+        if (mounted) setLoading(false)
+      }
+    }
+    init()
+    return () => { mounted = false }
+  }, [])
 
   const logout = () => {
-    clearAuth();
-    setAuth(null);
-  };
+    authService.clearToken()
+    setUser(null)
+    try { localStorage.removeItem('selectedCompanyId') } catch {}
+  }
 
-  const value = React.useMemo(() => ({
-    user: auth?.user ?? null,
-    token: auth?.token ?? null,
-    setAuth,
-    login,
-    logout,
-  }), [auth]);
+  const value = {
+    user,
+    setUser,
+    loading,
+    selectedCompanyId,
+    setSelectedCompanyId: (id) => {
+      setSelectedCompanyId(id)
+      try { localStorage.setItem('selectedCompanyId', String(id)) } catch {}
+    },
+    logout
+  }
 
-  if (loading) return null; // ou um splash
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+}
 
-  return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
+export function useAuth() {
+  console.log('useAuth called');
+  const ctx = React.useContext(AuthContext)
+  if (!ctx) throw new Error('useAuth must be used within AuthProvider')
+  return ctx
 }

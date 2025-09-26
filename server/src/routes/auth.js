@@ -10,13 +10,18 @@ const JWT_SECRET = process.env.JWT_SECRET || 'devsecret';
 // Assinatura padronizada do token
 function sign(user) {
   return jwt.sign(
-    { id: user.id, email: user.email, role: user.role, company_id: user.company_id ?? null },
+    {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      company_id: user.company_id ?? null,
+    },
     JWT_SECRET,
-    { expiresIn: '12h' } // padronizei aqui
+    { expiresIn: '12h' }
   );
 }
 
-// Middleware: exige token válido
+// Middleware: exige token valido
 function requireAuth(req, res, next) {
   const auth = req.headers.authorization || '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
@@ -31,12 +36,16 @@ function requireAuth(req, res, next) {
       company_id: payload.company_id ?? payload.companyId ?? null,
     };
 
-    // 1ª fonte: header
+    // 1a fonte: header X-Company-Id
     const hdr = req.header('x-company-id');
-    // 2ª fonte: fallback do próprio usuário (para user/admin)
+
+    // 2a fonte: fallback do proprio usuario (para user/admin)
+    // master pode ficar sem companyId; rotas que exigem empresa validam depois
     req.companyId = hdr
       ? Number(hdr)
-      : (req.user.role === 'master' ? null : Number(req.user.company_id) || null);
+      : req.user.role === 'master'
+      ? null
+      : Number(req.user.company_id) || null;
 
     next();
   } catch (e) {
@@ -44,7 +53,7 @@ function requireAuth(req, res, next) {
   }
 }
 
-// (Opcional) Middleware: aceita token se vier, mas não bloqueia
+// Opcional: aceita token se vier, mas nao bloqueia
 function maybeAuth(req, _res, next) {
   const auth = req.headers.authorization || '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
@@ -60,16 +69,20 @@ function maybeAuth(req, _res, next) {
       const hdr = req.header('x-company-id');
       req.companyId = hdr
         ? Number(hdr)
-        : (req.user.role === 'master' ? null : Number(req.user.company_id) || null);
-    } catch {}
+        : req.user.role === 'master'
+        ? null
+        : Number(req.user.company_id) || null;
+    } catch {
+      // ignora erros de token aqui
+    }
   }
   next();
 }
 
-// Multi-tenant helper
+// Helper multi-tenant
 function companyScope(required = true) {
   return (req, res, next) => {
-    if (!req.user) return res.status(401).json({ error: 'Não autenticado' });
+    if (!req.user) return res.status(401).json({ error: 'Nao autenticado' });
 
     let companyId = null;
     if (req.user.role === 'master') {
@@ -79,7 +92,9 @@ function companyScope(required = true) {
     }
 
     if (required && !companyId) {
-      return res.status(400).json({ error: 'Selecione a empresa (X-Company-Id)' });
+      return res
+        .status(400)
+        .json({ error: 'Selecione a empresa (X-Company-Id)' });
     }
 
     req.companyId = companyId ? Number(companyId) : null;
@@ -87,25 +102,25 @@ function companyScope(required = true) {
   };
 }
 
-// POST /auth/login — usa função SQL passtoken(email, password)
-// IMPORTANTE: sua função passtoken deve validar com pepper, por ex.:
+// POST /auth/login
+// Usa funcao SQL passtoken(email, password). Ela deve validar com pepper por empresa:
 // u.password_hash = crypt(_password || '::company:' || u.company_id, u.password_hash)
-// OU ser compatível com legado (OR crypt(_password, u.password_hash))
+// e pode manter compatibilidade com legado via OR crypt(_password, u.password_hash)
 router.post('/login', async (req, res) => {
   const schema = z.object({
     email: z.string().email(),
     password: z.string().min(3),
   });
-  const parse = schema.safeParse(req.body);
-  if (!parse.success) {
-    return res.status(400).json({ error: parse.error.flatten() });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.flatten() });
   }
-  const { email, password } = parse.data;
+  const { email, password } = parsed.data;
 
   try {
     const r = await query('SELECT * FROM passtoken($1,$2)', [email, password]);
     const user = r.rows[0];
-    if (!user) return res.status(401).json({ error: 'Credenciais inválidas' });
+    if (!user) return res.status(401).json({ error: 'Credenciais invalidas' });
 
     const token = sign(user);
     return res.json({ token, user });
@@ -122,4 +137,4 @@ router.get('/verify', requireAuth, async (req, res) => {
 module.exports = router;
 module.exports.requireAuth = requireAuth;
 module.exports.companyScope = companyScope;
-module.exports.maybeAuth = maybeAuth; // opcional
+module.exports.maybeAuth = maybeAuth;

@@ -10,16 +10,20 @@ export default function LoginPage() {
   const [error, setError] = useState(null)
   const navigate = useNavigate()
 
-  const onSubmit = async (e) => {
-    e.preventDefault()
-    setError(null)
-    try {
-      const { user } = await login(email, password)
-      if (user.role === 'master') navigate('/companies/select'); else navigate('/dashboard')
-    } catch (err) {
-      setError(err?.response?.data?.error || 'Falha no login')
-    }
+ // LoginPage.jsx (apenas o onSubmit)
+const onSubmit = async (e) => {
+  e.preventDefault()
+  setError(null)
+  try {
+    const res = await login(email, password)   // << aqui: dois args, não objeto
+    const user = res?.user ?? res
+    if (user?.role === 'master') navigate('/companies/select')
+    else navigate('/dashboard')
+  } catch (err) {
+    setError(err?.response?.data?.error || 'Falha no login')
   }
+}
+
 
   return (
     <Box sx={{ display:'grid', placeItems:'center', minHeight:'100vh', bgcolor:'background.default', p:2 }}>

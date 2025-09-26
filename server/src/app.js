@@ -5,8 +5,8 @@ const cors = require('cors')
 const helmet = require('helmet')
 const rateLimit = require('express-rate-limit')
 const { initDb } = require('./db')
-
 const app = express()
+
 
 app.use(helmet())
 const allowlist = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173')
@@ -37,7 +37,6 @@ app.use('/api/billings', require('./routes/billings'))
 app.use('/api/companies', require('./routes/companies'))
 app.use('/api/companies', require('./routes/company-integration'))
 app.use('/api/companies', require('./routes/company-users'))
-
 // health
 app.get('/api/status', (_req, res) => res.json({ status: 'OK', schema: process.env.DB_SCHEMA || 'public', time: new Date().toISOString() }))
 app.get('/healthz', (_req, res) => res.json({ ok: true }))
