@@ -1,54 +1,51 @@
-require('dotenv').config({ path: process.env.NODE_ENV === 'production' ? '.env.production' : '.env' });
 const http = require('http');
+const cron = require('node-cron');
 const app = require('./app');
-const { closeDb } = require('./db');
+const { runPreOnly, runDueOnly, runLateOnly, generateBillingsForToday } = require('./jobs/billing-cron');
 
 const PORT = process.env.PORT || 3001;
+const TZ   = process.env.CRON_TZ || process.env.TZ || 'America/Campo_Grande';
+
 const server = http.createServer(app);
 
-// CRON – agendar PRE / DUE / LATE em horários distintos
-// npm i node-cron (se ainda não instalou)
-const cron = require('node-cron');
-const { runPreOnly, runDueOnly, runLateOnly } = require('./jobs/billing-cron');
-
-// Evita agendar 2x em dev (nodemon)
-function startCron() {
-  if (global.__CRON_STARTED__) return;
-  global.__CRON_STARTED__ = true;
-
-  if (process.env.CRON_DISABLED === '1') {
-    console.log('[CRON] desabilitado por CRON_DISABLED=1');
-    return;
-  }
-
-  const TZ = process.env.CRON_TZ || process.env.TZ || 'America/Campo_Grande';
-
-  // Defina os horários via .env se quiser (abaixo são defaults):
-  const PRE  = process.env.CRON_PRE  || '0 8 * * *';  // D-3 (08:00)
-  const DUE  = process.env.CRON_DUE  || '10 11 * * *'; // D0  (08:16) <- seu pedido
-  const LATE = process.env.CRON_LATE || '0 10 * * *'; // D+4 (10:00)
-
-  cron.schedule(PRE,  () => { console.log('[CRON] PRE');  runPreOnly(new Date()); },  { timezone: TZ });
-  cron.schedule(DUE,  () => { console.log('[CRON] DUE');  runDueOnly(new Date()); },  { timezone: TZ });
-  cron.schedule(LATE, () => { console.log('[CRON] LATE'); runLateOnly(new Date()); }, { timezone: TZ });
-
-  console.log(`[CRON] agendado: PRE=${PRE} DUE=${DUE} LATE=${LATE} TZ=${TZ}`);
-}
-
-startCron();
-
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, () => {
   console.log(`API rodando em http://localhost:${PORT}`);
 });
 
+// ---- CRON SCHEDULES ----
+// Você pode controlar por ENV:
+// CRON_PRE, CRON_GENERATE, CRON_DUE, CRON_LATE
 
-function shutdown(sig) {
-  console.log(`\nRecebido ${sig}. Encerrando...`);
-  server.close(async () => {
+const CRON_PRE       = process.env.CRON_PRE       || '0 8 * * *';   // D-3, às 08:00
+const CRON_GENERATE  = process.env.CRON_GENERATE  || '10 8 * * *';  // gera billing do dia, 08:10
+const CRON_DUE       = process.env.CRON_DUE       || '48 11 * * *';  // D0, às 11:40
+const CRON_LATE      = process.env.CRON_LATE      || '0 10 * * *';  // D+4, às 10:00
+
+cron.schedule(CRON_PRE, async () => {
+  console.log('[CRON] PRE'); 
+  await runPreOnly(new Date());
+}, { timezone: TZ });
+
+cron.schedule(CRON_GENERATE, async () => {
+  console.log('[CRON] GENERATE'); 
+  await generateBillingsForToday(new Date());
+}, { timezone: TZ });
+
+cron.schedule(CRON_DUE, async () => {
+  console.log('[CRON] DUE'); 
+  await runDueOnly(new Date());
+}, { timezone: TZ });
+
+cron.schedule(CRON_LATE, async () => {
+  console.log('[CRON] LATE'); 
+  await runLateOnly(new Date());
+}, { timezone: TZ });
+
+// Encerramento gracioso (se já existir closeDb, use)
+process.on('SIGINT', () => {
+  console.log('Recebido SIGINT. Encerrando...');
+  server.close(() => {
     console.log('HTTP server fechado.');
-    await closeDb();
-    console.log('Pool PG encerrado.');
     process.exit(0);
   });
-}
-['SIGINT','SIGTERM'].forEach(s => process.on(s, () => shutdown(s)));
+});

@@ -5,29 +5,25 @@ const { msgPre, msgDue, msgLate } = require('../services/message-templates');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 
-// ===================== helpers =====================
-function pad2(n){ return String(n).padStart(2,'0'); }
-function isoDate(d){ return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; }
-function addDays(d,n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; }
-
+// Utils
+function pad2(n) { return String(n).padStart(2, '0'); }
+function isoDate(d) { return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
+function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
 function effectiveBillingDay(date, billingDay) {
-  const y = date.getFullYear();
-  const m = date.getMonth();
-  const last = new Date(y, m+1, 0).getDate();
+  const y = date.getFullYear(), m = date.getMonth();
+  const last = new Date(y, m + 1, 0).getDate();
   return Math.min(Number(billingDay), last);
 }
 function dueDateForMonth(baseDate, billingDay) {
-  const y = baseDate.getFullYear();
-  const m = baseDate.getMonth();
+  const y = baseDate.getFullYear(), m = baseDate.getMonth();
   const eff = effectiveBillingDay(baseDate, billingDay);
   return new Date(y, m, eff);
 }
 
-// grava/atualiza a notificação automática sem violar UNIQUE
+// Grava/atualiza notificação AUTO sem violar UNIQUE
 async function upsertAutoNotification({
   companyId, billingId = null, contractId, clientId,
-  targetDate, toNumber, message, type, dueDate,
-  evoResult // { ok, status, data, error }
+  targetDate, toNumber, message, type, dueDate, evoResult
 }) {
   const sql = `
     INSERT INTO ${SCHEMA}.billing_notifications
@@ -60,16 +56,14 @@ async function upsertAutoNotification({
     evoResult?.data ?? null,
     evoResult?.ok ? null : (evoResult?.error || null),
     evoResult?.ok ? new Date() : null,
-    String(type),                  // 'pre' | 'due' | 'late'
-    String(dueDate)                // 'YYYY-MM-DD'
+    String(type),  // 'pre'|'due'|'late'
+    String(dueDate)
   ];
   const r = await query(sql, params);
   return r.rows[0]?.id;
 }
 
-// ===================== pipeline =====================
-
-// 1) Gera as cobranças do dia (uma por contrato no dia de cobrança)
+// 1) Gera cobranças do dia (idempotente)
 async function generateBillingsForToday(now = new Date()) {
   const todayStr = isoDate(now);
   const day = now.getDate();
@@ -90,11 +84,12 @@ async function generateBillingsForToday(now = new Date()) {
       await client.query('BEGIN');
       try {
         await client.query(
-          `INSERT INTO ${SCHEMA}.billings (contract_id, billing_date, amount, status)
-           VALUES ($1,$2,$3,'pending')
-           ON CONFLICT (contract_id, billing_date) DO NOTHING`,
-          [c.id, todayStr, c.value]
+          `INSERT INTO ${SCHEMA}.billings (company_id, contract_id, billing_date, amount, status)
+   VALUES ($1,$2,$3,$4,'pending')
+    ON CONFLICT ( contract_id, billing_date) DO NOTHING`,
+          [c.company_id, c.id, todayStr, c.value]
         );
+
         await client.query(
           `UPDATE ${SCHEMA}.contracts SET last_billed_date=$1 WHERE id=$2`,
           [todayStr, c.id]
@@ -109,7 +104,7 @@ async function generateBillingsForToday(now = new Date()) {
   }
 }
 
-// 2) D-3 (pré-vencimento)
+// 2) D-3 (PRE)
 async function sendPreReminders(now = new Date()) {
   const base = addDays(now, 3);
   const baseStr = isoDate(base);
@@ -128,16 +123,13 @@ async function sendPreReminders(now = new Date()) {
     if (dueStr !== baseStr) continue;
     if (!c.client_phone) continue;
 
-    // se mês já pago/cancelado, não notifica
+    // trava por mês já pago/cancelado
     const cms = await query(`
       SELECT status FROM ${SCHEMA}.contract_month_status
       WHERE contract_id=$1 AND year=$2 AND month=$3
-    `, [c.id, due.getFullYear(), due.getMonth()+1]);
-    if (cms.rows[0] && (cms.rows[0].status === 'paid' || cms.rows[0].status === 'canceled')) {
-      continue;
-    }
+    `, [c.id, due.getFullYear(), due.getMonth() + 1]);
+    if (cms.rows[0] && (cms.rows[0].status === 'paid' || cms.rows[0].status === 'canceled')) continue;
 
-    // cria mensagem e envia
     const mesRefDate = new Date(due.getFullYear(), due.getMonth(), 1);
     const text = msgPre({
       nome: c.client_name,
@@ -149,11 +141,8 @@ async function sendPreReminders(now = new Date()) {
     });
 
     let evo = { ok: false, error: 'no-phone' };
-    try {
-      evo = await sendWhatsapp(c.company_id, { number: c.client_phone, text });
-    } catch (e) {
-      evo = { ok: false, error: e.message };
-    }
+    try { evo = await sendWhatsapp(c.company_id, { number: c.client_phone, text }); }
+    catch (e) { evo = { ok: false, error: e.message }; }
 
     await upsertAutoNotification({
       companyId: c.company_id,
@@ -172,9 +161,12 @@ async function sendPreReminders(now = new Date()) {
   }
 }
 
-// 3) D0 (vencimento)
+// 3) D0 (DUE) — garante geração antes de notificar
 async function sendDueReminders(now = new Date()) {
   const todayStr = isoDate(now);
+
+  try { await generateBillingsForToday(now); }
+  catch (e) { console.error('[DUE] generateBillingsForToday falhou:', e.message); }
 
   const rows = await query(`
     SELECT b.id AS billing_id, b.contract_id, b.amount, b.status,
@@ -186,19 +178,18 @@ async function sendDueReminders(now = new Date()) {
     WHERE b.billing_date = $1
   `, [todayStr]);
 
+  console.log(`[DUE] encontrados ${rows.rowCount} billings para ${todayStr}`);
+
   for (const r of rows.rows) {
-    // já pago/cancelado? não manda
-    if (String(r.status||'').toLowerCase() === 'paid' || String(r.status||'').toLowerCase() === 'canceled') continue;
+    const s = String(r.status || '').toLowerCase();
+    if (s === 'paid' || s === 'canceled') continue;
     if (!r.client_phone) continue;
 
-    // mês já pago/cancelado? não manda
     const cms = await query(`
       SELECT status FROM ${SCHEMA}.contract_month_status
       WHERE contract_id=$1 AND year=$2 AND month=$3
-    `, [r.contract_id, now.getFullYear(), now.getMonth()+1]);
-    if (cms.rows[0] && (cms.rows[0].status === 'paid' || cms.rows[0].status === 'canceled')) {
-      continue;
-    }
+    `, [r.contract_id, now.getFullYear(), now.getMonth() + 1]);
+    if (cms.rows[0] && (cms.rows[0].status === 'paid' || cms.rows[0].status === 'canceled')) continue;
 
     const mesRefDate = new Date(now.getFullYear(), now.getMonth(), 1);
     const text = msgDue({
@@ -211,18 +202,15 @@ async function sendDueReminders(now = new Date()) {
     });
 
     let evo = { ok: false, error: 'no-phone' };
-    try {
-      evo = await sendWhatsapp(r.company_id, { number: r.client_phone, text });
-    } catch (e) {
-      evo = { ok: false, error: e.message };
-    }
+    try { evo = await sendWhatsapp(r.company_id, { number: r.client_phone, text }); }
+    catch (e) { evo = { ok: false, error: e.message }; }
 
     await upsertAutoNotification({
       companyId: r.company_id,
       billingId: r.billing_id,
       contractId: r.contract_id,
       clientId: r.client_id,
-      targetDate: isoDate(now),
+      targetDate: todayStr,
       toNumber: r.client_phone,
       message: text,
       type: 'due',
@@ -230,11 +218,11 @@ async function sendDueReminders(now = new Date()) {
       evoResult: evo
     });
 
-    console.log(`→ [DUE] c#${r.contract_id} date=${todayStr} -> ${evo.ok ? 'sent' : 'failed'}`);
+    console.log(`→ [DUE] c#${r.contract_id} ${todayStr} -> ${evo.ok ? 'sent' : `failed (${evo.error || evo.status})`}`);
   }
 }
 
-// 4) D+4 (atraso)
+// 4) D+4 (LATE)
 async function sendLateReminders(now = new Date()) {
   const target = addDays(now, -4);
   const targetStr = isoDate(target);
@@ -250,18 +238,15 @@ async function sendLateReminders(now = new Date()) {
   `, [targetStr]);
 
   for (const r of rows.rows) {
+    const s = String(r.status || '').toLowerCase();
+    if (s === 'paid' || s === 'canceled') continue;
     if (!r.client_phone) continue;
-    // já pago/cancelado? não manda
-    if (String(r.status||'').toLowerCase() === 'paid' || String(r.status||'').toLowerCase() === 'canceled') continue;
 
-    // mês já pago/cancelado? não manda
     const cms = await query(`
       SELECT status FROM ${SCHEMA}.contract_month_status
       WHERE contract_id=$1 AND year=$2 AND month=$3
-    `, [r.contract_id, target.getFullYear(), target.getMonth()+1]);
-    if (cms.rows[0] && (cms.rows[0].status === 'paid' || cms.rows[0].status === 'canceled')) {
-      continue;
-    }
+    `, [r.contract_id, target.getFullYear(), target.getMonth() + 1]);
+    if (cms.rows[0] && (cms.rows[0].status === 'paid' || cms.rows[0].status === 'canceled')) continue;
 
     const mesRefDate = new Date(target.getFullYear(), target.getMonth(), 1);
     const text = msgLate({
@@ -274,11 +259,8 @@ async function sendLateReminders(now = new Date()) {
     });
 
     let evo = { ok: false, error: 'no-phone' };
-    try {
-      evo = await sendWhatsapp(r.company_id, { number: r.client_phone, text });
-    } catch (e) {
-      evo = { ok: false, error: e.message };
-    }
+    try { evo = await sendWhatsapp(r.company_id, { number: r.client_phone, text }); }
+    catch (e) { evo = { ok: false, error: e.message }; }
 
     await upsertAutoNotification({
       companyId: r.company_id,
@@ -293,20 +275,20 @@ async function sendLateReminders(now = new Date()) {
       evoResult: evo
     });
 
-    console.log(`↘ [LATE] c#${r.contract_id} date=${targetStr} -> ${evo.ok ? 'sent' : 'failed'}`);
+    console.log(`↘ [LATE] c#${r.contract_id} ${targetStr} -> ${evo.ok ? 'sent' : 'failed'}`);
   }
 }
 
-// ===================== orquestração =====================
+// Orquestração
 async function runDaily(now = new Date(), opts = {}) {
   const { generate = true, pre = true, due = true, late = true } = opts;
   if (generate) await generateBillingsForToday(now);
-  if (pre)      await sendPreReminders(now);
-  if (due)      await sendDueReminders(now);
-  if (late)     await sendLateReminders(now);
+  if (pre) await sendPreReminders(now);
+  if (due) await sendDueReminders(now);
+  if (late) await sendLateReminders(now);
 }
 
-// Wrappers para agendar horários diferentes
+// Wrappers (para cron com horários distintos)
 async function runPreOnly(now = new Date()) { await sendPreReminders(now); }
 async function runDueOnly(now = new Date()) { await sendDueReminders(now); }
 async function runLateOnly(now = new Date()) { await sendLateReminders(now); }
