@@ -18,7 +18,7 @@ server.listen(PORT, () => {
 
 const CRON_PRE       = process.env.CRON_PRE       || '0 8 * * *';   // D-3, às 08:00
 const CRON_GENERATE  = process.env.CRON_GENERATE  || '10 8 * * *';  // gera billing do dia, 08:10
-const CRON_DUE       = process.env.CRON_DUE       || '48 11 * * *';  // D0, às 11:40
+const CRON_DUE       = process.env.CRON_DUE       || '40 8 * * *';  // D0, às 11:40
 const CRON_LATE      = process.env.CRON_LATE      || '0 10 * * *';  // D+4, às 10:00
 
 cron.schedule(CRON_PRE, async () => {

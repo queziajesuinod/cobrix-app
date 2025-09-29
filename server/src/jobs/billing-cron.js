@@ -71,8 +71,9 @@ async function generateBillingsForToday(now = new Date()) {
   const contracts = await query(`
     SELECT c.*, cl.name AS client_name
     FROM ${SCHEMA}.contracts c
+    JOIN ${SCHEMA}.contract_month_status cms ON c.id = cms.contract_id
     JOIN ${SCHEMA}.clients  cl ON cl.id = c.client_id
-    WHERE c.start_date <= $1 AND c.end_date >= $1
+    WHERE c.start_date <= $1 AND c.end_date >= $1 AND cms.status != 'paid'
   `, [todayStr]);
 
   for (const c of contracts.rows) {
@@ -144,18 +145,53 @@ async function sendPreReminders(now = new Date()) {
     try { evo = await sendWhatsapp(c.company_id, { number: c.client_phone, text }); }
     catch (e) { evo = { ok: false, error: e.message }; }
 
-    await upsertAutoNotification({
-      companyId: c.company_id,
-      billingId: null,
-      contractId: c.id,
-      clientId: c.client_id,
-      targetDate: isoDate(now),
-      toNumber: c.client_phone,
-      message: text,
-      type: 'pre',
-      dueDate: dueStr,
-      evoResult: evo
-    });
+   async function upsertAutoNotification({
+  companyId, billingId = null, contractId, clientId,
+  targetDate, toNumber, message, type, dueDate, evoResult
+}) {
+  // IMPORTANTE: agora usamos o índice parcial + coluna gerada due_month
+  // -> ON CONFLICT (company_id, contract_id, type, due_month) WHERE kind='auto'
+  const sql = `
+    INSERT INTO ${SCHEMA}.billing_notifications
+      (company_id, billing_id, contract_id, client_id, kind, target_date,
+       status, provider, to_number, message, provider_status, provider_response,
+       error, created_at, sent_at, type, due_date)
+    VALUES
+      ($1,$2,$3,$4,'auto',$5,
+       $6,'evo',$7,$8,$9,$10,
+       $11,NOW(),$12,$13,$14)
+    ON CONFLICT (company_id, contract_id, type, due_month)
+      WHERE kind = 'auto'
+    DO UPDATE SET
+      status           = EXCLUDED.status,
+      provider_status  = EXCLUDED.provider_status,
+      provider_response= EXCLUDED.provider_response,
+      error            = EXCLUDED.error,
+      -- mantém sent_at antigo se já houver; senão usa o novo
+      sent_at          = COALESCE(${SCHEMA}.billing_notifications.sent_at, EXCLUDED.sent_at)
+    RETURNING id
+  `;
+
+  const params = [
+    Number(companyId),
+    billingId,
+    Number(contractId),
+    Number(clientId),
+    String(targetDate),
+    (evoResult?.ok ? 'sent' : 'failed'),
+    String(toNumber || ''),
+    String(message || ''),
+    evoResult?.status ?? null,
+    evoResult?.data ?? null,
+    evoResult?.ok ? null : (evoResult?.error || null),
+    evoResult?.ok ? new Date() : null,
+    String(type),            // 'pre' | 'due' | 'late'
+    String(dueDate)          // 'YYYY-MM-DD'
+  ];
+
+  const r = await query(sql, params);
+  return r.rows[0]?.id;
+}
 
     console.log(`↗ [PRE] c#${c.id} due=${dueStr} -> ${evo.ok ? 'sent' : 'failed'}`);
   }

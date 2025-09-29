@@ -6,6 +6,8 @@ const { requireAuth, companyScope } = require('./auth');
 const router = express.Router();
 const DATE_ISO = /^\d{4}-\d{2}-\d{2}$/;
 
+const SCHEMA = process.env.DB_SCHEMA || 'public';
+
 const contractSchema = z.object({
   client_id: z.number().int().positive(),
   description: z.string().min(3),
@@ -16,31 +18,74 @@ const contractSchema = z.object({
 });
 
 router.get('/', requireAuth, companyScope(true), async (req, res) => {
-  const page = Math.max(parseInt(req.query.page || '1', 10), 1);
-  const pageSize = Math.min(Math.max(parseInt(req.query.pageSize || '20', 10), 1), 100);
-  const offset = (page - 1) * pageSize;
-
-  const filters = ['c.company_id=$1'];
-  const params = [req.companyId];
-
-  if (req.query.active_on) {
-    filters.push(`date(c.start_date) <= date($2) AND date(c.end_date) >= date($2)`);
-    params.push(req.query.active_on);
-  }
-  const where = 'WHERE ' + filters.join(' AND ');
-
   try {
-    const count = await query(`SELECT COUNT(*)::int AS total FROM contracts c ${where}`, params);
-    params.push(pageSize, offset);
-    const rows = await query(`
-      SELECT c.*, cl.name as client_name, cl.email as client_email
-      FROM contracts c
-      JOIN clients cl ON c.client_id = cl.id
-      ${where}
+    const page = Math.max(parseInt(req.query.page || '1', 10), 1);
+    const pageSize = Math.min(Math.max(parseInt(req.query.pageSize || '20', 10), 1), 100);
+    const offset = (page - 1) * pageSize;
+
+    // ym=YYYY-MM (se não vier, usa mês atual)
+    const ym = String(req.query.ym || '').trim();
+    const baseDate = ym && /^\d{4}-\d{2}$/.test(ym) ? new Date(`${ym}-01`) : new Date();
+    const year = baseDate.getFullYear();
+    const month = baseDate.getMonth() + 1;
+
+    const params = [];
+    const add = (v) => { params.push(v); return `$${params.length}`; };
+
+    // FROM com LEFT JOIN em contract_month_status (limitado ao mês/ano)
+    const fromSql = `
+      FROM ${SCHEMA}.contracts c
+      LEFT JOIN ${SCHEMA}.contract_month_status cms
+        ON cms.contract_id = c.id
+       AND cms.year = ${add(year)}
+       AND cms.month = ${add(month)}
+      JOIN ${SCHEMA}.clients cl ON cl.id = c.client_id
+    `;
+
+    // WHERE (sempre dentro da empresa)
+    const filters = [];
+    filters.push(`c.company_id = ${add(req.companyId)}`);
+
+    // Contratos ativos na data (se active_on vier)
+    if (req.query.active_on) {
+      const activeOn = add(req.query.active_on);
+      filters.push(`DATE(c.start_date) <= DATE(${activeOn}) AND DATE(c.end_date) >= DATE(${activeOn})`);
+    }
+
+    // "não pago" no mês-alvo: inclui NULL (sem registro) e qualquer status ≠ 'paid'
+    filters.push(`(cms.status IS NULL OR cms.status <> 'paid')`);
+
+    const whereSql = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+
+    // 1) COUNT com os MESMOS JOINs/WHERE
+    const countSql = `SELECT COUNT(*)::int AS total ${fromSql} ${whereSql}`;
+    const count = await query(countSql, params);
+
+    // 2) LISTAGEM
+    const listParams = params.slice(); // reaproveita a mesma sequência de parâmetros
+    listParams.push(pageSize, offset);
+    const limitPos = `$${listParams.length - 1}`;
+    const offsetPos = `$${listParams.length}`;
+
+    const listSql = `
+      SELECT c.*,
+             cl.name  AS client_name,
+             cl.email AS client_email,
+             cms.status AS month_status,
+             cms.year, cms.month
+      ${fromSql}
+      ${whereSql}
       ORDER BY c.start_date DESC
-      LIMIT $${params.length-1} OFFSET $${params.length}
-    `, params);
-    res.json({ page, pageSize, total: count.rows[0].total, data: rows.rows });
+      LIMIT ${limitPos} OFFSET ${offsetPos}
+    `;
+    const rows = await query(listSql, listParams);
+
+    res.json({
+      page,
+      pageSize,
+      total: count.rows[0].total,
+      data: rows.rows
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -52,7 +97,7 @@ router.get('/:id', requireAuth, companyScope(true), async (req, res) => {
       SELECT c.*, cl.name as client_name, cl.email as client_email
       FROM contracts c
       JOIN clients cl ON c.client_id = cl.id
-      WHERE c.id=$1 AND c.company_id=$2
+      WHERE c.id=$1 AND c.company_id=$2 
     `, [req.params.id, req.companyId]);
     if (!r.rows[0]) return res.status(404).json({ error: 'Contrato não encontrado' });
     res.json(r.rows[0]);
