@@ -8,24 +8,18 @@ const JWT_SECRET = process.env.JWT_SECRET || "devsecret";
 
 // Assinatura padronizada do token
 async function sign(user) {
-  let companyIds = [];
-  if (user.role === "master") {
-    const r = await query(
-      `SELECT company_id FROM user_companies WHERE user_id = $1`,
-      [user.id]
-    );
-    companyIds = r.rows.map((row) => row.company_id);
-  } else if (user.company_id) {
-    companyIds = [user.company_id];
-  }
+  // Usar company_ids já fornecidas pelo objeto user
+  const companyIds = user.company_ids || [];
 
+  const tokenPayload = {
+    id: user.id,
+    email: user.email,
+    role: user.role,
+    company_ids: companyIds,
+  };
+  
   return jwt.sign(
-    {
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      company_ids: companyIds, // Agora armazena um array de IDs de empresas
-    },
+    tokenPayload,
     JWT_SECRET,
     { expiresIn: "12h" }
   );
@@ -51,7 +45,9 @@ async function requireAuth(req, res, next) {
 
     if (req.user.role === "master") {
       // Master pode acessar qualquer empresa que esteja vinculada
-     
+      if (requestedCompanyId && !req.user.company_ids.includes(requestedCompanyId)) {
+        return res.status(403).json({ error: "Acesso negado à empresa solicitada" });
+      }
       req.companyId = requestedCompanyId; // Master pode selecionar a empresa via header
     } else {
       // Usuários normais só podem acessar a empresa a que estão vinculados
@@ -165,12 +161,14 @@ router.post("/login", async (req, res) => {
       return res.status(401).json({ error: "Credenciais invalidas" });
     }
 
-    // Reconstruir o objeto user com todas as company_ids se for master
+    // Reconstruir o objeto user com todas as company_ids
+    const companyIds = r.rows.map(row => row.company_id).filter(id => id !== null);
+    
     const user = {
       id: r.rows[0].id,
       email: r.rows[0].email,
       role: r.rows[0].role,
-      company_ids: r.rows.map(row => row.company_id).filter(id => id !== null) // Coleta todas as company_ids
+      company_ids: companyIds
     };
 
     const token = await sign(user);

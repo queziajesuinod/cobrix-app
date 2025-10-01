@@ -26,7 +26,7 @@ function dueDateForMonth(baseDate, billingDay) {
   return new Date(y, m, eff);
 }
 
-// Grava/atualiza notificação AUTO sem violar UNIQUE
+// Grava/atualiza notificação sem violar UNIQUE
 async function upsertAutoNotification({
   companyId, billingId = null, contractId, clientId,
   targetDate, toNumber, message, type, dueDate, evoResult
@@ -38,36 +38,27 @@ async function upsertAutoNotification({
        error, created_at, sent_at, type, due_date)
     VALUES
       ($1,$2,$3,$4,
-       'auto',$5,
-       $6,'evo',$7,$8,$9,$10,
-       $11,NOW(),$12,$13,$14)
-
-    ON CONFLICT (company_id, contract_id, type, due_month)
-      WHERE kind = 'auto'
-    DO UPDATE SET
-      status           = EXCLUDED.status,
-      provider_status  = EXCLUDED.provider_status,
-      provider_response= EXCLUDED.provider_response,
-      error            = EXCLUDED.error,
-      sent_at          = COALESCE(${SCHEMA}.billing_notifications.sent_at, EXCLUDED.sent_at)
+       $5,$6,
+       $7,'evo',$8,$9,$10,$11,
+       $12,NOW(),$13,$5,$14)
     RETURNING id
   `;
 
   const params = [
-    Number(companyId),
-    billingId,
-    Number(contractId),
-    Number(clientId),
-    String(targetDate),
-    (evoResult?.ok ? 'sent' : 'failed'),
-    String(toNumber || ''),
-    String(message || ''),
-    evoResult?.status ?? null,
-    evoResult?.data ?? null,
-    evoResult?.ok ? null : (evoResult?.error || null),
-    evoResult?.ok ? new Date() : null,
-    String(type),            // 'pre' | 'due' | 'late'
-    String(dueDate)          // 'YYYY-MM-DD'
+    Number(companyId),        // $1
+    billingId,                // $2
+    Number(contractId),       // $3
+    Number(clientId),         // $4
+    String(type),             // $5 - usado para kind e type
+    String(targetDate),       // $6
+    (evoResult?.ok ? 'sent' : 'failed'), // $7
+    String(toNumber || ''),   // $8
+    String(message || ''),    // $9
+    evoResult?.status ?? null, // $10
+    evoResult?.data ?? null,  // $11
+    evoResult?.ok ? null : (evoResult?.error || null), // $12
+    evoResult?.ok ? new Date() : null, // $13
+    String(dueDate)           // $14
   ];
 
   const r = await query(sql, params);
@@ -99,10 +90,10 @@ async function generateBillingsForToday(now = new Date()) {
         console.log(`[BILL] Attempting to insert/update contract_month_status for contract #${c.id}, year=${currentYear}, month=${currentMonth}`);
         try {
           const cmsInsertResult = await client.query(
-            `INSERT INTO ${SCHEMA}.contract_month_status (contract_id, year, month, status)
-     VALUES ($1, $2, $3, \'pending\')
+            `INSERT INTO ${SCHEMA}.contract_month_status (company_id, contract_id, year, month, status)
+     VALUES ($1, $2, $3, $4, \'pending\')
       ON CONFLICT (contract_id, year, month) DO UPDATE SET status = EXCLUDED.status`,
-            [c.id, currentYear, currentMonth]
+            [c.company_id, c.id, currentYear, currentMonth]
           );
           console.log(`[BILL] contract_month_status inserted/updated for contract #${c.id}, year=${currentYear}, month=${currentMonth}. RowCount: ${cmsInsertResult.rowCount}`);
         } catch (cmsError) {

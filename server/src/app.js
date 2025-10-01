@@ -37,6 +37,7 @@ app.use('/api/billings', require('./routes/billings'))
 app.use('/api/companies', require('./routes/companies'))
 app.use('/api/companies', require('./routes/company-integration'))
 app.use('/api/companies', require('./routes/company-users'))
+app.use('/api/companies', require('./routes/company-users-management'))
 // health
 app.get('/api/status', (_req, res) => res.json({ status: 'OK', schema: process.env.DB_SCHEMA || 'public', time: new Date().toISOString() }))
 app.get('/healthz', (_req, res) => res.json({ ok: true }))

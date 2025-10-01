@@ -6,6 +6,7 @@ import {
 import { useTheme } from '@mui/material/styles'
 import { useNavigate, NavLink, useLocation } from 'react-router-dom'
 import { useAuth } from '@/features/auth/AuthContext'
+import CompanySelector from '@/components/CompanySelector'
 
 // Ícones
 import MenuIcon from '@mui/icons-material/Menu'
@@ -92,6 +93,9 @@ export default function AppShell({ children }) {
         </Typography>
       </Box>
       <Divider />
+      
+      {/* Seletor de empresa para usuários master */}
+      <CompanySelector />
 
       <List sx={{ flex: 1 }}>
         {navItems(user?.role, selectedCompanyId).map((item) => {
