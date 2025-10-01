@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ path: '/app/server/.env.production' }); // 👈 caminho absoluto no container
 const app = require('./app');
 
 const PORT = process.env.PORT || 3001;
