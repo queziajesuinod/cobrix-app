@@ -4,7 +4,7 @@ const express = require('express')
 const cors = require('cors')
 const helmet = require('helmet')
 const rateLimit = require('express-rate-limit')
-const { initDb } = require('./db')
+const { initDb } = require('./db/index')
 const app = express()
 
 

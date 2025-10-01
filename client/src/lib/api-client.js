@@ -1,8 +1,17 @@
-// client/src/lib/api-client.js
 import axios from 'axios'
 import { authService } from '@/features/auth/auth.service'
 
 const api = axios.create({ baseURL: '/api', withCredentials: true })
+
+// Função para obter o selectedCompanyId atual
+const getSelectedCompanyId = () => {
+  try {
+    const stored = localStorage.getItem('selectedCompanyId')
+    return stored ? Number(stored) : null
+  } catch {
+    return null
+  }
+}
 
 api.interceptors.request.use((config) => {
   config.headers ||= {}
@@ -13,11 +22,19 @@ api.interceptors.request.use((config) => {
     config.headers.Authorization = `Bearer ${token}`
   }
 
-  // X-Company-Id automático
-  const selected = Number(localStorage.getItem('selectedCompanyId') || '') || null
-  const fromAuth = authService.getAuth()?.user?.company_id ?? null
-  const cid = config.headers['X-Company-Id'] || config.companyId || selected || fromAuth
-  if (cid && !config.headers['X-Company-Id']) config.headers['X-Company-Id'] = cid
+  // X-Company-Id automático - prioriza o selecionado pelo usuário
+  const selectedCompanyId = getSelectedCompanyId()
+  const userCompanyId = authService.getAuth()?.user?.company_id ?? null
+  
+  // Usar o ID da empresa selecionada, ou fallback para a empresa do usuário
+  const companyId = config.headers['X-Company-Id'] || 
+                   config.companyId || 
+                   selectedCompanyId || 
+                   userCompanyId
+
+  if (companyId && !config.headers['X-Company-Id']) {
+    config.headers['X-Company-Id'] = String(companyId)
+  }
 
   return config
 })

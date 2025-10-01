@@ -51,9 +51,7 @@ async function requireAuth(req, res, next) {
 
     if (req.user.role === "master") {
       // Master pode acessar qualquer empresa que esteja vinculada
-      if (requestedCompanyId && !req.user.company_ids.includes(requestedCompanyId)) {
-        return res.status(403).json({ error: "Acesso negado à empresa solicitada" });
-      }
+     
       req.companyId = requestedCompanyId; // Master pode selecionar a empresa via header
     } else {
       // Usuários normais só podem acessar a empresa a que estão vinculados

@@ -24,10 +24,19 @@ export function AuthProvider({ children }) {
         setUser(u)
         // se o verify devolveu token/refresh, persista
         if (data?.token) authService.setAuth(data)
-        // seta empresa padrão se houver
-        if (u?.company_id && !selectedCompanyId) {
-          setSelectedCompanyId(u.company_id)
-          try { localStorage.setItem('selectedCompanyId', String(u.company_id)) } catch {}
+        // Para usuários master, manter a empresa selecionada no localStorage
+        // Para usuários normais, usar a empresa do token se não houver seleção
+        if (u?.role === 'master') {
+          // Master: manter a empresa selecionada ou limpar se inválida
+          if (selectedCompanyId && !u.company_ids?.includes(selectedCompanyId)) {
+            setSelectedCompanyId(null)
+            try { localStorage.removeItem('selectedCompanyId') } catch {}
+          }
+        } else if (u?.company_ids?.length > 0 && !selectedCompanyId) {
+          // Usuário normal: usar a primeira empresa disponível
+          const defaultCompanyId = u.company_ids[0]
+          setSelectedCompanyId(defaultCompanyId)
+          try { localStorage.setItem('selectedCompanyId', String(defaultCompanyId)) } catch {}
         }
       } catch {
         authService.clearToken()
@@ -51,10 +60,19 @@ export function AuthProvider({ children }) {
     const u = data?.user ?? data
     setUser(u)
 
-    // garante empresa selecionada automaticamente p/ usuários não-master
-    if (u?.company_id) {
-      setSelectedCompanyId(u.company_id)
-      try { localStorage.setItem('selectedCompanyId', String(u.company_id)) } catch {}
+    // Gerenciar empresa selecionada após login
+    if (u?.role === 'master') {
+      // Master: não selecionar empresa automaticamente, deixar o usuário escolher
+      // Limpar seleção anterior se a empresa não estiver mais disponível
+      if (selectedCompanyId && !u.company_ids?.includes(selectedCompanyId)) {
+        setSelectedCompanyId(null)
+        try { localStorage.removeItem('selectedCompanyId') } catch {}
+      }
+    } else if (u?.company_ids?.length > 0) {
+      // Usuário normal: selecionar automaticamente a primeira empresa
+      const defaultCompanyId = u.company_ids[0]
+      setSelectedCompanyId(defaultCompanyId)
+      try { localStorage.setItem('selectedCompanyId', String(defaultCompanyId)) } catch {}
     }
     return data
   }
