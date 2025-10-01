@@ -14,3 +14,7 @@ pnpm-debug.log*
 *.suo
 *.ntvs*
 *.njsproj      
+docker-compose.yml
+DockerFile
+.dockerignore
+*.log
