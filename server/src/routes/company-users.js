@@ -1,169 +1,98 @@
-// server/src/routes/company-users.js
-const express = require('express');
-const { z } = require('zod');
-const { query } = require('../db');
-const { requireAuth } = require('./auth');
+const express = require("express");
+const { query } = require("../db");
+const { requireAuth } = require("./auth");
 
 const router = express.Router();
-const schema = process.env.DB_SCHEMA || 'public';
 
-// helpers simples de perm
-function canRead(user, reqCompanyId, targetCompanyId) {
+function isMaster(user) { return user?.role === "master"; }
+
+function canReadCompany(user, selectedCompanyId, targetCompanyId) {
   if (!user) return false;
-  if (user.role === 'master') return true;
-  const cid = Number(reqCompanyId ?? user.company_id ?? 0);
-  return cid === Number(targetCompanyId);
-}
-function canWrite(user, reqCompanyId, targetCompanyId) {
-  // ajuste se tiver papel admin; por hora igual ao canRead
-  return canRead(user, reqCompanyId, targetCompanyId);
+  if (isMaster(user)) {
+    // Master pode ler qualquer empresa à qual está vinculado
+    return user.company_ids.includes(Number(targetCompanyId));
+  }
+  // Usuário normal só pode ler a empresa à qual está vinculado e que foi selecionada
+  return user.company_ids.includes(Number(targetCompanyId)) && Number(selectedCompanyId) === Number(targetCompanyId);
 }
 
-/**
- * GET /companies/:id/users
- * Lista usuários da empresa
- */
-router.get('/:id/users', requireAuth, async (req, res) => {
-  const companyId = Number(req.params.id);
-  if (!Number.isFinite(companyId)) {
-    return res.status(400).json({ error: 'companyId inválido' });
+function canWriteCompany(user, selectedCompanyId, targetCompanyId) {
+  if (!user) return false;
+  if (isMaster(user)) {
+    // Master pode escrever em qualquer empresa à qual está vinculado
+    return user.company_ids.includes(Number(targetCompanyId));
   }
-  if (!canRead(req.user, req.companyId, companyId)) {
-    return res.status(403).json({ error: 'Sem permissão' });
+  // Usuário normal (ou admin) só pode escrever na empresa à qual está vinculado e que foi selecionada
+  if (user?.role === "admin") {
+    return user.company_ids.includes(Number(targetCompanyId)) && Number(selectedCompanyId) === Number(targetCompanyId);
   }
+  return false;
+}
 
-  try {
-    const r = await query(
-      `SELECT id, email, role, active, company_id
-       FROM ${schema}.users
-       WHERE company_id = $1
-       ORDER BY id DESC`,
-      [companyId]
-    );
-    res.json(r.rows);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+// LIST all (master)
+router.get("/", requireAuth, async (req, res) => {
+  if (!isMaster(req.user)) return res.status(403).json({ error: "Apenas master lista todas as empresas" });
+  // Master agora lista apenas as empresas às quais está vinculado
+  if (req.user.company_ids.length === 0) {
+    return res.json([]);
   }
+  const r = await query(
+    `SELECT id, name, evo_api_url, evo_api_key, created_at FROM companies WHERE id = ANY($1::int[]) ORDER BY id DESC`,
+    [req.user.company_ids]
+  );
+  res.json(r.rows);
 });
 
-/**
- * POST /companies/:id/users
- * Cria usuário da empresa
- * Body: { email, password, role? }
- */
-router.post('/:id/users', requireAuth, async (req, res) => {
-  const companyId = Number(req.params.id); // 👈 use o id da rota!
-  if (!Number.isFinite(companyId)) {
-    return res.status(400).json({ error: 'companyId inválido' });
-  }
-  if (!canWrite(req.user, req.companyId, companyId)) {
-    return res.status(403).json({ error: 'Sem permissão' });
-  }
-
-  const bodySchema = z.object({
-    email: z.string().email(),
-    password: z.string().min(3),
-    role: z.string().optional(), // 'user' | 'admin' | 'master' (evite 'master' aqui)
-  });
-
-  const parsed = bodySchema.safeParse(req.body || {});
-  if (!parsed.success) {
-    return res.status(400).json({ error: parsed.error.flatten() });
-  }
-  const { email, password, role } = parsed.data;
-
-  try {
-    // Gere o hash NO BANCO com pgcrypto para manter compatível com dev.passtoken()
-    // hash = crypt(password || '::company:' || companyId, gen_salt('bf', 12))
-    const rHash = await query(
-      `SELECT public.crypt($1 || '::company:' || $2::text, public.gen_salt('bf', 12)) AS hash`,
-      [password, companyId]
-    );
-    const hash = rHash.rows[0]?.hash;
-    if (!hash) return res.status(500).json({ error: 'Falha ao gerar hash' });
-
-    const r = await query(
-      `INSERT INTO ${schema}.users (email, password_hash, role, company_id, active)
-       VALUES ($1, $2, $3, $4, true)
-       RETURNING id, email, role, active, company_id`,
-      [String(email).trim().toLowerCase(), hash, role || 'user', companyId]
-    );
-
-    res.status(201).json(r.rows[0]);
-  } catch (e) {
-    // conflito de email (unique)
-    if (String(e.message).includes('unique') || String(e.message).includes('duplicate key')) {
-      return res.status(409).json({ error: 'Email já cadastrado' });
-    }
-    res.status(500).json({ error: e.message });
-  }
+// GET by id
+router.get("/:id", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!canReadCompany(req.user, req.companyId, id)) return res.status(403).json({ error: "Sem permissão" });
+  const r = await query("SELECT id, name, evo_api_url, evo_api_key, created_at FROM companies WHERE id=$1", [id]);
+  const row = r.rows[0];
+  if (!row) return res.status(404).json({ error: "Empresa não encontrada" });
+  res.json(row);
 });
 
-/**
- * PUT /companies/:id/users/:userId
- * Atualiza role/active e (opcionalmente) reseta a senha
- * Body: { role?, active?, newPassword? }
- */
-router.put('/:id/users/:userId', requireAuth, async (req, res) => {
-  const companyId = Number(req.params.id);
-  const userId = Number(req.params.userId);
-  if (!Number.isFinite(companyId) || !Number.isFinite(userId)) {
-    return res.status(400).json({ error: 'ids inválidos' });
-  }
-  if (!canWrite(req.user, req.companyId, companyId)) {
-    return res.status(403).json({ error: 'Sem permissão' });
-  }
+// CREATE (master)
+router.post("/", requireAuth, async (req, res) => {
+  if (!isMaster(req.user)) return res.status(403).json({ error: "Apenas master cria empresa" });
+  const { name, evo_api_url, evo_api_key } = req.body || {};
+  if (!name || String(name).trim().length < 2) return res.status(400).json({ error: "Nome obrigatório" });
+  const r = await query(
+    "INSERT INTO companies (name, evo_api_url, evo_api_key) VALUES ($1,$2,$3) RETURNING id, name",
+    [String(name).trim(), evo_api_url || null, evo_api_key || null]
+  );
+  const newCompany = r.rows[0];
 
-  const bodySchema = z.object({
-    role: z.string().optional(),
-    active: z.boolean().optional(),
-    newPassword: z.string().min(3).optional(),
-  });
-  const parsed = bodySchema.safeParse(req.body || {});
-  if (!parsed.success) {
-    return res.status(400).json({ error: parsed.error.flatten() });
-  }
-  const { role, active, newPassword } = parsed.data;
+  // Vincular o usuário master à nova empresa criada
+  await query(
+    `INSERT INTO user_companies (user_id, company_id) VALUES ($1, $2)`,
+    [req.user.id, newCompany.id]
+  );
 
-  try {
-    // monta update dinamicamente
-    const sets = [];
-    const vals = [];
-    let idx = 1;
+  res.status(201).json(newCompany);
+});
 
-    if (role) { sets.push(`role = $${idx++}`); vals.push(role); }
-    if (typeof active === 'boolean') { sets.push(`active = $${idx++}`); vals.push(active); }
+// UPDATE (master/admin)
+router.put("/:id", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!canWriteCompany(req.user, req.companyId, id)) return res.status(403).json({ error: "Sem permissão" });
+  const { name, evo_api_url, evo_api_key } = req.body || {};
+  if (!name || String(name).trim().length < 2) return res.status(400).json({ error: "Nome obrigatório" });
+  const r = await query("UPDATE companies SET name=$1, evo_api_url=$2, evo_api_key=$3 WHERE id=$4 RETURNING id, name", [String(name).trim(), evo_api_url || null, evo_api_key || null, id]);
+  if (!r.rows[0]) return res.status(404).json({ error: "Empresa não encontrada" });
+  res.json(r.rows[0]);
+});
 
-    if (newPassword) {
-      // gera novo hash com pepper por empresa
-      const rHash = await query(
-        `SELECT public.crypt($1 || '::company:' || $2::text, public.gen_salt('bf', 12)) AS hash`,
-        [newPassword, companyId]
-      );
-      const hash = rHash.rows[0]?.hash;
-      if (!hash) return res.status(500).json({ error: 'Falha ao gerar hash' });
-      sets.push(`password_hash = $${idx++}`);
-      vals.push(hash);
-    }
-
-    if (sets.length === 0) {
-      return res.status(400).json({ error: 'Nada para atualizar' });
-    }
-
-    vals.push(userId, companyId);
-    const r = await query(
-      `UPDATE ${schema}.users
-       SET ${sets.join(', ')}
-       WHERE id = $${idx++} AND company_id = $${idx}
-       RETURNING id, email, role, active, company_id`,
-      vals
-    );
-
-    if (r.rowCount === 0) return res.status(404).json({ error: 'Usuário não encontrado' });
-    res.json(r.rows[0]);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+// DELETE (master)
+router.delete("/:id", requireAuth, async (req, res) => {
+  if (!isMaster(req.user)) return res.status(403).json({ error: "Apenas master remove empresa" });
+  const id = Number(req.params.id);
+  // Remover todos os vínculos de user_companies antes de deletar a empresa
+  await query("DELETE FROM user_companies WHERE company_id = $1", [id]);
+  const r = await query("DELETE FROM companies WHERE id=$1 RETURNING id", [id]);
+  if (!r.rows[0]) return res.status(404).json({ error: "Empresa não encontrada" });
+  res.json({ ok: true });
 });
 
 module.exports = router;

@@ -14,6 +14,11 @@ function effectiveBillingDay(y, m, billingDay){
 }
 
 export default function ManualNotificationsPage(){
+  const today = useMemo(() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }, []);
   const [ym, setYm] = useState(() => new Date().toISOString().slice(0,7))
   const [clientId, setClientId] = useState('')
   const [contractId, setContractId] = useState('')
@@ -80,6 +85,15 @@ export default function ManualNotificationsPage(){
       {contracts.map(c => {
         const dueDay = effectiveBillingDay(y, m, c.billing_day)
         const dueStr = `${pad2(dueDay)}/${pad2(m)}/${y}`
+        const dueDate = new Date(y, m - 1, dueDay);
+        dueDate.setHours(0, 0, 0, 0);
+
+        const preDueDate = new Date(y, m - 1, dueDay - 3);
+        preDueDate.setHours(0, 0, 0, 0);
+
+        const lateDueDate = new Date(y, m - 1, dueDay + 4);
+        lateDueDate.setHours(0, 0, 0, 0);
+
         return (
           <Card key={c.id} variant="outlined">
             <CardContent>
@@ -94,9 +108,20 @@ export default function ManualNotificationsPage(){
                 </Grid>
                 <Grid item xs={12} md={4} sx={{ textAlign: { xs:'left', md:'right' } }}>
                   <Stack direction="row" spacing={1} justifyContent={{ xs:'flex-start', md:'flex-end' }}>
-                    <Button size="small" variant="outlined" startIcon={<SendIcon />} onClick={() => send(c, 'pre')}>Enviar D−3</Button>
-                    <Button size="small" variant="contained" startIcon={<SendIcon />} onClick={() => send(c, 'due')}>Enviar D0</Button>
-                    <Button size="small" variant="outlined" color="error" startIcon={<SendIcon />} onClick={() => send(c, 'late')}>Enviar D+4</Button>
+                    {/* Botão D-3 (Pré-vencimento) */}
+                    {today.getTime() < dueDate.getTime() && (
+                      <Button size="small" variant="outlined" startIcon={<SendIcon />} onClick={() => send(c, 'pre')}>Enviar D−3</Button>
+                    )}
+
+                    {/* Botão D0 (Vencimento) */}
+                    {today.getTime() === dueDate.getTime() && (
+                      <Button size="small" variant="contained" startIcon={<SendIcon />} onClick={() => send(c, 'due')}>Enviar D0</Button>
+                    )}
+
+                    {/* Botão D+4 (Atrasado) */}
+                    {today.getTime() > dueDate.getTime() && (
+                      <Button size="small" variant="outlined" color="error" startIcon={<SendIcon />} onClick={() => send(c, 'late')} disabled={today.getTime() < lateDueDate.getTime()}>Enviar D+4</Button>
+                    )}
                   </Stack>
                 </Grid>
               </Grid>

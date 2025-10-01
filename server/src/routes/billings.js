@@ -1,22 +1,35 @@
-// server/src/routes/billings.js
 const express = require('express');
 const { query } = require('../db');
 const { requireAuth, companyScope } = require('./auth');
 const { runDaily } = require('../jobs/billing-cron');
-const { sendWhatsapp } = require('../services/messenger'); // <— usa a função existente
+const { sendWhatsapp } = require('../services/messenger');
 const { msgPre, msgDue, msgLate } = require('../services/message-templates');
 
 const router = express.Router();
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 
-function validStatus(s){ return ['pending','paid','canceled'].includes(String(s||'').toLowerCase()) }
-function pad2(n){ return String(n).padStart(2,'0') }
-function isoDate(d){ return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}` }
-function monthBounds(ym){
+function validStatus(s) { return ['pending','paid','canceled'].includes(String(s||'').toLowerCase()); }
+function pad2(n) { return String(n).padStart(2,'0'); }
+function isoDate(d) { return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; }
+function monthBounds(ym) {
   const [y,m] = ym.split('-').map(Number);
   const start = new Date(y, m-1, 1);
   const end = new Date(y, m, 1);
   return { y, m, start: isoDate(start), end: isoDate(end) };
+}
+
+// NEW: parse "YYYY-MM-DD" as local date to avoid timezone shift
+function parseDateIsoLocal(s) {
+  if (!s) return null;
+  const raw = String(s).slice(0,10);
+  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) {
+    const d = new Date(s);
+    if (isNaN(d)) return null;
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  }
+  const y = Number(m[1]), mo = Number(m[2]), da = Number(m[3]);
+  return new Date(y, mo - 1, da);
 }
 
 // helper para inserir na billing_notifications (todas colunas)
@@ -181,8 +194,10 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
     const row = c.rows[0];
     if (!row) return res.status(404).json({ error: 'Contrato não encontrado' });
 
-    const due = new Date(date);
-    const dueStr = String(date).slice(0,10);
+    // parse de date como local para evitar shift de timezone
+    const due = parseDateIsoLocal(date);
+    if (!due) return res.status(400).json({ error: 'date inválida' });
+    const dueStr = isoDate(due);
 
     // se mês já pago/cancelado, bloqueia
     const cms = await query(`
@@ -202,50 +217,63 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
       if (b.rowCount) return res.status(409).json({ error: 'Cobrança já está PAGA/CANCELADA — notificação bloqueada' });
     }
 
-    // dedupe
-    const exists = await query(`
-      SELECT 1 FROM ${SCHEMA}.billing_notifications
-      WHERE contract_id=$1 AND due_date=$2 AND type=$3 LIMIT 1
-    `, [contract_id, dueStr, typ]);
-    if (exists.rowCount) return res.status(409).json({ error: 'Notificação já enviada para esse tipo/data' });
+    // usa advisory lock por contrato para evitar race conditions
+    await query('SELECT pg_advisory_lock($1)', [Number(contract_id)]);
+    try {
+      // checa existência novamente dentro da lock
+      const exists2 = await query(`
+        SELECT 1 FROM ${SCHEMA}.billing_notifications
+        WHERE contract_id=$1 AND due_date=$2 AND type=$3 LIMIT 1
+      `, [contract_id, dueStr, typ]);
+      if (exists2.rowCount) {
+        return res.status(409).json({ error: 'Notificação já enviada para esse tipo/data' });
+      }
 
-    if (!row.client_phone) return res.status(400).json({ error: 'Contrato sem telefone do cliente' });
+      if (!row.client_phone) return res.status(400).json({ error: 'Contrato sem telefone do cliente' });
 
-    const mesRefDate = new Date(due.getFullYear(), due.getMonth(), 1);
-    const map = { pre: msgPre, due: msgDue, late: msgLate };
-    const text = map[typ]({
-      nome: row.client_name,
-      tipoContrato: row.description,
-      mesRefDate,
-      vencimentoDate: due,
-      valor: row.value,
-      pix: process.env.PIX_CHAVE || 'SUA_CHAVE_PIX'
-    });
+      const mesRefDate = new Date(due.getFullYear(), due.getMonth(), 1);
+      const map = { pre: msgPre, due: msgDue, late: msgLate };
+      const text = map[typ]({
+        nome: row.client_name,
+        tipoContrato: row.description,
+        mesRefDate,
+        vencimentoDate: due,
+        valor: row.value,
+        pix: process.env.PIX_CHAVE || 'SUA_CHAVE_PIX'
+      });
 
-    // envia via EVO com config da empresa
-    const evo = await sendWhatsapp(req.companyId, { number: row.client_phone, text });
+      // envia via EVO com config da empresa
+      const evo = await sendWhatsapp(req.companyId, { number: row.client_phone, text });
 
-    // registra completo
-    await insertBillingNotification({
-      companyId: req.companyId,
-      billingId: null,                         // manual direto, sem billing atrelado
-      contractId: Number(contract_id),
-      clientId: Number(row.client_id),
-      kind: 'manual',
-      targetDate: isoDate(new Date()),
-      status: evo.ok ? 'sent' : 'failed',
-      provider: 'evo',
-      toNumber: row.client_phone,
-      message: text,
-      providerStatus: evo.status != null ? String(evo.status) : null,
-      providerResponse: evo.data ?? null,
-      error: evo.ok ? null : (evo.error || null),
-      sentAt: evo.ok ? new Date() : null,
-      type: typ,
-      dueDate: dueStr,
-    });
+      // registra completo
+      await insertBillingNotification({
+        companyId: req.companyId,
+        billingId: null,                         // manual direto, sem billing atrelado
+        contractId: Number(contract_id),
+        clientId: Number(row.client_id),
+        kind: 'manual',
+        targetDate: isoDate(new Date()),
+        status: evo.ok ? 'sent' : 'failed',
+        provider: 'evo',
+        toNumber: row.client_phone,
+        message: text,
+        providerStatus: evo.status != null ? String(evo.status) : null,
+        providerResponse: evo.data ?? null,
+        error: evo.ok ? null : (evo.error || null),
+        sentAt: evo.ok ? new Date() : null,
+        type: typ,
+        dueDate: dueStr,
+      });
 
-    res.json({ ok: true, provider: { ok: evo.ok, status: evo.status, data: evo.data } });
+      res.json({ ok: true, provider: { ok: evo.ok, status: evo.status, data: evo.data } });
+    } finally {
+      // libera sempre o advisory lock
+      try {
+        await query('SELECT pg_advisory_unlock($1)', [Number(contract_id)]);
+      } catch (unlockErr) {
+        console.warn('unlock failed', unlockErr);
+      }
+    }
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -331,7 +359,7 @@ router.put('/by-contract/:contractId/month/:year/:month/status', requireAuth, co
   }
 });
 
-// Visão agrupada do mês (para o front)
+// Visão agrupada do mês (para o front) — somente contratos com month_status diferente de 'paid'
 router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
   const ym = String(req.query.ym || '').trim();
   if (!/^\d{4}-\d{2}$/.test(ym)) return res.status(400).json({ error: 'Parâmetro ym (YYYY-MM) obrigatório' });
@@ -344,6 +372,10 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
       WHERE c.company_id = $1
         AND EXTRACT(YEAR FROM bn.due_date) = $2
         AND EXTRACT(MONTH FROM bn.due_date) = $3
+        AND NOT EXISTS (
+          SELECT 1 FROM ${SCHEMA}.contract_month_status cms2
+          WHERE cms2.contract_id = bn.contract_id AND cms2.year = $2 AND cms2.month = $3 AND cms2.status = 'paid'
+        )
       GROUP BY bn.contract_id, bn.type
     `, [req.companyId, year, month]);
 
@@ -351,6 +383,7 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
       SELECT contract_id, status
       FROM ${SCHEMA}.contract_month_status
       WHERE company_id = $1 AND year = $2 AND month = $3
+        AND status <> 'paid'
     `, [req.companyId, year, month]);
 
     const bills = await query(`
@@ -361,6 +394,10 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
       WHERE c.company_id = $1
         AND EXTRACT(YEAR FROM b.billing_date) = $2
         AND EXTRACT(MONTH FROM b.billing_date) = $3
+        AND NOT EXISTS (
+          SELECT 1 FROM ${SCHEMA}.contract_month_status cms2
+          WHERE cms2.contract_id = c.id AND cms2.year = $2 AND cms2.month = $3 AND cms2.status = 'paid'
+        )
       ORDER BY b.billing_date ASC, b.id ASC
     `, [req.companyId, year, month]);
 
@@ -397,11 +434,7 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
 router.post('/check/run', requireAuth, async (req, res) => {
   try {
     let { date, generate = true, pre = true, due = true, late = true } = (req.body || {});
-    let base = new Date();
-    if (date) {
-      const d = new Date(date);
-      if (!isNaN(d)) base = d;
-    }
+    let base = new Date(date);
     await runDaily(base, { generate, pre, due, late });
     res.json({ ok: true, ran_for: base.toISOString().slice(0,10), steps: { generate, pre, due, late } });
   } catch (e) {
