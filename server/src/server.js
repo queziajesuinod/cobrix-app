@@ -1,9 +1,17 @@
-require('dotenv').config({ path: '/app/server/.env.production' }); // 👈 caminho absoluto no container
+// =========================
+// server.js
+// =========================
+
+// 1) Variáveis de ambiente
+require('dotenv').config({ path: '/app/server/.env' }); 
+const express = require('express');
+const path = require('path');
+const cron = require('node-cron');
+
+// 2) App base
 const app = require('./app');
 
-const PORT = process.env.PORT || 3001;
-
-const cron = require('node-cron');
+// 3) CRON JOBS
 const { runDueOnly, runPreOnly, runLateOnly } = require('./jobs/billing-cron');
 
 // D0 - Due
@@ -30,7 +38,17 @@ if (process.env.CRON_LATE) {
   });
 }
 
+// 4) Servir o frontend React buildado
+// Os arquivos do React foram copiados para /app/server/public no Dockerfile
+app.use(express.static(path.join(__dirname, 'public')));
 
+// fallback para React Router (SPA)
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// 5) Start do servidor
+const PORT = process.env.PORT || 3002;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor rodando na porta ${PORT}`);
   console.log(`📊 Schema do banco: ${process.env.DB_SCHEMA || 'public'}`);
