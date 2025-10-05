@@ -40,10 +40,8 @@ if (process.env.CRON_LATE) {
 
 // 4) Servir o frontend React buildado
 // Os arquivos do React foram copiados para /app/server/public no Dockerfile
-app.use(express.static(path.join(__dirname, 'src', 'public')));
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'src', 'public', 'index.html'));
-});
+app.use(express.static(path.join(__dirname, 'public')));
+res.sendFile(path.join(__dirname, 'public', 'index.html'));
 
 
 // 5) Start do servidor
