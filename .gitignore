@@ -18,3 +18,5 @@ docker-compose.yml
 DockerFile
 .dockerignore
 *.log
+client/dist
+server/src/public
