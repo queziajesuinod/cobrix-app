@@ -9,7 +9,7 @@ const app = express()
 
 
 app.use(helmet())
-const allowlist = (process.env.ALLOWED_ORIGINS || 'http://62.72.63.137:3002')
+const allowlist = ('http://62.72.63.137:3002')
   .split(',').map(s => s.trim()).filter(Boolean)
 app.use(cors({
   origin: (origin, cb) => { if (!origin || allowlist.includes(origin)) return cb(null, true); return cb(new Error('Not allowed by CORS')) },
