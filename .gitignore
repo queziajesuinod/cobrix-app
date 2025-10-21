@@ -20,3 +20,4 @@ DockerFile
 *.log
 client/dist
 server/src/public
+.DS_Store

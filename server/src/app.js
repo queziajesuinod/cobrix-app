@@ -9,8 +9,12 @@ const app = express()
 
 
 app.use(helmet())
-const allowlist = ('http://62.72.63.137:3002')
-  .split(',').map(s => s.trim()).filter(Boolean)
+const allowlist = [
+  'http://localhost:5173',        // Frontend local
+  'http://localhost:3005',        // API local
+  'http://62.72.63.137:3005',     // IP público (opcional)
+  'https://cobrix.aleftec.com.br' // Domínio em produção (HTTPS)
+]
 app.use(cors({
   origin: (origin, cb) => { if (!origin || allowlist.includes(origin)) return cb(null, true); return cb(new Error('Not allowed by CORS')) },
   credentials: true
