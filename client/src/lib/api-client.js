@@ -2,7 +2,7 @@ import axios from 'axios'
 import { authService } from '@/features/auth/auth.service'
 
 const api = axios.create({ 
-  baseURL: 'https://apicobrix.aleftec.com.br', 
+  baseURL: 'https://apicobrix.aleftec.com.br/api', 
   withCredentials: true 
 })
 
