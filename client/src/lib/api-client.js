@@ -1,11 +1,28 @@
 import axios from 'axios'
 import { authService } from '@/features/auth/auth.service'
 
+// ✅ OPÇÃO 3: Detecção Automática de Domínio
+// A URL da API é detectada automaticamente baseada no hostname
+// Vantagem: Funciona em qualquer ambiente sem configuração
+
+const getApiUrl = () => {
+  const hostname = window.location.hostname
+  
+  // Mapeamento de domínios
+  const domainMap = {
+    'cobrix.aleftec.com.br': 'https://apicobrix.aleftec.com.br',
+    'localhost': 'http://localhost:3002',
+    '127.0.0.1': 'http://localhost:3002',
+  }
+  
+  // Retorna a URL mapeada ou usa o próprio origin como fallback
+  return domainMap[hostname] || window.location.origin
+}
+
 const api = axios.create({ 
-  baseURL: 'https://apicobrix.aleftec.com.br/api', 
+  baseURL: `${getApiUrl()}/api`,
   withCredentials: true 
 })
-
 
 // Função para obter o selectedCompanyId atual
 const getSelectedCompanyId = () => {
@@ -45,3 +62,4 @@ api.interceptors.request.use((config) => {
 
 export default api
 export { api }
+
