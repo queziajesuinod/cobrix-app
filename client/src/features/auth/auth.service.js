@@ -1,7 +1,9 @@
 // client/src/features/auth/auth.service.js
 
 const AUTH_KEY = 'auth';
-const BASE = '/api';
+const BASE = import.meta.env.VITE_API_URL+'/api' || 'http://localhost:3002';
+
+
 
 /** Lê o objeto { token, user } do storage */
 function getAuth() {
