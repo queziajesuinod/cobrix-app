@@ -1,7 +1,7 @@
 // client/src/features/auth/auth.service.js
 
 const AUTH_KEY = 'auth';
-const BASE = import.meta.env.VITE_API_URL+'/api' || 'http://localhost:3002';
+const BASE =  'https://apicobrix.aleftec.com.br/api'; // URL da API atualizada
 
 
 

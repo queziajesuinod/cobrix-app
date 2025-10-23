@@ -2,7 +2,7 @@ import axios from 'axios'
 import { authService } from '@/features/auth/auth.service'
 
 const api = axios.create({ 
-  baseURL: import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : '/api', 
+  baseURL: 'https://apicobrix.aleftec.com.br', 
   withCredentials: true 
 })
 
