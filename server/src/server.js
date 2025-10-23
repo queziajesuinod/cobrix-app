@@ -41,13 +41,17 @@ if (process.env.CRON_LATE) {
 // 4) Servir o frontend React buildado
 // Os arquivos do React foram copiados para /app/server/public no Dockerfile
 // 4) Servir o frontend React buildado (compatível com execução via Docker)
-const rootDir = path.resolve(__dirname, '..'); // sobe 1 nível se estiver em /src
-const publicDir = path.join(rootDir, 'public');
+// 4) Servir o frontend React buildado (versão final compatível com Docker)
+const publicDir = path.resolve(__dirname, '../public');
 
+// Garante que o Express sirva os arquivos estáticos corretamente
 app.use(express.static(publicDir));
+
+// Redireciona todas as rotas não-API para o index.html do React
 app.get('*', (req, res) => {
   res.sendFile(path.join(publicDir, 'index.html'));
 });
+
 
 
 
