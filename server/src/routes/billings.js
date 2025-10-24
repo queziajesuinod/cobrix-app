@@ -8,12 +8,12 @@ const { msgPre, msgDue, msgLate } = require('../services/message-templates');
 const router = express.Router();
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 
-function validStatus(s) { return ['pending','paid','canceled'].includes(String(s||'').toLowerCase()); }
-function pad2(n) { return String(n).padStart(2,'0'); }
-function isoDate(d) { return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; }
+function validStatus(s) { return ['pending', 'paid', 'canceled'].includes(String(s || '').toLowerCase()); }
+function pad2(n) { return String(n).padStart(2, '0'); }
+function isoDate(d) { return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
 function monthBounds(ym) {
-  const [y,m] = ym.split('-').map(Number);
-  const start = new Date(y, m-1, 1);
+  const [y, m] = ym.split('-').map(Number);
+  const start = new Date(y, m - 1, 1);
   const end = new Date(y, m, 1);
   return { y, m, start: isoDate(start), end: isoDate(end) };
 }
@@ -21,7 +21,7 @@ function monthBounds(ym) {
 // NEW: parse "YYYY-MM-DD" as local date to avoid timezone shift
 function parseDateIsoLocal(s) {
   if (!s) return null;
-  const raw = String(s).slice(0,10);
+  const raw = String(s).slice(0, 10);
   const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m) {
     const d = new Date(s);
@@ -182,7 +182,7 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
   try {
     const { contract_id, date, type } = req.body || {};
     const typ = String(type || '').toLowerCase();
-    if (!['pre','due','late'].includes(typ)) return res.status(400).json({ error: 'type inválido' });
+    if (!['pre', 'due', 'late'].includes(typ)) return res.status(400).json({ error: 'type inválido' });
     if (!contract_id || !date) return res.status(400).json({ error: 'contract_id e date são obrigatórios' });
 
     const c = await query(`
@@ -195,7 +195,17 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
     if (!row) return res.status(404).json({ error: 'Contrato não encontrado' });
 
     // parse de date como local para evitar shift de timezone
-    const due = parseDateIsoLocal(date);
+    const baseDate = new Date(); // mês atual
+    const dueDay = row.billing_day || 1; // default 1 se não tiver
+    const year = baseDate.getFullYear();
+    const month = baseDate.getMonth(); // mês atual (0-11)
+
+    // evita erro se o mês tiver menos dias (ex: dia 30 em fevereiro)
+    const lastDay = new Date(year, month + 1, 0).getDate();
+    const day = Math.min(dueDay, lastDay);
+
+    // 🔹 Cria a data final de vencimento
+    const due = new Date(year, month, day);
     if (!due) return res.status(400).json({ error: 'date inválida' });
     const dueStr = isoDate(due);
 
@@ -203,7 +213,7 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
     const cms = await query(`
       SELECT status FROM ${SCHEMA}.contract_month_status
       WHERE contract_id=$1 AND year=$2 AND month=$3
-    `, [contract_id, due.getFullYear(), due.getMonth()+1]);
+    `, [contract_id, due.getFullYear(), due.getMonth() + 1]);
     if (cms.rows[0] && (cms.rows[0].status === 'paid' || cms.rows[0].status === 'canceled')) {
       return res.status(409).json({ error: 'Mês já está PAGO/CANCELADO — notificação bloqueada' });
     }
@@ -436,7 +446,7 @@ router.post('/check/run', requireAuth, async (req, res) => {
     let { date, generate = true, pre = true, due = true, late = true } = (req.body || {});
     let base = new Date(date);
     await runDaily(base, { generate, pre, due, late });
-    res.json({ ok: true, ran_for: base.toISOString().slice(0,10), steps: { generate, pre, due, late } });
+    res.json({ ok: true, ran_for: base.toISOString().slice(0, 10), steps: { generate, pre, due, late } });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
