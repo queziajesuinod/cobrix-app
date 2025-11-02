@@ -52,9 +52,6 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
       filters.push(`DATE(c.start_date) <= DATE(${activeOn}) AND DATE(c.end_date) >= DATE(${activeOn})`);
     }
 
-    // "não pago" no mês-alvo: inclui NULL (sem registro) e qualquer status ≠ 'paid'
-    filters.push(`(cms.status IS NULL OR cms.status <> 'paid')`);
-
     const whereSql = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
 
     // 1) COUNT com os MESMOS JOINs/WHERE

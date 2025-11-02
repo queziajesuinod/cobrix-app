@@ -76,7 +76,10 @@ export default function ManualNotificationsPage(){
           <Grid item xs={12} md={5}>
             <Select fullWidth displayEmpty value={contractId} onChange={(e)=>setContractId(e.target.value)}>
               <MenuItem value=""><em>Todos os contratos</em></MenuItem>
-              {(contractsQ.data||[]).map(c => <MenuItem key={c.id} value={c.id}>#{c.id} · {c.description}</MenuItem>)}
+              {(contractsQ.data||[]).map(c => {
+                const clientName = clientsQ.data?.find(cl => cl.id === c.client_id)?.name || `#${c.client_id}`
+                return <MenuItem key={c.id} value={c.id}>#{c.id} · {c.description} — {clientName}</MenuItem>
+              })}
             </Select>
           </Grid>
         </Grid>
@@ -100,7 +103,7 @@ export default function ManualNotificationsPage(){
               <Grid container spacing={1} alignItems="center">
                 <Grid item xs={12} md={8}>
                   <Typography variant="subtitle1" sx={{fontWeight:700}}>
-                    Contrato #{c.id} · {c.description} — cliente #{c.client_id}
+                    Contrato #{c.id} · {c.description} — {clientsQ.data?.find(cl => cl.id === c.client_id)?.name || `cliente #${c.client_id}`}
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
                     Vencimento: {dueStr} — Valor: R$ {Number(c.value).toFixed(2)}

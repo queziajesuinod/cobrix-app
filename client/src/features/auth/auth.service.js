@@ -1,7 +1,7 @@
 // client/src/features/auth/auth.service.js
 
 const AUTH_KEY = 'auth';
-const BASE =  'https://apicobrix.aleftec.com.br/api'; // URL da API atualizada
+const BASE =  'http://localhost:3005/api'; // URL da API atualizada
 
 
 

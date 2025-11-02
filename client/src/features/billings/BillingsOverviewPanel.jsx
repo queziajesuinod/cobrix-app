@@ -8,15 +8,43 @@ import { formatDateOnly } from '@/utils/date'
 const label = (t) => t === 'pre' ? 'Avisado (D-3)' : t === 'due' ? 'Vence hoje (D0)' : 'Atrasado (D+4)'
 const color = (t) => t === 'pre' ? 'info' : t === 'due' ? 'warning' : 'error'
 
-export default function BillingsOverviewPanel({ ym }) {
+export default function BillingsOverviewPanel({ ym, clientId, contractId }) {
   const qc = useQueryClient()
-  const q = useQuery({ queryKey: ['billings_overview', ym], queryFn: () => billingsService.overview(ym), enabled: !!ym })
-  const bulk = useMutation({ mutationFn: ({ contractId, y, m, status }) => billingsService.setMonthStatus(contractId, y, m, status), onSuccess: () => { qc.invalidateQueries({ queryKey: ['billings_overview', ym] }); qc.invalidateQueries({ queryKey: ['billings'] }) } })
+  const q = useQuery({
+    queryKey: ['billings_overview', ym, clientId || null, contractId || null],
+    queryFn: () => billingsService.overview(ym, {
+      clientId: clientId || undefined,
+      contractId: contractId || undefined
+    }),
+    enabled: !!ym
+  })
+  const bulk = useMutation({
+    mutationFn: ({ contractId, y, m, status }) => billingsService.setMonthStatus(contractId, y, m, status),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['billings_overview'] })
+      qc.invalidateQueries({ queryKey: ['billings'] })
+    }
+  })
   const [y, m] = ym ? ym.split('-').map(Number) : []
 
-  const items = useMemo(() => q.data || [], [q.data])
+  const items = useMemo(() => {
+    let list = q.data || []
+    if (contractId) {
+      list = list.filter(item => Number(item.contract_id) === Number(contractId))
+    }
+    if (clientId) {
+      list = list.filter(item => item.client_id != null && Number(item.client_id) === Number(clientId))
+    }
+    return list
+  }, [q.data, contractId, clientId])
 
   if (!ym) return null
+  if (q.isLoading) {
+    return <Typography variant="body2">Carregando visão do mês…</Typography>
+  }
+  if (q.isError) {
+    return <Typography variant="body2" color="error">Falha ao carregar visão do mês.</Typography>
+  }
   return (
     <Stack spacing={1}>
       {items.length === 0 ? (

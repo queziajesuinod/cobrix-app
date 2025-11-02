@@ -24,9 +24,11 @@ async function initDb() {
         name TEXT NOT NULL,
         evo_api_url TEXT,
         evo_api_key TEXT,
+        pix_key TEXT,
         created_at TIMESTAMPTZ DEFAULT now()
       );
     `);
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS pix_key TEXT;`);
     await c.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -129,6 +131,16 @@ async function initDb() {
       CREATE UNIQUE INDEX IF NOT EXISTS uq_bn_auto_one_per_kind_month
       ON ${schema}.billing_notifications (company_id, contract_id, type, due_month)
       WHERE kind = 'auto';
+    `);
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS message_templates (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        type TEXT NOT NULL,
+        template TEXT NOT NULL,
+        updated_at TIMESTAMPTZ DEFAULT now(),
+        UNIQUE (company_id, type)
+      );
     `);
   });
 }

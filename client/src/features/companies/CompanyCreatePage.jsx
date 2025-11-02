@@ -9,6 +9,7 @@ export default function CompanyCreatePage(){
   const [name, setName] = React.useState('')
   const [evoUrl, setEvoUrl] = React.useState('')
   const [evoKey, setEvoKey] = React.useState('')
+  const [pixKey, setPixKey] = React.useState('')
   const [addUser, setAddUser] = React.useState(false)
   const [uEmail, setUEmail] = React.useState('')
   const [uPass, setUPass] = React.useState('')
@@ -21,6 +22,7 @@ export default function CompanyCreatePage(){
       name: name.trim(),
       evo_api_url: evoUrl || undefined,
       evo_api_key: evoKey || undefined,
+      pix_key: pixKey || undefined,
       initial_users: addUser && uEmail && uPass ? [{ email: uEmail, password: uPass, role: uRole }] : []
     }),
     onSuccess: (data) => nav(`/companies/${data.id}/settings`)
@@ -44,6 +46,9 @@ export default function CompanyCreatePage(){
           </Grid>
           <Grid item xs={12} md={6}>
             <TextField label="EVO API KEY" type="password" value={evoKey} onChange={e=>setEvoKey(e.target.value)} fullWidth />
+          </Grid>
+          <Grid item xs={12} md={6}>
+            <TextField label="Chave PIX" value={pixKey} onChange={e=>setPixKey(e.target.value)} fullWidth placeholder="Chave PIX usada nas notificações" />
           </Grid>
 
           <Grid item xs={12}>

@@ -22,7 +22,19 @@ async function initDb() {
       CREATE TABLE IF NOT EXISTS companies (
         id SERIAL PRIMARY KEY,
         name TEXT NOT NULL,
+        pix_key TEXT,
         created_at TIMESTAMPTZ DEFAULT now()
+      );
+    `);
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS pix_key TEXT;`);
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS message_templates (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        type TEXT NOT NULL,
+        template TEXT NOT NULL,
+        updated_at TIMESTAMPTZ DEFAULT now(),
+        UNIQUE (company_id, type)
       );
     `);
   });

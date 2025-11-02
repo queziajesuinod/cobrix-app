@@ -19,8 +19,8 @@ import LogoutIcon from '@mui/icons-material/Logout'
 import AutorenewIcon from '@mui/icons-material/Autorenew'
 import SendIcon from '@mui/icons-material/Send'
 import NotificationsOutlinedIcon from '@mui/icons-material/NotificationsOutlined'
+import EditNoteIcon from '@mui/icons-material/EditNote'
 import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings'
-import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined'
 import ExpandLess from '@mui/icons-material/ExpandLess'
 import ExpandMore from '@mui/icons-material/ExpandMore'
 
@@ -40,6 +40,7 @@ const navItems = (role, companyId) => [
     children: [
       { to: '/notifications/auto', label: 'Automático', icon: <AutorenewIcon /> },
       { to: '/notifications/manual', label: 'Manual', icon: <SendIcon /> },
+      { to: '/notifications/templates', label: 'Modelos', icon: <EditNoteIcon /> },
     ],
   },
 

@@ -11,8 +11,8 @@ const getApiUrl = () => {
   // Mapeamento de domínios
   const domainMap = {
     'cobrix.aleftec.com.br': 'https://apicobrix.aleftec.com.br',
-    'localhost': 'http://localhost:3002',
-    '127.0.0.1': 'http://localhost:3002',
+    'localhost': 'http://localhost:3005',
+    '127.0.0.1': 'http://localhost:3005',
   }
   
   // Retorna a URL mapeada ou usa o próprio origin como fallback

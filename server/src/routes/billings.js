@@ -243,13 +243,13 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
 
       const mesRefDate = new Date(due.getFullYear(), due.getMonth(), 1);
       const map = { pre: msgPre, due: msgDue, late: msgLate };
-      const text = map[typ]({
+      const text = await map[typ]({
         nome: row.client_name,
         tipoContrato: row.description,
         mesRefDate,
         vencimentoDate: due,
         valor: row.value,
-        pix: process.env.PIX_CHAVE || 'SUA_CHAVE_PIX'
+        companyId: req.companyId,
       });
 
       // envia via EVO com config da empresa
@@ -374,65 +374,94 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
   const ym = String(req.query.ym || '').trim();
   if (!/^\d{4}-\d{2}$/.test(ym)) return res.status(400).json({ error: 'Parâmetro ym (YYYY-MM) obrigatório' });
   const [year, month] = ym.split('-').map(Number);
+  const clientIdRaw = req.query.clientId;
+  const contractIdRaw = req.query.contractId;
+  const clientId = clientIdRaw ? Number(clientIdRaw) : null;
+  const contractId = contractIdRaw ? Number(contractIdRaw) : null;
+  if (clientIdRaw && (clientId == null || Number.isNaN(clientId))) return res.status(400).json({ error: 'clientId inválido' });
+  if (contractIdRaw && (contractId == null || Number.isNaN(contractId))) return res.status(400).json({ error: 'contractId inválido' });
   try {
     const notif = await query(`
-      SELECT bn.contract_id, bn.type, COUNT(*) AS cnt, MAX(bn.sent_at) AS last_sent_at
+      SELECT bn.contract_id, bn.type, COUNT(*) AS cnt, MAX(bn.sent_at) AS last_sent_at,
+             c.client_id, c.description AS contract_description, cl.name AS client_name
       FROM ${SCHEMA}.billing_notifications bn
       JOIN ${SCHEMA}.contracts c ON c.id = bn.contract_id
+      JOIN ${SCHEMA}.clients cl ON cl.id = c.client_id
       WHERE c.company_id = $1
         AND EXTRACT(YEAR FROM bn.due_date) = $2
         AND EXTRACT(MONTH FROM bn.due_date) = $3
+        AND ($4::int IS NULL OR c.client_id = $4)
+        AND ($5::int IS NULL OR c.id = $5)
         AND NOT EXISTS (
           SELECT 1 FROM ${SCHEMA}.contract_month_status cms2
           WHERE cms2.contract_id = bn.contract_id AND cms2.year = $2 AND cms2.month = $3 AND cms2.status = 'paid'
         )
-      GROUP BY bn.contract_id, bn.type
-    `, [req.companyId, year, month]);
+      GROUP BY bn.contract_id, bn.type, c.client_id, c.description, cl.name
+    `, [req.companyId, year, month, clientId, contractId]);
 
     const cms = await query(`
-      SELECT contract_id, status
-      FROM ${SCHEMA}.contract_month_status
-      WHERE company_id = $1 AND year = $2 AND month = $3
-        AND status <> 'paid'
-    `, [req.companyId, year, month]);
+      SELECT cms.contract_id, cms.status, c.client_id, c.description AS contract_description, cl.name AS client_name
+      FROM ${SCHEMA}.contract_month_status cms
+      JOIN ${SCHEMA}.contracts c ON c.id = cms.contract_id
+      JOIN ${SCHEMA}.clients cl ON cl.id = c.client_id
+      WHERE cms.company_id = $1 AND cms.year = $2 AND cms.month = $3
+        AND cms.status <> 'paid'
+        AND ($4::int IS NULL OR c.client_id = $4)
+        AND ($5::int IS NULL OR c.id = $5)
+    `, [req.companyId, year, month, clientId, contractId]);
 
     const bills = await query(`
-      SELECT b.*, c.description AS contract_description, cl.name AS client_name
+      SELECT b.*, c.description AS contract_description, c.client_id AS contract_client_id, cl.name AS client_name
       FROM ${SCHEMA}.billings b
       JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
       JOIN ${SCHEMA}.clients   cl ON cl.id = c.client_id
       WHERE c.company_id = $1
         AND EXTRACT(YEAR FROM b.billing_date) = $2
         AND EXTRACT(MONTH FROM b.billing_date) = $3
+        AND ($4::int IS NULL OR cl.id = $4)
+        AND ($5::int IS NULL OR c.id = $5)
         AND NOT EXISTS (
           SELECT 1 FROM ${SCHEMA}.contract_month_status cms2
           WHERE cms2.contract_id = c.id AND cms2.year = $2 AND cms2.month = $3 AND cms2.status = 'paid'
         )
       ORDER BY b.billing_date ASC, b.id ASC
-    `, [req.companyId, year, month]);
+    `, [req.companyId, year, month, clientId, contractId]);
 
     const byContract = {};
     for (const r of bills.rows) {
       const key = r.contract_id;
-      byContract[key] ??= {
+      const entry = byContract[key] ?? {
         contract_id: key,
-        contract_description: r.contract_description,
-        client_name: r.client_name,
+        contract_description: null,
+        client_name: null,
+        client_id: null,
         month_status: 'pending',
         notifications: {},
         billings: []
       };
-      byContract[key].billings.push(r);
+      entry.contract_description ??= r.contract_description;
+      entry.client_name ??= r.client_name;
+      entry.client_id ??= r.contract_client_id != null ? Number(r.contract_client_id) : entry.client_id;
+      entry.billings.push(r);
+      byContract[key] = entry;
     }
     for (const n of notif.rows) {
       const key = n.contract_id;
-      byContract[key] ??= { contract_id: key, contract_description: null, client_name: null, month_status: 'pending', notifications: {}, billings: [] };
-      byContract[key].notifications[n.type] = { count: Number(n.cnt), last_sent_at: n.last_sent_at };
+      const entry = byContract[key] ?? { contract_id: key, contract_description: null, client_name: null, client_id: null, month_status: 'pending', notifications: {}, billings: [] };
+      entry.contract_description ??= n.contract_description || entry.contract_description;
+      entry.client_name ??= n.client_name || entry.client_name;
+      entry.client_id ??= n.client_id != null ? Number(n.client_id) : entry.client_id;
+      entry.notifications[n.type] = { count: Number(n.cnt), last_sent_at: n.last_sent_at };
+      byContract[key] = entry;
     }
     for (const s of cms.rows) {
       const key = s.contract_id;
-      byContract[key] ??= { contract_id: key, contract_description: null, client_name: null, month_status: 'pending', notifications: {}, billings: [] };
-      byContract[key].month_status = s.status;
+      const entry = byContract[key] ?? { contract_id: key, contract_description: null, client_name: null, client_id: null, month_status: 'pending', notifications: {}, billings: [] };
+      entry.month_status = s.status;
+      entry.contract_description ??= s.contract_description || entry.contract_description;
+      entry.client_name ??= s.client_name || entry.client_name;
+      entry.client_id ??= s.client_id != null ? Number(s.client_id) : entry.client_id;
+      byContract[key] = entry;
     }
     res.json(Object.values(byContract));
   } catch (e) {

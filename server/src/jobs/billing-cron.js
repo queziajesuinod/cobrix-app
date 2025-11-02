@@ -157,13 +157,13 @@ async function sendPreReminders(now = new Date()) {
     if (!c.client_phone) continue;
 
     const mesRefDate = new Date(due.getFullYear(), due.getMonth(), 1);
-    const text = msgPre({
+    const text = await msgPre({
       nome: c.client_name,
       tipoContrato: c.description,
       mesRefDate,
       vencimentoDate: due,
       valor: c.value,
-      pix: process.env.PIX_CHAVE || "SUA_CHAVE_PIX"
+      companyId: c.company_id,
     });
 
     let evo = { ok: false, error: "no-phone" };
@@ -213,13 +213,13 @@ async function sendDueReminders(now = new Date()) {
     if (!r.client_phone) continue;
 
     const mesRefDate = new Date(now.getFullYear(), now.getMonth(), 1);
-    const text = msgDue({
+    const text = await msgDue({
       nome: r.client_name,
       tipoContrato: r.description,
       mesRefDate,
       vencimentoDate: new Date(todayStr),
       valor: r.amount,
-      pix: process.env.PIX_CHAVE || "SUA_CHAVE_PIX"
+      companyId: r.company_id,
     });
 
     let evo = { ok: false, error: "no-phone" };
@@ -264,13 +264,13 @@ async function sendLateReminders(now = new Date()) {
     if (!r.client_phone) continue;
 
     const mesRefDate = new Date(target.getFullYear(), target.getMonth(), 1);
-    const text = msgLate({
+    const text = await msgLate({
       nome: r.client_name,
       tipoContrato: r.description,
       mesRefDate,
       vencimentoDate: new Date(targetStr),
       valor: r.amount,
-      pix: process.env.PIX_CHAVE || "SUA_CHAVE_PIX"
+      companyId: r.company_id,
     });
 
     let evo = { ok: false, error: "no-phone" };
