@@ -3,12 +3,12 @@ import { useNavigate } from 'react-router-dom'
 import { useMutation } from '@tanstack/react-query'
 import { Card, CardContent, Typography, Grid, TextField, Button, Checkbox, FormControlLabel, MenuItem, Stack, Alert } from '@mui/material'
 import { companyService } from './company.service'
+import { useAuth } from '@/features/auth/AuthContext'
 
 export default function CompanyCreatePage(){
   const nav = useNavigate()
+  const { setSelectedCompanyId } = useAuth()
   const [name, setName] = React.useState('')
-  const [evoUrl, setEvoUrl] = React.useState('')
-  const [evoKey, setEvoKey] = React.useState('')
   const [pixKey, setPixKey] = React.useState('')
   const [addUser, setAddUser] = React.useState(false)
   const [uEmail, setUEmail] = React.useState('')
@@ -20,12 +20,15 @@ export default function CompanyCreatePage(){
   const mut = useMutation({
     mutationFn: () => companyService.create({
       name: name.trim(),
-      evo_api_url: evoUrl || undefined,
-      evo_api_key: evoKey || undefined,
       pix_key: pixKey || undefined,
       initial_users: addUser && uEmail && uPass ? [{ email: uEmail, password: uPass, role: uRole }] : []
     }),
-    onSuccess: (data) => nav(`/companies/${data.id}/settings`)
+    onSuccess: (data) => {
+      if (data?.id) {
+        setSelectedCompanyId?.(data.id)
+      }
+      nav(`/integration/evo`)
+    }
   })
 
   return (
@@ -38,14 +41,7 @@ export default function CompanyCreatePage(){
             <TextField label="Nome da empresa" value={name} onChange={e=>setName(e.target.value)} fullWidth />
           </Grid>
           <Grid item xs={12} md={6}>
-            <Alert severity="info">Opcional: você pode já definir a integração EVO ao criar.</Alert>
-          </Grid>
-
-          <Grid item xs={12} md={6}>
-            <TextField label="EVO API URL" placeholder="https://evo.aleftec.com.br/message/sendText/SEU_CANAL" value={evoUrl} onChange={e=>setEvoUrl(e.target.value)} fullWidth />
-          </Grid>
-          <Grid item xs={12} md={6}>
-            <TextField label="EVO API KEY" type="password" value={evoKey} onChange={e=>setEvoKey(e.target.value)} fullWidth />
+            <Alert severity="info">A integração com o WhatsApp será criada automaticamente ao salvar. Você poderá conectar o WhatsApp na próxima tela.</Alert>
           </Grid>
           <Grid item xs={12} md={6}>
             <TextField label="Chave PIX" value={pixKey} onChange={e=>setPixKey(e.target.value)} fullWidth placeholder="Chave PIX usada nas notificações" />
@@ -61,7 +57,7 @@ export default function CompanyCreatePage(){
           {addUser && (
             <>
               <Grid item xs={12} md={5}>
-                <TextField label="Email" value={uEmail} onChange={e=>setUEmail(e.target.value)} fullWidth />
+                <TextField label="Email" type="email" value={uEmail} onChange={e=>setUEmail(e.target.value)} fullWidth />
               </Grid>
               <Grid item xs={12} md={5}>
                 <TextField label="Senha" type="password" value={uPass} onChange={e=>setUPass(e.target.value)} fullWidth />

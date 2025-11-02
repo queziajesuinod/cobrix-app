@@ -1,15 +1,18 @@
 import React from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Box, Tabs, Tab, Card, CardContent, Snackbar, Alert } from '@mui/material'
+import { Box, Tabs, Tab, Card, CardContent, Snackbar, Alert, Stack, Typography, Button } from '@mui/material'
 import { companyService } from './company.service'
 import CompanyDataForm from './CompanyDataForm'
-import CompanyEvoIntegrationForm from './CompanyEvoIntegrationForm'
 import CompanyUsersPanel from './CompanyUsersPanel'
 import { companyIntegrationService } from './company.integration.service'
+import RefreshIcon from '@mui/icons-material/Refresh'
+import QrCodeIcon from '@mui/icons-material/QrCode'
+import { useNavigate } from 'react-router-dom'
 
 export default function CompanySettingsPage(){
   const { id } = useParams()
+  const navigate = useNavigate()
   const qc = useQueryClient()
   const [tab, setTab] = React.useState(0)
   const [toast, setToast] = React.useState(null)
@@ -17,17 +20,8 @@ export default function CompanySettingsPage(){
   const qCompany = useQuery({ queryKey: ['company', id], queryFn: ()=>companyService.get(id), enabled: !!id })
   const mUpdate = useMutation({ mutationFn: (payload)=>companyService.update(id, payload), onSuccess: ()=>{ qc.invalidateQueries({queryKey:['company', id]}); setToast({severity:'success', msg:'Empresa atualizada.'}) } })
 
-  // EVO integration
-  const qEvo = useQuery({ queryKey: ['company_evo', id], queryFn: ()=>companyIntegrationService.getEvo(id), enabled: !!id })
-  const mEvo = useMutation({
-    mutationFn: (payload)=>companyIntegrationService.updateEvo(id, payload),
-    onSuccess: ()=>{ qc.invalidateQueries({queryKey:['company_evo', id]}); setToast({severity:'success', msg:'Integração salva.'}) }
-  })
-  const mEvoTest = useMutation({
-    mutationFn: (payload)=>companyIntegrationService.testEvo(id, payload),
-    onSuccess: (data)=> setToast({severity:'success', msg:`Teste enviado. Status ${data?.provider?.status||'-'}` }),
-    onError: (e)=> setToast({severity:'error', msg: e?.response?.data?.error || e.message})
-  })
+  // EVO integration status
+  const qEvo = useQuery({ queryKey: ['company_evo_status', id], queryFn: ()=>companyIntegrationService.getEvoStatus(id), enabled: !!id })
 
   return (
     <Box>
@@ -56,12 +50,48 @@ export default function CompanySettingsPage(){
       {tab===1 && (
         <Card variant="outlined">
           <CardContent>
-            <CompanyEvoIntegrationForm
-              defaultValues={qEvo.data}
-              submitting={mEvo.isPending}
-              onSubmit={(payload)=>mEvo.mutate(payload)}
-              onTest={(payload)=>mEvoTest.mutate(payload)}
-            />
+            <Stack spacing={2}>
+              <Typography variant="h6" sx={{ fontWeight: 600 }}>Status da integração WhatsApp</Typography>
+              {qEvo.isLoading ? (
+                <Typography variant="body2">Consultando status…</Typography>
+              ) : qEvo.error ? (
+                <Alert severity="error">Falha ao obter status: {qEvo.error?.response?.data?.error || qEvo.error?.message}</Alert>
+              ) : (
+                <Stack spacing={1}>
+                  <Typography variant="body2">
+                    Instância: <strong>{qEvo.data?.instance || '—'}</strong>
+                  </Typography>
+                  <Typography variant="body2">
+                    Conexão: <strong>{(qEvo.data?.connectionStatus || 'desconhecida').toUpperCase()}</strong>
+                  </Typography>
+                  <Alert severity={qEvo.data?.connectionStatus === 'open' ? 'success' : 'warning'}>
+                    {qEvo.data?.connectionStatus === 'open'
+                      ? 'Instância conectada. Nenhuma ação necessária.'
+                      : 'Instância desconectada. Utilize a página de conexão para escanear o QR Code.'}
+                  </Alert>
+                </Stack>
+              )}
+              <Stack direction="row" spacing={1}>
+                <Button
+                  variant="outlined"
+                  startIcon={<RefreshIcon />}
+                  onClick={()=>qEvo.refetch()}
+                  disabled={qEvo.isLoading}
+                >
+                  Atualizar status
+                </Button>
+                <Button
+                  variant="contained"
+                  startIcon={<QrCodeIcon />}
+                  onClick={()=>navigate('/integration/evo')}
+                >
+                  Gerenciar conexão
+                </Button>
+              </Stack>
+              <Typography variant="caption" color="text.secondary">
+                A conexão pode ser gerenciada por qualquer usuário em <strong>Integração &gt; WhatsApp</strong>.
+              </Typography>
+            </Stack>
           </CardContent>
         </Card>
       )}

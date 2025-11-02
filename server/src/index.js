@@ -25,10 +25,12 @@ async function initDb() {
         evo_api_url TEXT,
         evo_api_key TEXT,
         pix_key TEXT,
+        evo_instance TEXT,
         created_at TIMESTAMPTZ DEFAULT now()
       );
     `);
     await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS pix_key TEXT;`);
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS evo_instance TEXT;`);
     await c.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,

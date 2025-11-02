@@ -5,6 +5,7 @@ import AppShell from '@/layouts/AppShell'
 import AutoNotificationsPage from '@/features/notifications/AutoNotificationsPage'
 import ManualNotificationsPage from '@/features/notifications/ManualNotificationsPage'
 import MessageTemplatesPage from '@/features/notifications/MessageTemplatesPage'
+import EvoConnectionPage from '@/features/integration/EvoConnectionPage'
 
 import CompanyCreatePage from '@/features/companies/CompanyCreatePage'
 const LoginPage = lazy(() => import('@/features/auth/LoginPage'))
@@ -30,6 +31,7 @@ export default function AppRouter() {
         <Route path="/notifications/auto" element={<ProtectedRoute><AppShell><AutoNotificationsPage /></AppShell></ProtectedRoute>} />
         <Route path="/notifications/manual" element={<ProtectedRoute><AppShell><ManualNotificationsPage /></AppShell></ProtectedRoute>} />
         <Route path="/notifications/templates" element={<ProtectedRoute><AppShell><MessageTemplatesPage /></AppShell></ProtectedRoute>} />
+        <Route path="/integration/evo" element={<ProtectedRoute><AppShell><EvoConnectionPage /></AppShell></ProtectedRoute>} />
 
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>

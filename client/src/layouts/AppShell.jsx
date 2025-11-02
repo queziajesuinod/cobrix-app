@@ -19,6 +19,7 @@ import LogoutIcon from '@mui/icons-material/Logout'
 import AutorenewIcon from '@mui/icons-material/Autorenew'
 import SendIcon from '@mui/icons-material/Send'
 import NotificationsOutlinedIcon from '@mui/icons-material/NotificationsOutlined'
+import QrCodeIcon from '@mui/icons-material/QrCode'
 import EditNoteIcon from '@mui/icons-material/EditNote'
 import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings'
 import ExpandLess from '@mui/icons-material/ExpandLess'
@@ -31,7 +32,8 @@ const navItems = (role, companyId) => [
   { type: 'item', to: '/dashboard', label: 'Dashboard', icon: <DashboardIcon /> },
   { type: 'item', to: '/clients', label: 'Clientes', icon: <PeopleIcon /> },
   { type: 'item', to: '/contracts', label: 'Contratos', icon: <AssignmentIcon /> },
- 
+  { type: 'item', to: '/integration/evo', label: 'Integração', icon: <QrCodeIcon /> },
+
   {
     type: 'group',
     key: 'notifications',

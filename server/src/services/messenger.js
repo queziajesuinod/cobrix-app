@@ -1,6 +1,7 @@
 // server/src/services/messenger.js
 const axios = require('axios');
 const { query } = require('../db');
+const { buildSendUrl, baseUrl } = require('./evo-api');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 
@@ -15,13 +16,17 @@ function normNumber(n, { forceCountry } = {}) {
 async function getCompanyEvoConfig(companyId) {
   // ⚠️ usa schema configurado
   const r = await query(
-    `SELECT evo_api_url, evo_api_key FROM ${SCHEMA}.companies WHERE id=$1`,
+    `SELECT evo_api_url, evo_api_key, evo_instance FROM ${SCHEMA}.companies WHERE id=$1`,
     [Number(companyId)]
   );
   const row = r.rows[0] || {};
+  const base = baseUrl();
+  const instanceUrl = row.evo_instance ? buildSendUrl(row.evo_instance) : null;
   return {
-    url: row.evo_api_url || process.env.EVO_API_URL || '',
+    url: row.evo_api_url || instanceUrl || process.env.EVO_API_URL || '',
     key: row.evo_api_key || process.env.EVO_API_KEY || '',
+    instance: row.evo_instance || null,
+    baseUrl: base,
   };
 }
 
@@ -30,16 +35,22 @@ async function sendWhatsapp(companyId, payload, options = {}) {
   if (!Number.isFinite(cid)) throw new Error(`companyId inválido: ${companyId}`);
 
   const cfg = await getCompanyEvoConfig(cid);
-  const url = normUrl(cfg.url);
+  let url = cfg.instance ? normUrl(buildSendUrl(cfg.instance)) : normUrl(cfg.url);
+  if (!url && cfg.instance) {
+    url = normUrl(buildSendUrl(cfg.instance));
+  }
   const number = normNumber(payload?.number, { forceCountry: options.forceCountry ?? '55' });
   const text = String(payload?.text ?? '');
 
   // logs úteis (não logar texto completo em prod se for sensível)
-  console.log('[messenger] companyId=%s url=%s key?=%s number=%s textLen=%d',
-    cid, url, cfg.key ? 'yes' : 'no', number, text.length
+  console.log('[messenger] companyId=%s url=%s instance=%s key?=%s number=%s textLen=%d',
+    cid, url, cfg.instance || '-', cfg.key ? 'yes' : 'no', number, text.length
   );
 
   if (!url || !cfg.key) throw new Error('Config EVO ausente (url/key) para a empresa');
+  if (cfg.instance && !url.includes('/message/sendText/')) {
+    throw new Error('Instância EVO inválida para envio (URL incorreta)');
+  }
   if (!number) throw new Error('Número (payload.number) é obrigatório');
   if (!text) throw new Error('Texto (payload.text) é obrigatório');
 

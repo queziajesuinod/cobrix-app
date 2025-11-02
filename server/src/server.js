@@ -3,9 +3,28 @@
 // =========================
 
 // 1) Variáveis de ambiente
-require('dotenv').config({ path: '/app/server/.env' }); 
-const express = require('express');
 const path = require('path');
+const fs = require('fs');
+const dotenv = require('dotenv');
+
+const ENV_CANDIDATES = [
+  '/app/server/.env',                       // caminho dentro do container
+  path.resolve(__dirname, '../.env'),       // server/.env (execução local)
+  path.resolve(__dirname, '../../.env'),    // raíz do projeto
+];
+
+for (const candidate of ENV_CANDIDATES) {
+  try {
+    if (fs.existsSync(candidate)) {
+      dotenv.config({ path: candidate });
+      break;
+    }
+  } catch (err) {
+    console.warn('[env] Falha ao carregar', candidate, err.message);
+  }
+}
+
+const express = require('express');
 const cron = require('node-cron');
 
 // 2) App base

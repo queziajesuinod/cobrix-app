@@ -23,10 +23,12 @@ async function initDb() {
         id SERIAL PRIMARY KEY,
         name TEXT NOT NULL,
         pix_key TEXT,
+        evo_instance TEXT,
         created_at TIMESTAMPTZ DEFAULT now()
       );
     `);
     await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS pix_key TEXT;`);
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS evo_instance TEXT;`);
     await c.query(`
       CREATE TABLE IF NOT EXISTS message_templates (
         id SERIAL PRIMARY KEY,
