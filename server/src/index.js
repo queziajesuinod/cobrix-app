@@ -63,9 +63,11 @@ async function initDb() {
         name TEXT NOT NULL,
         email TEXT,
         phone TEXT,
+        responsavel TEXT,
         created_at TIMESTAMPTZ DEFAULT now()
       );
     `);
+    await c.query(`ALTER TABLE ${schema}.clients ADD COLUMN IF NOT EXISTS responsavel TEXT;`);
     await c.query(`
       CREATE TABLE IF NOT EXISTS contracts (
         id SERIAL PRIMARY KEY,

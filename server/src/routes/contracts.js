@@ -8,12 +8,25 @@ const DATE_ISO = /^\d{4}-\d{2}-\d{2}$/;
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 
+const normalizeDateInput = (value) => {
+  if (typeof value === 'string') {
+    const match = value.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (match) return match[1];
+  }
+  return value;
+};
+
+const dateField = z.preprocess(
+  normalizeDateInput,
+  z.string().regex(DATE_ISO)
+);
+
 const contractSchema = z.object({
   client_id: z.number().int().positive(),
   description: z.string().min(3),
   value: z.number().nonnegative(),
-  start_date: z.string().regex(DATE_ISO),
-  end_date: z.string().regex(DATE_ISO),
+  start_date: dateField,
+  end_date: dateField,
   billing_day: z.number().int().min(1).max(31)
 });
 
@@ -25,14 +38,20 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
 
     // ym=YYYY-MM (se não vier, usa mês atual)
     const ym = String(req.query.ym || '').trim();
-    const baseDate = ym && /^\d{4}-\d{2}$/.test(ym) ? new Date(`${ym}-01`) : new Date();
-    const year = baseDate.getFullYear();
-    const month = baseDate.getMonth() + 1;
+  const baseDate = ym && /^\d{4}-\d{2}$/.test(ym) ? new Date(`${ym}-01`) : new Date();
+  const year = baseDate.getFullYear();
+  const month = baseDate.getMonth() + 1;
+  const clientIdRaw = req.query.clientId;
+  const clientId = clientIdRaw != null && clientIdRaw !== '' ? Number(clientIdRaw) : null;
+  if (clientIdRaw && (clientId == null || Number.isNaN(clientId))) {
+    return res.status(400).json({ error: 'clientId inválido' });
+  }
+  const q = String(req.query.q || '').trim();
 
-    const params = [];
-    const add = (v) => { params.push(v); return `$${params.length}`; };
+  const params = [];
+  const add = (v) => { params.push(v); return `$${params.length}`; };
 
-    // FROM com LEFT JOIN em contract_month_status (limitado ao mês/ano)
+  // FROM com LEFT JOIN em contract_month_status (limitado ao mês/ano)
     const fromSql = `
       FROM ${SCHEMA}.contracts c
       LEFT JOIN ${SCHEMA}.contract_month_status cms
@@ -52,6 +71,15 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
       filters.push(`DATE(c.start_date) <= DATE(${activeOn}) AND DATE(c.end_date) >= DATE(${activeOn})`);
     }
 
+    if (clientId) {
+      filters.push(`c.client_id = ${add(clientId)}`);
+    }
+
+    if (q) {
+      const like = `%${q}%`;
+      filters.push(`(c.description ILIKE ${add(like)} OR cl.name ILIKE ${add(like)})`);
+    }
+
     const whereSql = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
 
     // 1) COUNT com os MESMOS JOINs/WHERE
@@ -68,6 +96,7 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
       SELECT c.*,
              cl.name  AS client_name,
              cl.email AS client_email,
+             cl.responsavel AS client_responsavel,
              cms.status AS month_status,
              cms.year, cms.month
       ${fromSql}

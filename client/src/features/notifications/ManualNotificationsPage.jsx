@@ -77,8 +77,9 @@ export default function ManualNotificationsPage(){
             <Select fullWidth displayEmpty value={contractId} onChange={(e)=>setContractId(e.target.value)}>
               <MenuItem value=""><em>Todos os contratos</em></MenuItem>
               {(contractsQ.data||[]).map(c => {
-                const clientName = clientsQ.data?.find(cl => cl.id === c.client_id)?.name || `#${c.client_id}`
-                return <MenuItem key={c.id} value={c.id}>#{c.id} · {c.description} — {clientName}</MenuItem>
+                const client = clientsQ.data?.find(cl => cl.id === c.client_id)
+                const clientLabel = client?.responsavel ? `${client.responsavel} (${client.name})` : (client?.name || `#${c.client_id}`)
+                return <MenuItem key={c.id} value={c.id}>#{c.id} · {c.description} — {clientLabel}</MenuItem>
               })}
             </Select>
           </Grid>
@@ -97,13 +98,16 @@ export default function ManualNotificationsPage(){
         const lateDueDate = new Date(y, m - 1, dueDay + 4);
         lateDueDate.setHours(0, 0, 0, 0);
 
+        const client = clientsQ.data?.find(cl => cl.id === c.client_id)
+        const displayName = client?.responsavel || client?.name || `cliente #${c.client_id}`
+        const clientLegalName = client?.name && client?.responsavel ? ` • ${client.name}` : ''
         return (
           <Card key={c.id} variant="outlined">
             <CardContent>
               <Grid container spacing={1} alignItems="center">
                 <Grid item xs={12} md={8}>
                   <Typography variant="subtitle1" sx={{fontWeight:700}}>
-                    Contrato #{c.id} · {c.description} — {clientsQ.data?.find(cl => cl.id === c.client_id)?.name || `cliente #${c.client_id}`}
+                    Contrato #{c.id} · {c.description} — {displayName}{clientLegalName}
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
                     Vencimento: {dueStr} — Valor: R$ {Number(c.value).toFixed(2)}

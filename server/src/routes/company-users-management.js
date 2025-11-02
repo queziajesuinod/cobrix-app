@@ -28,7 +28,7 @@ function validateCreateUser(data) {
     return { error: "Email inválido" };
   }
   
-  if (!password || password.length < 6) {
+  if (password != null && password !== '' && password.length < 6) {
     return { error: "Senha deve ter pelo menos 6 caracteres" };
   }
   
@@ -39,7 +39,7 @@ function validateCreateUser(data) {
   return { 
     data: { 
       email, 
-      password, 
+      password: password || null, 
       role, 
       active: active !== undefined ? active : true 
     } 
@@ -139,26 +139,44 @@ router.post("/:companyId/users", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    // Verificar se o email já existe
-    const emailCheck = await query("SELECT id FROM users WHERE email = $1", [email]);
-    if (emailCheck.rows[0]) {
-      return res.status(409).json({ error: "Email já está em uso" });
+    const existingUser = await query("SELECT id, role, active FROM users WHERE email = $1", [email]);
+    let targetUserId;
+
+    if (existingUser.rows[0]) {
+      targetUserId = existingUser.rows[0].id;
+
+      // Verificar se já está associado
+      const alreadyLinked = await query(`
+        SELECT 1 FROM user_companies WHERE user_id = $1 AND company_id = $2
+      `, [targetUserId, companyId]);
+      if (alreadyLinked.rows[0]) {
+        return res.status(409).json({ error: "Usuário já vinculado a esta empresa" });
+      }
+
+      await query(`
+        INSERT INTO user_companies (user_id, company_id)
+        VALUES ($1, $2)
+        ON CONFLICT DO NOTHING
+      `, [targetUserId, companyId]);
+    } else {
+      if (!password) {
+        return res.status(400).json({ error: "Senha obrigatória para novos usuários" });
+      }
+
+      const userResult = await query(`
+        INSERT INTO users (email, password_hash, role, active, created_at)
+        VALUES ($1, public.crypt($2, public.gen_salt('bf')), $3, $4, now())
+        RETURNING id, email, role, active, created_at
+      `, [email, password, role, active]);
+
+      const newUser = userResult.rows[0];
+      targetUserId = newUser.id;
+
+      await query(`
+        INSERT INTO user_companies (user_id, company_id)
+        VALUES ($1, $2)
+      `, [targetUserId, companyId]);
     }
-
-    // Criar usuário
-    const userResult = await query(`
-      INSERT INTO users (email, password_hash, role, active, created_at)
-      VALUES ($1, public.crypt($2, public.gen_salt('bf')), $3, $4, now())
-      RETURNING id, email, role, active, created_at
-    `, [email, password, role, active]);
-
-    const newUser = userResult.rows[0];
-
-    // Associar usuário à empresa
-    await query(`
-      INSERT INTO user_companies (user_id, company_id)
-      VALUES ($1, $2)
-    `, [newUser.id, companyId]);
 
     // Buscar dados completos do usuário criado
     const fullUserResult = await query(`
@@ -173,7 +191,7 @@ router.post("/:companyId/users", requireAuth, async (req, res) => {
       JOIN user_companies uc ON u.id = uc.user_id
       JOIN companies c ON uc.company_id = c.id
       WHERE u.id = $1 AND uc.company_id = $2
-    `, [newUser.id, companyId]);
+    `, [targetUserId, companyId]);
 
     res.status(201).json(fullUserResult.rows[0]);
   } catch (error) {

@@ -4,7 +4,8 @@ import { contractsService, clientsPicker } from './contracts.service'
 import PageHeader from '@/components/PageHeader'
 import {
   Alert, Button, Card, CardContent, Dialog, DialogActions, DialogContent, DialogTitle,
-  Grid, IconButton, MenuItem, Stack, Table, TableBody, TableCell, TableHead, TableRow, TextField
+  Grid, IconButton, MenuItem, Stack, Table, TableBody, TableCell, TableHead, TableRow,
+  TablePagination, TextField
 } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
 import EditIcon from '@mui/icons-material/Edit'
@@ -38,10 +39,36 @@ const schema = z.object({
   billing_day: z.coerce.number().int().min(1).max(31)
 })
 
+const toDateInput = (value) => {
+  if (!value) return '';
+  if (typeof value === 'string') {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+    const match = value.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (match) return match[1];
+  }
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toISOString().slice(0, 10);
+};
+
+const normalizePayloadDates = (form) => ({
+  ...form,
+  start_date: toDateInput(form.start_date),
+  end_date: toDateInput(form.end_date),
+});
+
 function ContractDialog({ open, onClose, onSubmit, defaultValues }) {
   const [clients, setClients] = useState([])
-  const { register, handleSubmit, formState:{ errors, isSubmitting }, reset } = useForm({ resolver: zodResolver(schema), defaultValues })
-  useEffect(() => { reset(defaultValues) }, [defaultValues])
+  const formDefaults = useMemo(() => ({
+    client_id: defaultValues?.client_id ?? '',
+    description: defaultValues?.description ?? '',
+    value: defaultValues?.value ?? 0,
+    start_date: toDateInput(defaultValues?.start_date),
+    end_date: toDateInput(defaultValues?.end_date),
+    billing_day: defaultValues?.billing_day ?? 1,
+  }), [defaultValues])
+  const { register, handleSubmit, formState:{ errors, isSubmitting }, reset } = useForm({ resolver: zodResolver(schema), defaultValues: formDefaults })
+  useEffect(() => { reset(formDefaults) }, [formDefaults, reset])
   useEffect(() => { clientsPicker().then(setClients).catch(()=>setClients([])) }, [])
 
   return (
@@ -84,29 +111,124 @@ function ContractDialog({ open, onClose, onSubmit, defaultValues }) {
 
 export default function ContractsPage() {
   const qc = useQueryClient()
-  const list = useQuery({ queryKey: ['contracts'], queryFn: contractsService.list })
-  const create = useMutation({ mutationFn: contractsService.create, onSuccess: () => qc.invalidateQueries({ queryKey: ['contracts'] }) })
-  const update = useMutation({ mutationFn: ({id, payload}) => contractsService.update(id, payload), onSuccess: () => qc.invalidateQueries({ queryKey: ['contracts'] }) })
-  const remove = useMutation({ mutationFn: contractsService.remove, onSuccess: () => qc.invalidateQueries({ queryKey: ['contracts'] }) })
+
+  const [page, setPage] = useState(0)
+  const [rowsPerPage, setRowsPerPage] = useState(20)
+  const [searchInput, setSearchInput] = useState('')
+  const [searchTerm, setSearchTerm] = useState('')
+  const [clientFilter, setClientFilter] = useState('')
+
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      setSearchTerm(searchInput.trim())
+    }, 400)
+    return () => clearTimeout(handle)
+  }, [searchInput])
+
+  useEffect(() => { setPage(0) }, [searchTerm, clientFilter])
+
+  const contractsQueryKey = useMemo(() => ['contracts-paginated', { page, rowsPerPage, searchTerm, clientFilter }], [page, rowsPerPage, searchTerm, clientFilter])
+
+  const list = useQuery({
+    queryKey: contractsQueryKey,
+    queryFn: () => contractsService.paginate({
+      page: page + 1,
+      pageSize: rowsPerPage,
+      q: searchTerm || undefined,
+      clientId: clientFilter || undefined,
+    }),
+    keepPreviousData: true,
+  })
+
+  const clientsOptions = useQuery({
+    queryKey: ['contracts-filter-clients'],
+    queryFn: () => clientsPicker({ pageSize: 500 })
+  })
+
+  const create = useMutation({
+    mutationFn: contractsService.create,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['contracts-paginated'] })
+      qc.invalidateQueries({ queryKey: ['contracts'] })
+    }
+  })
+  const update = useMutation({
+    mutationFn: ({ id, payload }) => contractsService.update(id, payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['contracts-paginated'] })
+      qc.invalidateQueries({ queryKey: ['contracts'] })
+    }
+  })
+  const remove = useMutation({
+    mutationFn: contractsService.remove,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['contracts-paginated'] })
+      qc.invalidateQueries({ queryKey: ['contracts'] })
+    }
+  })
 
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState(null)
-  const rows = useMemo(() => list.data || [], [list.data])
+  const rows = useMemo(() => list.data?.data || [], [list.data])
+  const total = list.data?.total || 0
 
   const handleCreate = () => { setEditing(null); setDialogOpen(true) }
   const handleEdit = (row) => { setEditing(row); setDialogOpen(true) }
   const handleDelete = (row) => { if (confirm('Remover este contrato?')) remove.mutate(row.id) }
   const onSubmit = async (form) => {
-    if (editing?.id) await update.mutateAsync({ id: editing.id, payload: form })
-    else await create.mutateAsync(form)
+    const payload = normalizePayloadDates(form)
+    if (editing?.id) await update.mutateAsync({ id: editing.id, payload })
+    else await create.mutateAsync(payload)
     setDialogOpen(false)
   }
 
   return (
     <Stack spacing={2}>
       <PageHeader title="Contratos" actions={<Button variant="contained" startIcon={<AddIcon />} onClick={handleCreate}>Novo</Button>} />
+      <Card>
+        <CardContent>
+          <Grid container spacing={2}>
+            <Grid item xs={12} md={5}>
+              <TextField
+                label="Buscar serviço"
+                placeholder="Descrição do contrato"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                fullWidth
+              />
+            </Grid>
+            <Grid item xs={12} md={5}>
+              <TextField
+                select
+                label="Cliente"
+                value={clientFilter}
+                onChange={(e) => setClientFilter(e.target.value)}
+                fullWidth
+                SelectProps={{ displayEmpty: true }}
+              >
+                <MenuItem value=""><em>Todos os clientes</em></MenuItem>
+                {(clientsOptions.data || []).map((c) => (
+                  <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>
+                ))}
+              </TextField>
+            </Grid>
+            <Grid item xs={12} md={2} sx={{ display: 'flex', alignItems: 'center' }}>
+              <Button
+                fullWidth
+                variant="outlined"
+                onClick={() => { setSearchInput(''); setClientFilter(''); }}
+                disabled={!searchTerm && !clientFilter}
+              >
+                Limpar filtros
+              </Button>
+            </Grid>
+          </Grid>
+        </CardContent>
+      </Card>
       <Card><CardContent>
-        {list.isLoading ? 'Carregando…' : list.error ? <Alert severity="error">Erro ao carregar</Alert> : (
+        {list.isLoading ? 'Carregando…' : list.error ? <Alert severity="error">Erro ao carregar</Alert> : rows.length === 0 ? (
+          <Alert severity="info">Nenhum contrato encontrado.</Alert>
+        ) : (
           <Table size="small">
             <TableHead>
               <TableRow>
@@ -141,6 +263,15 @@ export default function ContractsPage() {
             </TableBody>
           </Table>
         )}
+        <TablePagination
+          component="div"
+          count={total}
+          page={page}
+          onPageChange={(_, newPage) => setPage(newPage)}
+          rowsPerPage={rowsPerPage}
+          onRowsPerPageChange={(event) => { setRowsPerPage(parseInt(event.target.value, 10)); setPage(0); }}
+          rowsPerPageOptions={[10, 20, 50]}
+        />
       </CardContent></Card>
 
       <ContractDialog

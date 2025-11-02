@@ -144,7 +144,7 @@ async function sendPreReminders(now = new Date()) {
 
   const rows = await query(`
     SELECT c.id, c.company_id, c.client_id, c.description, c.value, c.billing_day,
-           cl.name AS client_name, cl.phone AS client_phone
+           cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone
     FROM ${SCHEMA}.contracts c
     JOIN ${SCHEMA}.clients   cl ON cl.id = c.client_id
     WHERE c.start_date <= $1 AND c.end_date >= $1
@@ -157,8 +157,11 @@ async function sendPreReminders(now = new Date()) {
     if (!c.client_phone) continue;
 
     const mesRefDate = new Date(due.getFullYear(), due.getMonth(), 1);
+    const recipientName = c.client_responsavel || c.client_name;
     const text = await msgPre({
-      nome: c.client_name,
+      nome: recipientName,
+      responsavel: c.client_responsavel,
+      client_name: c.client_name,
       tipoContrato: c.description,
       mesRefDate,
       vencimentoDate: due,
@@ -198,7 +201,7 @@ async function sendDueReminders(now = new Date()) {
   const rows = await query(`
     SELECT b.id AS billing_id, b.contract_id, b.amount, b.status,
            c.company_id, c.client_id, c.description,
-           cl.name AS client_name, cl.phone AS client_phone
+           cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone
     FROM ${SCHEMA}.billings b
     JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
     JOIN ${SCHEMA}.clients   cl ON cl.id = c.client_id
@@ -213,8 +216,11 @@ async function sendDueReminders(now = new Date()) {
     if (!r.client_phone) continue;
 
     const mesRefDate = new Date(now.getFullYear(), now.getMonth(), 1);
+    const recipientName = r.client_responsavel || r.client_name;
     const text = await msgDue({
-      nome: r.client_name,
+      nome: recipientName,
+      responsavel: r.client_responsavel,
+      client_name: r.client_name,
       tipoContrato: r.description,
       mesRefDate,
       vencimentoDate: new Date(todayStr),
@@ -251,7 +257,7 @@ async function sendLateReminders(now = new Date()) {
   const rows = await query(`
     SELECT b.id AS billing_id, b.contract_id, b.amount, b.status, b.billing_date,
            c.company_id, c.client_id, c.description,
-           cl.name AS client_name, cl.phone AS client_phone
+           cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone
     FROM ${SCHEMA}.billings b
     JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
     JOIN ${SCHEMA}.clients   cl ON cl.id = c.client_id
@@ -264,8 +270,11 @@ async function sendLateReminders(now = new Date()) {
     if (!r.client_phone) continue;
 
     const mesRefDate = new Date(target.getFullYear(), target.getMonth(), 1);
+    const recipientName = r.client_responsavel || r.client_name;
     const text = await msgLate({
-      nome: r.client_name,
+      nome: recipientName,
+      responsavel: r.client_responsavel,
+      client_name: r.client_name,
       tipoContrato: r.description,
       mesRefDate,
       vencimentoDate: new Date(targetStr),

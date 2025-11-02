@@ -186,7 +186,7 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
     if (!contract_id || !date) return res.status(400).json({ error: 'contract_id e date são obrigatórios' });
 
     const c = await query(`
-      SELECT c.*, cl.name AS client_name, cl.phone AS client_phone
+      SELECT c.*, cl.name AS client_name, cl.phone AS client_phone, cl.responsavel AS client_responsavel
       FROM ${SCHEMA}.contracts c
       JOIN ${SCHEMA}.clients   cl ON cl.id = c.client_id
       WHERE c.id = $1 AND c.company_id = $2
@@ -243,8 +243,11 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
 
       const mesRefDate = new Date(due.getFullYear(), due.getMonth(), 1);
       const map = { pre: msgPre, due: msgDue, late: msgLate };
+      const recipientName = row.client_responsavel || row.client_name;
       const text = await map[typ]({
-        nome: row.client_name,
+        nome: recipientName,
+        responsavel: row.client_responsavel,
+        client_name: row.client_name,
         tipoContrato: row.description,
         mesRefDate,
         vencimentoDate: due,

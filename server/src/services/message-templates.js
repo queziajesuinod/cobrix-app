@@ -60,7 +60,9 @@ Equipe Financeira
 };
 
 const PLACEHOLDERS = [
-  { key: 'client_name', label: 'Nome do cliente', example: 'Maria Souza' },
+  { key: 'client_name', label: 'Nome do destinatário', example: 'Maria Souza' },
+  { key: 'client_responsible', label: 'Responsável pelo cliente', example: 'João Pereira' },
+  { key: 'client_legal_name', label: 'Nome oficial do cliente', example: 'Empresa XPTO Ltda' },
   { key: 'contract_type', label: 'Descrição do contrato', example: 'Consultoria Contábil' },
   { key: 'reference_month', label: 'Mês de referência (extenso)', example: 'setembro' },
   { key: 'reference_month_number', label: 'Mês de referência (número)', example: '09' },
@@ -174,9 +176,19 @@ function buildBindings(ctx = {}) {
   const mesRefDate = ensureDate(ctx.mesRefDate || ctx.referenceDate);
   const vencimentoDate = ensureDate(ctx.vencimentoDate || ctx.dueDate);
   const now = ensureDate(ctx.now) || new Date();
+  const responsible = ctx.responsavel || ctx.client_responsavel || ctx.client_responsible || ctx.nome || ctx.client_name;
+  const clientLegalName =
+    ctx.client_legal_name ||
+    ctx.client_name ||
+    ctx.nome_cliente ||
+    ctx.contractClientName ||
+    ctx.clientName ||
+    '';
 
   return {
-    client_name: ctx.nome || ctx.client_name || '',
+    client_name: responsible || clientLegalName || '',
+    client_responsible: responsible || '',
+    client_legal_name: clientLegalName || '',
     contract_type: ctx.tipoContrato || ctx.contract_type || '',
     reference_month: mesRefDate ? (meses[mesRefDate.getMonth()] || '') : '',
     reference_month_number: mesRefDate ? dd(mesRefDate.getMonth() + 1) : '',

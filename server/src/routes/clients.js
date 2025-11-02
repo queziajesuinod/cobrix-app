@@ -6,9 +6,10 @@ const { requireAuth, companyScope } = require('./auth');
 const router = express.Router();
 
 const clientSchema = z.object({
-  name: z.string().min(2),
+  name: z.string().trim().min(2),
   email: z.string().email().optional().nullable(),
-  phone: z.string().min(8).max(30).optional().nullable()
+  phone: z.string().min(8).max(30).optional().nullable(),
+  responsavel: z.string().trim().min(2)
 });
 
 router.get('/', requireAuth, companyScope(true), async (req, res) => {
@@ -21,7 +22,7 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
   let where = 'WHERE company_id=$1';
   if (q) {
     params.push(`%${q}%`);
-    where += ` AND (name ILIKE $${params.length} OR email ILIKE $${params.length})`;
+    where += ` AND (name ILIKE $${params.length} OR email ILIKE $${params.length} OR responsavel ILIKE $${params.length})`;
   }
 
   try {
@@ -47,12 +48,12 @@ router.get('/:id', requireAuth, companyScope(true), async (req, res) => {
 router.post('/', requireAuth, companyScope(true), async (req, res) => {
   const parse = clientSchema.safeParse(req.body);
   if (!parse.success) return res.status(400).json({ error: parse.error.flatten() });
-  const { name, email, phone } = parse.data;
+  const { name, email, phone, responsavel } = parse.data;
   try {
     const r = await query(`
-      INSERT INTO clients (company_id, name, email, phone)
-      VALUES ($1,$2,$3,$4) RETURNING *
-    `, [req.companyId, name, email || null, phone || null]);
+      INSERT INTO clients (company_id, name, email, phone, responsavel)
+      VALUES ($1,$2,$3,$4,$5) RETURNING *
+    `, [req.companyId, name, email || null, phone || null, responsavel || null]);
     res.status(201).json(r.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -62,12 +63,12 @@ router.post('/', requireAuth, companyScope(true), async (req, res) => {
 router.put('/:id', requireAuth, companyScope(true), async (req, res) => {
   const parse = clientSchema.safeParse(req.body);
   if (!parse.success) return res.status(400).json({ error: parse.error.flatten() });
-  const { name, email, phone } = parse.data;
+  const { name, email, phone, responsavel } = parse.data;
   try {
     const r = await query(`
-      UPDATE clients SET name=$1, email=$2, phone=$3
-      WHERE id=$4 AND company_id=$5 RETURNING *
-    `, [name, email || null, phone || null, req.params.id, req.companyId]);
+      UPDATE clients SET name=$1, email=$2, phone=$3, responsavel=$4
+      WHERE id=$5 AND company_id=$6 RETURNING *
+    `, [name, email || null, phone || null, responsavel || null, req.params.id, req.companyId]);
     if (!r.rows[0]) return res.status(404).json({ error: 'Cliente não encontrado' });
     res.json({ ok: true });
   } catch (err) {
