@@ -92,7 +92,13 @@ async function generateBillingsForToday(now = new Date()) {
           const cmsInsertResult = await client.query(
             `INSERT INTO ${SCHEMA}.contract_month_status (company_id, contract_id, year, month, status)
      VALUES ($1, $2, $3, $4, \'pending\')
-      ON CONFLICT (contract_id, year, month) DO UPDATE SET status = EXCLUDED.status`,
+      ON CONFLICT (contract_id, year, month)
+      DO UPDATE
+        SET status = CASE
+          WHEN ${SCHEMA}.contract_month_status.status IN (\'paid\',\'canceled\')
+            THEN ${SCHEMA}.contract_month_status.status
+          ELSE EXCLUDED.status
+        END`,
             [c.company_id, c.id, currentYear, currentMonth]
           );
           console.log(`[BILL] contract_month_status inserted/updated for contract #${c.id}, year=${currentYear}, month=${currentMonth}. RowCount: ${cmsInsertResult.rowCount}`);
