@@ -10,7 +10,7 @@ import CompanySelector from '@/components/CompanySelector'
 
 // Ícones
 import MenuIcon from '@mui/icons-material/Menu'
-import DashboardIcon from '@mui/icons-material/Dashboard'
+import HomeIcon from '@mui/icons-material/Home'
 import PeopleIcon from '@mui/icons-material/People'
 import AssignmentIcon from '@mui/icons-material/Assignment'
 import ReceiptLongIcon from '@mui/icons-material/ReceiptLong'
@@ -29,7 +29,7 @@ const drawerWidth = 264
 
 // agora o navItems também recebe o companyId para montar o link de Config Empresa
 const navItems = (role, companyId) => [
-  { type: 'item', to: '/dashboard', label: 'Dashboard', icon: <DashboardIcon /> },
+  { type: 'item', to: '/dashboard', label: 'Início', icon: <HomeIcon /> },
   { type: 'item', to: '/clients', label: 'Clientes', icon: <PeopleIcon /> },
   { type: 'item', to: '/contracts', label: 'Contratos', icon: <AssignmentIcon /> },
   { type: 'item', to: '/integration/evo', label: 'Integração', icon: <QrCodeIcon /> },
@@ -92,7 +92,7 @@ export default function AppShell({ children }) {
         <Typography variant="h6" sx={{ fontWeight: 700 }}>Cobrix</Typography>
         <Typography variant="caption" color="text.secondary">
           USUÁRIO LOGADO: {user?.email}<br />
-          {selectedCompanyId ? `empresa #${selectedCompanyId}` : ''}
+          
         </Typography>
       </Box>
       <Divider />

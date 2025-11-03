@@ -11,7 +11,7 @@ export default function DashboardPage() {
           <Card>
             <CardContent>
               <Typography variant="subtitle2">Bem-vindo ao Cobrix</Typography>
-              <Typography variant="h5" sx={{ fontWeight: 700 }}>Dashboard</Typography>
+              <Typography variant="h5" sx={{ fontWeight: 700 }}>Gestão Cobrix</Typography>
             </CardContent>
           </Card>
         </Grid>
