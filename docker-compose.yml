@@ -1,0 +1,53 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: "http://apicobrix.aleftec.com.br"
+    environment:
+      NODE_ENV: production
+    depends_on:
+      - traefik
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.cobrix.rule=Host(`cobrix.aleftec.com.br`)"
+      - "traefik.http.routers.cobrix.entrypoints=websecure"
+      - "traefik.http.routers.cobrix.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.cobrix.service=cobrix"
+      - "traefik.http.services.cobrix.loadbalancer.server.port=3002"
+      - "traefik.http.routers.cobrix-http.rule=Host(`cobrix.aleftec.com.br`)"
+      - "traefik.http.routers.cobrix-http.entrypoints=web"
+      - "traefik.http.routers.cobrix-http.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.permanent=true"
+
+  traefik:
+    image: traefik:v3.1
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+      - --certificatesresolvers.letsencrypt.acme.email=infra@aleftec.com.br
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - traefik-certificates:/letsencrypt
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - web
+
+networks:
+  web:
+    driver: bridge
+
+volumes:
+  traefik-certificates:
+    driver: local
