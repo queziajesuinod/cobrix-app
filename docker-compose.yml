@@ -1,5 +1,6 @@
 services:
   app:
+    image: cobrix:latest
     build:
       context: .
       dockerfile: Dockerfile
