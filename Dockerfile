@@ -10,7 +10,7 @@ WORKDIR /app/server
 RUN npm install --omit=dev
 
 ENV NODE_ENV=production
-EXPOSE 3005
+EXPOSE 3002
 CMD ["npm", "start"]
 
 ############################################
