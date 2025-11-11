@@ -1,4 +1,6 @@
 node_modules
+DockerFile
+docker-compose.yml
 .env
 .env.production
 dist
@@ -13,8 +15,6 @@ pnpm-debug.log*
 *.suo
 *.ntvs*
 *.njsproj      
-DockerFile
-.dockerignore
 *.log
 client/dist
 server/src/public
