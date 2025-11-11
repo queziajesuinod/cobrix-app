@@ -10,8 +10,8 @@ const app = express()
 
 app.use(helmet())
 const allowlist = [
-  'http://localhost:5173',      ß  // Frontend local
-  'http://localhost:3006',        // API local
+  'http://localhost:5173',      // Frontend local
+  'http://localhost:3006',      // API local
   'http://62.72.63.137:3002',     // IP público (opcional)
   'https://cobrix.aleftec.com.br' // Domínio em produção (HTTPS)
 ]
