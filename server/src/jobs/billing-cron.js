@@ -141,14 +141,20 @@ async function generateBillingsForToday(now = new Date()) {
 async function sendPreReminders(now = new Date()) {
   const base = addDays(now, 3);
   const baseStr = isoDate(base);
+  const year = base.getFullYear();
+  const month = base.getMonth() + 1;
 
   const rows = await query(`
     SELECT c.id, c.company_id, c.client_id, c.description, c.value, c.billing_day,
-           cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone
+           cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone,
+           cms.status AS month_status
     FROM ${SCHEMA}.contracts c
     JOIN ${SCHEMA}.clients   cl ON cl.id = c.client_id
+    LEFT JOIN ${SCHEMA}.contract_month_status cms
+      ON cms.contract_id = c.id AND cms.year = $2 AND cms.month = $3
     WHERE c.start_date <= $1 AND c.end_date >= $1
-  `, [baseStr]);
+      AND LOWER(COALESCE(cms.status, 'pending')) <> 'paid'
+  `, [baseStr, year, month]);
 
   for (const c of rows.rows) {
     const due = dueDateForMonth(base, c.billing_day);
@@ -194,6 +200,8 @@ async function sendPreReminders(now = new Date()) {
 async function sendDueReminders(now = new Date()) {
   console.log(`[DUE] Input 'now' date: ${now}`);
   const todayStr = isoDate(now);
+  const year = now.getFullYear();
+  const month = now.getMonth() + 1;
 
   try { await generateBillingsForToday(now); }
   catch (e) { console.error("[DUE] generateBillingsForToday falhou:", e.message); }
@@ -201,12 +209,16 @@ async function sendDueReminders(now = new Date()) {
   const rows = await query(`
     SELECT b.id AS billing_id, b.contract_id, b.amount, b.status,
            c.company_id, c.client_id, c.description,
-           cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone
+           cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone,
+           cms.status AS month_status
     FROM ${SCHEMA}.billings b
     JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
     JOIN ${SCHEMA}.clients   cl ON cl.id = c.client_id
+    LEFT JOIN ${SCHEMA}.contract_month_status cms
+      ON cms.contract_id = c.id AND cms.year = $2 AND cms.month = $3
     WHERE b.billing_date = $1
-  `, [todayStr]);
+      AND LOWER(COALESCE(cms.status, 'pending')) <> 'paid'
+  `, [todayStr, year, month]);
 
   console.log(`[DUE] todayStr: ${todayStr}, encontrados ${rows.rowCount} billings para ${todayStr}`);
 
@@ -253,16 +265,22 @@ async function sendDueReminders(now = new Date()) {
 async function sendLateReminders(now = new Date()) {
   const target = addDays(now, -4);
   const targetStr = isoDate(target);
+  const year = target.getFullYear();
+  const month = target.getMonth() + 1;
 
   const rows = await query(`
     SELECT b.id AS billing_id, b.contract_id, b.amount, b.status, b.billing_date,
            c.company_id, c.client_id, c.description,
-           cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone
+           cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone,
+           cms.status AS month_status
     FROM ${SCHEMA}.billings b
     JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
     JOIN ${SCHEMA}.clients   cl ON cl.id = c.client_id
+    LEFT JOIN ${SCHEMA}.contract_month_status cms
+      ON cms.contract_id = c.id AND cms.year = $2 AND cms.month = $3
     WHERE b.billing_date = $1
-  `, [targetStr]);
+      AND LOWER(COALESCE(cms.status, 'pending')) <> 'paid'
+  `, [targetStr, year, month]);
 
   for (const r of rows.rows) {
     const s = String(r.status || "").toLowerCase();

@@ -57,19 +57,26 @@ if (process.env.CRON_LATE) {
   });
 }
 
-// 4) Servir o frontend React buildado
-// Os arquivos do React foram copiados para /app/server/public no Dockerfile
-// 4) Servir o frontend React buildado (compatível com execução via Docker)
-// 4) Servir o frontend React buildado (versão final compatível com Docker)
-const publicDir = path.resolve(__dirname, '../public');
+// 4) Servir o frontend buildado (procura dist/local public)
+const candidateDirs = [
+  path.resolve(__dirname, '../../client/dist'),
+  path.resolve(__dirname, '../public'),
+];
 
-// Garante que o Express sirva os arquivos estáticos corretamente
-app.use(express.static(publicDir));
-
-// Redireciona todas as rotas não-API para o index.html do React
-app.get('*', (req, res) => {
-  res.sendFile(path.join(publicDir, 'index.html'));
+const staticDir = candidateDirs.find((dir) => {
+  try { return fs.existsSync(path.join(dir, 'index.html')); } catch { return false; }
 });
+
+if (staticDir) {
+  console.log('[static] Servindo frontend de', staticDir);
+  app.use(express.static(staticDir));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api')) return next();
+    res.sendFile(path.join(staticDir, 'index.html'));
+  });
+} else {
+  console.warn('[static] Nenhum build do frontend encontrado. Rotas SPA podem falhar em refresh.');
+}
 
 
 

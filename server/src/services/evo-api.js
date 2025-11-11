@@ -3,11 +3,17 @@ const axios = require('axios');
 const BASE_RAW = process.env.EVO_API_URL || '';
 const API_KEY = process.env.EVO_API_KEY || '';
 
+function resolveBase(raw) {
+  if (!raw) return '';
+  let base = String(raw).trim();
+  if (!base) return '';
+  const idx = base.indexOf('/message/');
+  if (idx !== -1) base = base.slice(0, idx);
+  return base.replace(/\/+$/, '');
+}
+
 function baseUrl() {
-  if (!BASE_RAW) return '';
-  const idx = BASE_RAW.indexOf('/message/');
-  if (idx !== -1) return BASE_RAW.slice(0, idx);
-  return BASE_RAW.replace(/\/+$/, '');
+  return resolveBase(BASE_RAW);
 }
 
 function buildSendUrl(instance) {
@@ -16,13 +22,64 @@ function buildSendUrl(instance) {
   return `${base}/message/sendText/${encodeURIComponent(instance)}`;
 }
 
-async function evoRequest({ method = 'get', path = '', data = null, params = null, timeout = 15000 }) {
-  const base = baseUrl();
+function decodeMaybeBase64(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string') return value;
+  const raw = value.trim();
+  if (!raw) return null;
+
+  // já é um código legível (apenas números, letras, hífens)
+  if (/^[0-9A-Za-z\-]{4,}$/.test(raw)) return raw;
+
+  const isBase64 = /^[A-Za-z0-9+/=]+$/.test(raw) && raw.length % 4 === 0;
+  if (!isBase64) return raw;
+  try {
+    const decoded = Buffer.from(raw, 'base64').toString('utf8');
+    const reencoded = Buffer.from(decoded, 'utf8').toString('base64').replace(/=+$/, '');
+    if (raw.replace(/=+$/, '') === reencoded) {
+      return decoded;
+    }
+  } catch (err) {
+    console.warn('[EVO] falha ao decodificar base64 de pairing code', err.message);
+  }
+  return raw;
+}
+
+function normalizePairingCode(raw) {
+  if (!raw) return null;
+  if (Array.isArray(raw)) {
+    return raw.map((item) => normalizePairingCode(item)).filter(Boolean).join('-') || null;
+  }
+  if (typeof raw === 'object') {
+    return normalizePairingCode(raw.code || raw.value || raw.number || raw.pairingCode || raw[0] || null);
+  }
+  if (typeof raw === 'string' && raw.includes(',')) {
+    return raw
+      .split(',')
+      .map((chunk) => normalizePairingCode(chunk))
+      .filter(Boolean)
+      .join('-') || null;
+  }
+  const val = decodeMaybeBase64(String(raw));
+  return val ? val.trim() : null;
+}
+
+async function evoRequest({
+  method = 'get',
+  path = '',
+  data = null,
+  params = null,
+  timeout = 15000,
+  baseOverride = null,
+  apiKeyOverride = null,
+}) {
+  const base = baseOverride || baseUrl();
+  const key = apiKeyOverride || API_KEY;
   if (!base) throw new Error('EVO_API_URL não configurada');
-  if (!API_KEY) throw new Error('EVO_API_KEY não configurada');
+  if (!key) throw new Error('EVO_API_KEY não configurada');
 
   const url = `${base}${path}`;
-  console.log('[EVO] request', { method, url, hasKey: !!API_KEY, params, hasData: !!data });
+  console.log('[EVO] request', { method, url, hasKey: !!key, params, hasData: !!data });
   try {
     const config = {
       method,
@@ -30,9 +87,9 @@ async function evoRequest({ method = 'get', path = '', data = null, params = nul
       params,
       timeout,
       headers: {
-        'APIKEY': API_KEY,
-        'apikey': API_KEY,
-        'Authorization': `Bearer ${API_KEY}`,
+        'APIKEY': key,
+        'apikey': key,
+        'Authorization': `Bearer ${key}`,
         'Content-Type': 'application/json',
       },
       transformResponse: [(raw) => {
@@ -99,7 +156,7 @@ function formatInstanceName(name, suffix = '') {
   return suffix ? `${base}_${suffix}` : base;
 }
 
-async function createInstance(instanceName) {
+async function createInstance(instanceName, options = {}) {
   const data = await evoRequest({
     method: 'post',
     path: '/instance/create',
@@ -108,14 +165,17 @@ async function createInstance(instanceName) {
       qrcode: true,
       integration: 'WHATSAPP-BAILEYS',
     },
+    ...options,
   });
   return data;
 }
 
-async function getConnectionState(instanceName) {
+async function getConnectionState(instanceName, options = {}) {
   const data = await evoRequest({
     method: 'get',
     path: `/instance/connectionState/${encodeURIComponent(instanceName)}`,
+    params: { pairingCode: true },
+    ...options,
   });
   if (data == null || data === 'null') {
     return {
@@ -138,19 +198,32 @@ async function getConnectionState(instanceName) {
   };
 }
 
-async function restartInstance(instanceName) {
+async function restartInstance(instanceName, options = {}) {
   const data = await evoRequest({
     method: 'post',
     path: `/instance/restart/${encodeURIComponent(instanceName)}`,
-    data: { qrcode: true },
+    data: { qrcode: true, pairingCode: true },
+    ...options,
   });
   return normalizeQrResponse(instanceName, data);
 }
 
-async function connectInstance(instanceName) {
+async function connectInstance(instanceName, options = {}) {
   const data = await evoRequest({
     method: 'post',
     path: `/instance/connect/${encodeURIComponent(instanceName)}`,
+    data: { pairingCode: true },
+    ...options,
+  });
+  return normalizeQrResponse(instanceName, data);
+}
+
+async function getQrCode(instanceName, options = {}) {
+  const data = await evoRequest({
+    method: 'get',
+    path: `/instance/qrcode/${encodeURIComponent(instanceName)}`,
+    params: { pairingCode: true },
+    ...options,
   });
   return normalizeQrResponse(instanceName, data);
 }
@@ -181,22 +254,33 @@ function normalizeQrResponse(instanceName, data) {
     data?.data?.qrcode ??
     null;
 
+  const rawPairing =
+    data?.pairingCode ??
+    data?.instance?.pairingCode ??
+    data?.data?.pairingCode ??
+    data?.data?.pairing_code ??
+    null;
+
+  const pairingCode = normalizePairingCode(rawPairing);
+
   return {
     connectionStatus: state,
     instance: data?.instance ?? { instanceName, state },
     qrcode,
-    code: data?.code ?? data?.instance?.code ?? null,
-    pairingCode: data?.pairingCode ?? data?.instance?.pairingCode ?? null,
+    code: decodeMaybeBase64(data?.code ?? data?.instance?.code ?? data?.data?.code ?? null),
+    pairingCode,
     raw: data,
   };
 }
 
 module.exports = {
   baseUrl,
+  resolveBase,
   buildSendUrl,
   createInstance,
   getConnectionState,
   restartInstance,
   connectInstance,
+  getQrCode,
   formatInstanceName,
 };

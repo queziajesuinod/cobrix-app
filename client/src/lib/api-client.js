@@ -60,6 +60,30 @@ api.interceptors.request.use((config) => {
   return config
 })
 
+let redirectingToLogin = false
+const SESSION_EVENT = 'auth:expired'
+
+function handleSessionExpired() {
+  authService.clearToken()
+  try { localStorage.removeItem('selectedCompanyId') } catch {}
+  window.dispatchEvent(new CustomEvent(SESSION_EVENT))
+  if (redirectingToLogin) return
+  redirectingToLogin = true
+  if (window.location.pathname !== '/login') {
+    window.location.replace('/login')
+  }
+}
+
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const status = error?.response?.status
+    if (status === 401 || status === 419) {
+      handleSessionExpired()
+    }
+    return Promise.reject(error)
+  }
+)
+
 export default api
 export { api }
-

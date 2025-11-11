@@ -37,6 +37,20 @@ export default function EvoConnectionPage() {
     },
   })
 
+  const connectionStatus = statusQuery.data?.connectionStatus || statusQuery.data?.state?.instance?.state || 'unknown'
+  const connectionStatusLower = String(connectionStatus || '').toLowerCase()
+  const isConnected = connectionStatusLower === 'open'
+  const isClosed = connectionStatusLower === 'close' || connectionStatusLower === 'closed'
+  const shouldPollQr = enabled && !isConnected
+
+  const qrQuery = useQuery({
+    queryKey: ['company_evo_qr', selectedCompanyId],
+    queryFn: () => companyIntegrationService.getEvoQrCode(selectedCompanyId),
+    enabled: shouldPollQr,
+    refetchOnWindowFocus: false,
+    refetchInterval: shouldPollQr ? 20000 : false,
+  })
+
   const restartMutation = useMutation({
     mutationFn: () => companyIntegrationService.restartInstance(selectedCompanyId),
     onMutate: () => {
@@ -79,11 +93,18 @@ export default function EvoConnectionPage() {
     setQrPayload(null)
   }, [selectedCompanyId])
 
-  const connectionStatus = statusQuery.data?.connectionStatus || statusQuery.data?.state?.instance?.state || 'unknown'
-  const connectionStatusLower = String(connectionStatus || '').toLowerCase()
+  useEffect(() => {
+    if (qrQuery.data?.qrcode || qrQuery.data?.pairingCode || qrQuery.data?.code) {
+      setQrPayload({
+        qrcode: qrQuery.data?.qrcode ?? null,
+        code: qrQuery.data?.code ?? null,
+        pairingCode: qrQuery.data?.pairingCode ?? null,
+        fetchedAt: Date.now(),
+      })
+    }
+  }, [qrQuery.data])
+
   const instanceName = statusQuery.data?.instance || 'N/D'
-  const isConnected = connectionStatusLower === 'open'
-  const isClosed = connectionStatusLower === 'close' || connectionStatusLower === 'closed'
 
   useEffect(() => {
     if (isConnected) setQrPayload(null)
@@ -180,14 +201,36 @@ export default function EvoConnectionPage() {
             <Alert severity="error">{errorMessage}</Alert>
           )}
 
+          {qrQuery.isError && shouldPollQr && qrQuery.error?.response?.status !== 404 && (
+            <Alert severity="warning">
+              {qrQuery.error?.response?.data?.error || qrQuery.error?.message || 'Falha ao buscar QR Code. Tente novamente.'}
+            </Alert>
+          )}
+
           {qrPayload?.qrcode && !(restartMutation.isPending || connectMutation.isPending) && (
             <Card variant="outlined">
               <CardContent>
-                <Typography variant="h6" sx={{ fontWeight: 600 }}>Escaneie para conectar</Typography>
-                <Typography variant="body2" color="text.secondary">
-                  Abra o WhatsApp Business no celular da empresa → Configurações → Dispositivos conectados → Conectar um dispositivo.
-                </Typography>
-                <QrCodeViewer base64={qrPayload.qrcode} />
+                <Stack spacing={1}>
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <Typography variant="h6" sx={{ fontWeight: 600, flexGrow: 1 }}>Escaneie para conectar</Typography>
+                    {qrQuery.isFetching && <CircularProgress size={18} />}
+                  </Stack>
+                  <Typography variant="body2" color="text.secondary">
+                    Abra o WhatsApp Business no celular da empresa → Configurações → Dispositivos conectados → Conectar um dispositivo.
+                  </Typography>
+                  <QrCodeViewer base64={qrPayload.qrcode} />
+                  {qrPayload.pairingCode && (
+                    <>
+                      <Divider />
+                      <Typography variant="body2">
+                        Código de pareamento: <strong>{qrPayload.pairingCode}</strong>
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        Os códigos são atualizados automaticamente enquanto a conexão não está ativa.
+                      </Typography>
+                    </>
+                  )}
+                </Stack>
               </CardContent>
             </Card>
           )}

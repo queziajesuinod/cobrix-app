@@ -15,6 +15,7 @@ export default function AutoNotificationsPage(){
   const [ym, setYm] = useState(() => new Date().toISOString().slice(0,7))
   const [clientId, setClientId] = useState('')
   const [contractId, setContractId] = useState('')
+  const [dueDay, setDueDay] = useState('')
   const [snack, setSnack] = useState(null)
   const [runOpen, setRunOpen] = useState(false)
 
@@ -34,7 +35,7 @@ export default function AutoNotificationsPage(){
   }, [filteredContracts, contractId])
 
   const kpisQ = useQuery({ queryKey:['kpis', ym, clientId, contractId], queryFn: () => billingsService.kpis(ym, { clientId: clientId || undefined, contractId: contractId || undefined }) })
-  const run = useMutation({ mutationFn: billingsService.checkRun, onSuccess: () => { qc.invalidateQueries({ queryKey:['overview'] }); qc.invalidateQueries({ queryKey:['kpis'] }); } })
+  const run = useMutation({ mutationFn: billingsService.checkRun, onSuccess: () => { qc.invalidateQueries({ queryKey:['billings_overview'] }); qc.invalidateQueries({ queryKey:['kpis'] }); } })
 
   const onRunConfirm = async (payload) => {
     try {
@@ -62,7 +63,24 @@ export default function AutoNotificationsPage(){
               <Grid item xs={12} md={3}>
                 <TextField label="Mês" type="month" value={ym} onChange={(e)=>setYm(e.target.value)} fullWidth InputLabelProps={{shrink:true}} />
               </Grid>
-              <Grid item xs={12} md={4}>
+              <Grid item xs={12} md={2}>
+                <TextField
+                  label="Dia do vencimento"
+                  type="number"
+                  value={dueDay}
+                  onChange={(e) => {
+                    const val = e.target.value
+                    if (val === '') return setDueDay('')
+                    const num = Number(val)
+                    if (Number.isNaN(num)) return
+                    const clamped = Math.max(1, Math.min(31, num))
+                    setDueDay(String(clamped))
+                  }}
+                  fullWidth
+                  inputProps={{ min: 1, max: 31 }}
+                />
+              </Grid>
+              <Grid item xs={12} md={3}>
                 <TextField
                   select
                   label="Cliente"
@@ -79,7 +97,7 @@ export default function AutoNotificationsPage(){
                   ))}
                 </TextField>
               </Grid>
-              <Grid item xs={12} md={5}>
+              <Grid item xs={12} md={4}>
                 <TextField
                   select
                   label="Contrato"
@@ -99,9 +117,9 @@ export default function AutoNotificationsPage(){
                 </TextField>
               </Grid>
             </Grid>
-            {(clientId || contractId) && (
+            {(clientId || contractId || dueDay) && (
               <Stack direction="row" justifyContent="flex-end">
-                <Button size="small" onClick={() => { setClientId(''); setContractId(''); }}>
+                <Button size="small" onClick={() => { setClientId(''); setContractId(''); setDueDay(''); }}>
                   Limpar filtros
                 </Button>
               </Stack>
@@ -116,7 +134,7 @@ export default function AutoNotificationsPage(){
 
       <Card><CardContent>
         <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 700 }}>Resumo por contrato</Typography>
-        <BillingsOverviewPanel ym={ym} clientId={clientId} contractId={contractId} />
+        <BillingsOverviewPanel ym={ym} clientId={clientId} contractId={contractId} dueDay={dueDay} />
       </CardContent></Card>
 
       <BillingsRunDialog open={runOpen} onClose={()=>setRunOpen(false)} onConfirm={onRunConfirm} />

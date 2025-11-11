@@ -22,6 +22,7 @@ export default function ManualNotificationsPage(){
   const [ym, setYm] = useState(() => new Date().toISOString().slice(0,7))
   const [clientId, setClientId] = useState('')
   const [contractId, setContractId] = useState('')
+  const [dueDateFilter, setDueDateFilter] = useState('')
   const [snack, setSnack] = useState(null)
 
   const clientsQ = useQuery({ queryKey:['clients'], queryFn: clientsService.list })
@@ -36,9 +37,13 @@ export default function ManualNotificationsPage(){
       const endOk = new Date(c.end_date) >= new Date(y, m, 1)
       const clientOk = clientId ? c.client_id === Number(clientId) : true
       const contractOk = contractId ? c.id === Number(contractId) : true
-      return startOk && endOk && clientOk && contractOk
+      if (!(startOk && endOk && clientOk && contractOk)) return false
+      if (!dueDateFilter) return true
+      const dueDay = effectiveBillingDay(y, m, c.billing_day)
+      const dueIso = new Date(y, m - 1, dueDay).toISOString().slice(0,10)
+      return dueIso === dueDateFilter
     })
-  }, [contractsQ.data, ym, clientId, contractId])
+  }, [contractsQ.data, ym, clientId, contractId, dueDateFilter])
 
   const notify = useMutation({ mutationFn: billingsService.notifyManual, onSuccess: () => setSnack('Notificação enviada') })
 
@@ -67,13 +72,13 @@ export default function ManualNotificationsPage(){
           <Grid item xs={12} md={3}>
             <TextField label="Mês" type="month" value={ym} onChange={(e)=>setYm(e.target.value)} fullWidth InputLabelProps={{shrink:true}} />
           </Grid>
-          <Grid item xs={12} md={4}>
+          <Grid item xs={12} md={3}>
             <Select fullWidth displayEmpty value={clientId} onChange={(e)=>setClientId(e.target.value)}>
               <MenuItem value=""><em>Todos os clientes</em></MenuItem>
               {(clientsQ.data||[]).map(c => <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>)}
             </Select>
           </Grid>
-          <Grid item xs={12} md={5}>
+          <Grid item xs={12} md={4}>
             <Select fullWidth displayEmpty value={contractId} onChange={(e)=>setContractId(e.target.value)}>
               <MenuItem value=""><em>Todos os contratos</em></MenuItem>
               {(contractsQ.data||[]).map(c => {
@@ -82,6 +87,16 @@ export default function ManualNotificationsPage(){
                 return <MenuItem key={c.id} value={c.id}>#{c.id} · {c.description} — {clientLabel}</MenuItem>
               })}
             </Select>
+          </Grid>
+          <Grid item xs={12} md={2}>
+            <TextField
+              label="Data de vencimento"
+              type="date"
+              value={dueDateFilter}
+              onChange={(e)=>setDueDateFilter(e.target.value)}
+              fullWidth
+              InputLabelProps={{ shrink: true }}
+            />
           </Grid>
         </Grid>
       </CardContent></Card>

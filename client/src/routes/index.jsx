@@ -12,6 +12,7 @@ const LoginPage = lazy(() => import('@/features/auth/LoginPage'))
 const DashboardPage = lazy(() => import('@/features/dashboard/DashboardPage'))
 const ClientsPage = lazy(() => import('@/features/clients/ClientsPage'))
 const ContractsPage = lazy(() => import('@/features/contracts/ContractsPage'))
+const PaidContractsPage = lazy(() => import('@/features/billings/PaidContractsPage'))
 const CompanyListPage = lazy(() => import('@/features/companies/CompanyListPage'))
 const CompanyFormPage = lazy(() => import('@/features/companies/CompanyFormPage'))
 const CompanySettingsPage = lazy(() => import('@/features/companies/CompanySettingsPage'))
@@ -31,6 +32,7 @@ export default function AppRouter() {
         <Route path="/notifications/auto" element={<ProtectedRoute><AppShell><AutoNotificationsPage /></AppShell></ProtectedRoute>} />
         <Route path="/notifications/manual" element={<ProtectedRoute><AppShell><ManualNotificationsPage /></AppShell></ProtectedRoute>} />
         <Route path="/notifications/templates" element={<ProtectedRoute><AppShell><MessageTemplatesPage /></AppShell></ProtectedRoute>} />
+        <Route path="/billings/paid" element={<ProtectedRoute><AppShell><PaidContractsPage /></AppShell></ProtectedRoute>} />
         <Route path="/integration/evo" element={<ProtectedRoute><AppShell><EvoConnectionPage /></AppShell></ProtectedRoute>} />
 
         <Route path="*" element={<Navigate to="/dashboard" replace />} />

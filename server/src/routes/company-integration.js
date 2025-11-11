@@ -2,7 +2,7 @@ const express = require('express')
 const { query } = require('../db')
 const { requireAuth } = require('./auth')
 const { sendWhatsapp } = require('../services/messenger')
-const { getConnectionState, restartInstance, connectInstance } = require('../services/evo-api')
+const { getConnectionState, restartInstance, connectInstance, getQrCode, resolveBase } = require('../services/evo-api')
 
 const router = express.Router()
 
@@ -21,14 +21,18 @@ function canRead(user, selectedCompanyId, targetCompanyId){
 router.get('/:id/integration/evo', requireAuth, async (req, res) => {
   const id = Number(req.params.id)
   if (!canRead(req.user, req.companyId, id)) return res.status(403).json({ error: 'Sem permissão' })
-  const r = await query('SELECT id, name, evo_instance FROM companies WHERE id=$1', [id])
+  const r = await query('SELECT id, name, evo_instance, evo_api_url, evo_api_key FROM companies WHERE id=$1', [id])
   const row = r.rows[0]
   if (!row) return res.status(404).json({ error: 'Empresa não encontrada' })
   if (!row.evo_instance) {
     return res.json({ instance: null, connectionStatus: 'missing', state: null })
   }
+  const evoOptions = {
+    baseOverride: resolveBase(row.evo_api_url) || null,
+    apiKeyOverride: row.evo_api_key || null,
+  }
   try {
-    const state = await getConnectionState(row.evo_instance)
+    const state = await getConnectionState(row.evo_instance, evoOptions)
     res.json({
       instance: state?.instance?.instanceName || row.evo_instance,
       connectionStatus: state?.connectionStatus || state?.instance?.state || 'unknown',
@@ -50,12 +54,16 @@ router.get('/:id/integration/evo', requireAuth, async (req, res) => {
 router.post('/:id/integration/evo/restart', requireAuth, async (req, res) => {
   const id = Number(req.params.id)
   if (!canRead(req.user, req.companyId, id)) return res.status(403).json({ error: 'Sem permissão' })
-  const r = await query('SELECT id, name, evo_instance FROM companies WHERE id=$1', [id])
+  const r = await query('SELECT id, name, evo_instance, evo_api_url, evo_api_key FROM companies WHERE id=$1', [id])
   const row = r.rows[0]
   if (!row) return res.status(404).json({ error: 'Empresa não encontrada' })
   if (!row.evo_instance) return res.status(400).json({ error: 'Instância EVO não configurada' })
+  const evoOptions = {
+    baseOverride: resolveBase(row.evo_api_url) || null,
+    apiKeyOverride: row.evo_api_key || null,
+  }
   try {
-    const data = await restartInstance(row.evo_instance)
+    const data = await restartInstance(row.evo_instance, evoOptions)
     res.json({
       instance: data?.instance?.instanceName || row.evo_instance,
       qrcode: data?.qrcode ?? null,
@@ -80,12 +88,16 @@ router.post('/:id/integration/evo/restart', requireAuth, async (req, res) => {
 router.post('/:id/integration/evo/connect', requireAuth, async (req, res) => {
   const id = Number(req.params.id)
   if (!canRead(req.user, req.companyId, id)) return res.status(403).json({ error: 'Sem permissão' })
-  const r = await query('SELECT id, name, evo_instance FROM companies WHERE id=$1', [id])
+  const r = await query('SELECT id, name, evo_instance, evo_api_url, evo_api_key FROM companies WHERE id=$1', [id])
   const row = r.rows[0]
   if (!row) return res.status(404).json({ error: 'Empresa não encontrada' })
   if (!row.evo_instance) return res.status(400).json({ error: 'Instância EVO não configurada' })
+  const evoOptions = {
+    baseOverride: resolveBase(row.evo_api_url) || null,
+    apiKeyOverride: row.evo_api_key || null,
+  }
   try {
-    const data = await connectInstance(row.evo_instance)
+    const data = await connectInstance(row.evo_instance, evoOptions)
     res.json({
       instance: data?.instance?.instanceName || row.evo_instance,
       qrcode: data?.qrcode ?? null,
@@ -103,6 +115,40 @@ router.post('/:id/integration/evo/connect', requireAuth, async (req, res) => {
       data: err.data,
     })
     res.status(err.status || 502).json({ error: err.message || 'Falha ao conectar instância', data: err.data || null })
+  }
+})
+
+// GET evo qr code (polling)
+router.get('/:id/integration/evo/qrcode', requireAuth, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!canRead(req.user, req.companyId, id)) return res.status(403).json({ error: 'Sem permissão' })
+  const r = await query('SELECT id, name, evo_instance, evo_api_url, evo_api_key FROM companies WHERE id=$1', [id])
+  const row = r.rows[0]
+  if (!row) return res.status(404).json({ error: 'Empresa não encontrada' })
+  if (!row.evo_instance) return res.status(400).json({ error: 'Instância EVO não configurada' })
+  const evoOptions = {
+    baseOverride: resolveBase(row.evo_api_url) || null,
+    apiKeyOverride: row.evo_api_key || null,
+  }
+  try {
+    const data = await getQrCode(row.evo_instance, evoOptions)
+    res.json({
+      instance: data?.instance?.instanceName || row.evo_instance,
+      qrcode: data?.qrcode ?? null,
+      connectionStatus: data?.connectionStatus || data?.instance?.state || 'pending',
+      code: data?.code ?? null,
+      pairingCode: data?.pairingCode ?? null,
+      data,
+    })
+  } catch (err) {
+    console.error('[integration] qrcode failed', {
+      companyId: id,
+      instance: row.evo_instance,
+      status: err.status,
+      message: err.message,
+      data: err.data,
+    })
+    res.status(err.status || 502).json({ error: err.message || 'Falha ao consultar QR Code', data: err.data || null })
   }
 })
 

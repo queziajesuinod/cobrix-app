@@ -26,6 +26,15 @@ async function sign(user) {
 }
 
 // Middleware: exige token valido
+async function masterHasCompany(userId, companyId) {
+  if (!userId || !companyId) return false;
+  const r = await query(
+    `SELECT 1 FROM user_companies WHERE user_id=$1 AND company_id=$2`,
+    [userId, companyId]
+  );
+  return r.rowCount > 0;
+}
+
 async function requireAuth(req, res, next) {
   const auth = req.headers.authorization || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
@@ -44,11 +53,18 @@ async function requireAuth(req, res, next) {
     let requestedCompanyId = hdr ? Number(hdr) : null;
 
     if (req.user.role === "master") {
-      // Master pode acessar qualquer empresa que esteja vinculada
-      if (requestedCompanyId && !req.user.company_ids.includes(requestedCompanyId)) {
-        return res.status(403).json({ error: "Acesso negado à empresa solicitada" });
+      if (requestedCompanyId) {
+        if (!req.user.company_ids.includes(requestedCompanyId)) {
+          const hasAccess = await masterHasCompany(req.user.id, requestedCompanyId);
+          if (!hasAccess) {
+            return res.status(403).json({ error: "Acesso negado à empresa solicitada" });
+          }
+          req.user.company_ids.push(requestedCompanyId);
+        }
+        req.companyId = requestedCompanyId;
+      } else {
+        req.companyId = null;
       }
-      req.companyId = requestedCompanyId; // Master pode selecionar a empresa via header
     } else {
       // Usuários normais só podem acessar a empresa a que estão vinculados
       if (req.user.company_ids.length === 0) {

@@ -8,13 +8,14 @@ import { formatDateOnly } from '@/utils/date'
 const label = (t) => t === 'pre' ? 'Avisado (D-3)' : t === 'due' ? 'Vence hoje (D0)' : 'Atrasado (D+4)'
 const color = (t) => t === 'pre' ? 'info' : t === 'due' ? 'warning' : 'error'
 
-export default function BillingsOverviewPanel({ ym, clientId, contractId }) {
+export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay }) {
   const qc = useQueryClient()
   const q = useQuery({
-    queryKey: ['billings_overview', ym, clientId || null, contractId || null],
+    queryKey: ['billings_overview', ym, clientId || null, contractId || null, dueDay || null],
     queryFn: () => billingsService.overview(ym, {
       clientId: clientId || undefined,
-      contractId: contractId || undefined
+      contractId: contractId || undefined,
+      dueDay: dueDay ? Number(dueDay) : undefined
     }),
     enabled: !!ym
   })

@@ -139,35 +139,42 @@ router.get('/kpis', requireAuth, companyScope(true), async (req, res) => {
     if (activeIds.length) pB.push(activeIds);
 
     const bills = await query(`
-      SELECT b.status, COUNT(*)::int AS cnt
+      SELECT LOWER(b.status) AS status, COUNT(*)::int AS cnt
       FROM ${SCHEMA}.billings b
       JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
       WHERE c.company_id = $1
         AND b.billing_date >= $2 AND b.billing_date < $3
         ${idsSql}
-      GROUP BY b.status
+      GROUP BY LOWER(b.status)
     `, pB);
 
     const cms = await query(`
-      SELECT status, COUNT(*)::int AS cnt
+      SELECT LOWER(status) AS status, COUNT(*)::int AS cnt
       FROM ${SCHEMA}.contract_month_status
       WHERE company_id = $1 AND year = $2 AND month = $3
-      GROUP BY status
+      GROUP BY LOWER(status)
     `, [req.companyId, y, m]);
 
     const k = {
       contractsActive: activeIds.length,
       monthsPaid: 0, monthsPending: 0, monthsCanceled: 0,
+      contractsPaid: 0, contractsPending: 0, contractsCanceled: 0,
       billingsPaid: 0, billingsPending: 0, billingsCanceled: 0, billingsTotal: 0,
     };
     for (const r of cms.rows) {
-      if (r.status === 'paid') k.monthsPaid = r.cnt;
-      else if (r.status === 'canceled') k.monthsCanceled = r.cnt;
-      else k.monthsPending += r.cnt;
+      const status = String(r.status || '').trim().toLowerCase();
+      if (status === 'paid') { k.monthsPaid += r.cnt; k.contractsPaid += r.cnt; }
+      else if (status === 'canceled') { k.monthsCanceled += r.cnt; k.contractsCanceled += r.cnt; }
+      else { k.monthsPending += r.cnt; k.contractsPending += r.cnt; }
+    }
+    const recordedContracts = k.contractsPaid + k.contractsPending + k.contractsCanceled;
+    if (recordedContracts < k.contractsActive) {
+      k.contractsPending += (k.contractsActive - recordedContracts);
     }
     for (const r of bills.rows) {
-      if (r.status === 'paid') k.billingsPaid = r.cnt;
-      else if (r.status === 'canceled') k.billingsCanceled = r.cnt;
+      const status = String(r.status || '').trim().toLowerCase();
+      if (status === 'paid') k.billingsPaid += r.cnt;
+      else if (status === 'canceled') k.billingsCanceled += r.cnt;
       else k.billingsPending += r.cnt;
       k.billingsTotal += r.cnt;
     }
@@ -379,10 +386,17 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
   const [year, month] = ym.split('-').map(Number);
   const clientIdRaw = req.query.clientId;
   const contractIdRaw = req.query.contractId;
+  const dueDayRaw = req.query.dueDay;
   const clientId = clientIdRaw ? Number(clientIdRaw) : null;
   const contractId = contractIdRaw ? Number(contractIdRaw) : null;
+  const dueDay = dueDayRaw !== undefined && dueDayRaw !== null && String(dueDayRaw).trim() !== ''
+    ? Number(dueDayRaw)
+    : null;
   if (clientIdRaw && (clientId == null || Number.isNaN(clientId))) return res.status(400).json({ error: 'clientId inválido' });
   if (contractIdRaw && (contractId == null || Number.isNaN(contractId))) return res.status(400).json({ error: 'contractId inválido' });
+  if (dueDayRaw && (dueDay == null || Number.isNaN(dueDay) || dueDay < 1 || dueDay > 31)) {
+    return res.status(400).json({ error: 'dueDay inválido' });
+  }
   try {
     const notif = await query(`
       SELECT bn.contract_id, bn.type, COUNT(*) AS cnt, MAX(bn.sent_at) AS last_sent_at,
@@ -395,12 +409,13 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
         AND EXTRACT(MONTH FROM bn.due_date) = $3
         AND ($4::int IS NULL OR c.client_id = $4)
         AND ($5::int IS NULL OR c.id = $5)
+        AND ($6::int IS NULL OR EXTRACT(DAY FROM bn.due_date) = $6)
         AND NOT EXISTS (
           SELECT 1 FROM ${SCHEMA}.contract_month_status cms2
           WHERE cms2.contract_id = bn.contract_id AND cms2.year = $2 AND cms2.month = $3 AND cms2.status = 'paid'
         )
       GROUP BY bn.contract_id, bn.type, c.client_id, c.description, cl.name
-    `, [req.companyId, year, month, clientId, contractId]);
+    `, [req.companyId, year, month, clientId, contractId, dueDay]);
 
     const cms = await query(`
       SELECT cms.contract_id, cms.status, c.client_id, c.description AS contract_description, cl.name AS client_name
@@ -423,12 +438,13 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
         AND EXTRACT(MONTH FROM b.billing_date) = $3
         AND ($4::int IS NULL OR cl.id = $4)
         AND ($5::int IS NULL OR c.id = $5)
+        AND ($6::int IS NULL OR EXTRACT(DAY FROM b.billing_date) = $6)
         AND NOT EXISTS (
           SELECT 1 FROM ${SCHEMA}.contract_month_status cms2
           WHERE cms2.contract_id = c.id AND cms2.year = $2 AND cms2.month = $3 AND cms2.status = 'paid'
         )
       ORDER BY b.billing_date ASC, b.id ASC
-    `, [req.companyId, year, month, clientId, contractId]);
+    `, [req.companyId, year, month, clientId, contractId, dueDay]);
 
     const byContract = {};
     for (const r of bills.rows) {
@@ -458,6 +474,7 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
       byContract[key] = entry;
     }
     for (const s of cms.rows) {
+      if (dueDay != null && !byContract[s.contract_id]) continue;
       const key = s.contract_id;
       const entry = byContract[key] ?? { contract_id: key, contract_description: null, client_name: null, client_id: null, month_status: 'pending', notifications: {}, billings: [] };
       entry.month_status = s.status;
@@ -467,6 +484,48 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
       byContract[key] = entry;
     }
     res.json(Object.values(byContract));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Lista contratos marcados como PAGO em um mês
+router.get('/paid', requireAuth, companyScope(true), async (req, res) => {
+  const ym = String(req.query.ym || '').trim();
+  if (!/^\d{4}-\d{2}$/.test(ym)) return res.status(400).json({ error: 'Parâmetro ym (YYYY-MM) obrigatório' });
+  const [year, month] = ym.split('-').map(Number);
+  const clientIdRaw = req.query.clientId;
+  const contractIdRaw = req.query.contractId;
+  const clientId = clientIdRaw ? Number(clientIdRaw) : null;
+  const contractId = contractIdRaw ? Number(contractIdRaw) : null;
+  if (clientIdRaw && (clientId == null || Number.isNaN(clientId))) return res.status(400).json({ error: 'clientId inválido' });
+  if (contractIdRaw && (contractId == null || Number.isNaN(contractId))) return res.status(400).json({ error: 'contractId inválido' });
+
+  try {
+    const rows = await query(`
+      SELECT cms.contract_id,
+             cms.year,
+             cms.month,
+             cms.status,
+             cms.updated_at,
+             c.description AS contract_description,
+             c.value AS contract_value,
+             c.billing_day,
+             cl.id AS client_id,
+             cl.name AS client_name
+      FROM ${SCHEMA}.contract_month_status cms
+      JOIN ${SCHEMA}.contracts c ON c.id = cms.contract_id
+      JOIN ${SCHEMA}.clients cl ON cl.id = c.client_id
+      WHERE cms.company_id = $1
+        AND LOWER(cms.status) = 'paid'
+        AND cms.year = $2
+        AND cms.month = $3
+        AND ($4::int IS NULL OR cl.id = $4)
+        AND ($5::int IS NULL OR c.id = $5)
+      ORDER BY cms.updated_at DESC NULLS LAST, c.description ASC
+    `, [req.companyId, year, month, clientId, contractId]);
+
+    res.json(rows.rows);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

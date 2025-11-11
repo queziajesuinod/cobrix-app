@@ -13,7 +13,6 @@ import MenuIcon from '@mui/icons-material/Menu'
 import HomeIcon from '@mui/icons-material/Home'
 import PeopleIcon from '@mui/icons-material/People'
 import AssignmentIcon from '@mui/icons-material/Assignment'
-import ReceiptLongIcon from '@mui/icons-material/ReceiptLong'
 import BusinessIcon from '@mui/icons-material/Business'
 import LogoutIcon from '@mui/icons-material/Logout'
 import AutorenewIcon from '@mui/icons-material/Autorenew'
@@ -24,6 +23,7 @@ import EditNoteIcon from '@mui/icons-material/EditNote'
 import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings'
 import ExpandLess from '@mui/icons-material/ExpandLess'
 import ExpandMore from '@mui/icons-material/ExpandMore'
+import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 
 const drawerWidth = 264
 
@@ -43,6 +43,7 @@ const navItems = (role, companyId) => [
       { to: '/notifications/auto', label: 'Automático', icon: <AutorenewIcon /> },
       { to: '/notifications/manual', label: 'Manual', icon: <SendIcon /> },
       { to: '/notifications/templates', label: 'Modelos', icon: <EditNoteIcon /> },
+      { to: '/billings/paid', label: 'Contratos pagos', icon: <CheckCircleIcon /> },
     ],
   },
 

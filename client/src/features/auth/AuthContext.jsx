@@ -4,6 +4,8 @@ import { authService } from './auth.service'
 
 const AuthContext = React.createContext(null)
 
+const SESSION_EVENT = 'auth:expired'
+
 export function AuthProvider({ children }) {
   const [user, setUser] = React.useState(null)
   const [loading, setLoading] = React.useState(true)
@@ -46,6 +48,15 @@ export function AuthProvider({ children }) {
       }
     })()
     return () => { mounted = false }
+  }, [])
+
+  React.useEffect(() => {
+    const handler = () => {
+      setUser(null)
+      setLoading(false)
+    }
+    window.addEventListener(SESSION_EVENT, handler)
+    return () => window.removeEventListener(SESSION_EVENT, handler)
   }, [])
 
   // 🚀 ADICIONE o login e exponha no context
