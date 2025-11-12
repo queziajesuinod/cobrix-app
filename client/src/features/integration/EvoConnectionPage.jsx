@@ -122,6 +122,19 @@ export default function EvoConnectionPage() {
     return () => clearTimeout(timer)
   }, [isClosed, qrPayload?.qrcode, connectMutation])
 
+  const fallbackSegments = useMemo(() => {
+    if (!qrPayload?.code) return []
+    return String(qrPayload.code)
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean)
+  }, [qrPayload?.code])
+
+  const copyText = (text) => {
+    if (!text) return
+    navigator?.clipboard?.writeText(text).catch(()=>{})
+  }
+
   return (
     <Stack spacing={2}>
       <PageHeader
@@ -288,15 +301,3 @@ export default function EvoConnectionPage() {
     </Stack>
   )
 }
-  const fallbackSegments = useMemo(() => {
-    if (!qrPayload?.code) return []
-    return String(qrPayload.code)
-      .split(',')
-      .map(s => s.trim())
-      .filter(Boolean)
-  }, [qrPayload?.code])
-
-  const copyText = (text) => {
-    if (!text) return
-    navigator?.clipboard?.writeText(text).catch(()=>{})
-  }
