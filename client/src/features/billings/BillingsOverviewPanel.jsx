@@ -59,7 +59,10 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
                 <Grid item xs={12} md={7}>
                   <Stack direction="row" spacing={1} alignItems="center">
                     {allPaid ? <CheckCircleIcon color="success" /> : <CheckCircleIcon color="disabled" />}
-                    <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>Contrato #{it.contract_id} · {it.contract_description || '-'}</Typography>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                      Contrato #{it.contract_id} · {it.contract_description || '-'}
+                      {it.client_name ? ` — ${it.client_name}` : ''}
+                    </Typography>
                     <Chip size="small" label={`Mês: ${ym}`} />
                     <Chip size="small" color={allPaid ? 'success' : it.month_status === 'canceled' ? 'default' : 'warning'} label={`Status do mês: ${String(it.month_status||'pending').toUpperCase()}`} />
                   </Stack>

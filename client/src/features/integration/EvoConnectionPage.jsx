@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { Box, Button, Card, CardContent, Stack, Typography, Alert, CircularProgress, Divider } from '@mui/material'
+import { Box, Button, Card, CardContent, Stack, Typography, Alert, CircularProgress, Divider, IconButton, Tooltip } from '@mui/material'
 import RefreshIcon from '@mui/icons-material/Refresh'
 import QrCodeIcon from '@mui/icons-material/QrCode'
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline'
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline'
+import ContentCopyIcon from '@mui/icons-material/ContentCopy'
 import PageHeader from '@/components/PageHeader'
 import { useAuth } from '@/features/auth/AuthContext'
 import { companyIntegrationService } from '@/features/companies/company.integration.service'
@@ -61,6 +62,7 @@ export default function EvoConnectionPage() {
         qrcode: data?.qrcode ?? data?.data?.qrcode ?? null,
         code: data?.code ?? null,
         pairingCode: data?.pairingCode ?? null,
+        raw: data?.data || data || null,
       })
       setErrorMessage(null)
       statusQuery.refetch()
@@ -80,6 +82,7 @@ export default function EvoConnectionPage() {
         qrcode: data?.qrcode ?? data?.data?.qrcode ?? null,
         code: data?.code ?? null,
         pairingCode: data?.pairingCode ?? null,
+        raw: data?.data || data || null,
       })
       setErrorMessage(null)
       statusQuery.refetch()
@@ -100,6 +103,7 @@ export default function EvoConnectionPage() {
         code: qrQuery.data?.code ?? null,
         pairingCode: qrQuery.data?.pairingCode ?? null,
         fetchedAt: Date.now(),
+        raw: qrQuery.data?.data || qrQuery.data || null,
       })
     }
   }, [qrQuery.data])
@@ -235,13 +239,64 @@ export default function EvoConnectionPage() {
             </Card>
           )}
 
+
+          {!qrPayload?.pairingCode && fallbackSegments.length > 0 && (
+            <Card variant="outlined">
+              <CardContent>
+                <Stack spacing={1}>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>Pareamento multi-dispositivo</Typography>
+                  <Alert severity="info">
+                    Este código é retornado pela Evolution no formato original. Caso o aplicativo peça “código de pareamento”, use os segmentos abaixo em ordem.
+                  </Alert>
+                  {fallbackSegments.map((segment, idx) => (
+                    <Stack key={idx} direction="row" spacing={1} alignItems="center">
+                      <Typography sx={{ fontFamily: 'monospace', fontSize: 14, flexGrow: 1 }}>
+                        {`Segmento ${idx + 1}: ${segment}`}
+                      </Typography>
+                      <Tooltip title="Copiar">
+                        <IconButton size="small" onClick={() => copyText(segment)}>
+                          <ContentCopyIcon fontSize="inherit" />
+                        </IconButton>
+                      </Tooltip>
+                    </Stack>
+                  ))}
+                </Stack>
+              </CardContent>
+            </Card>
+          )}
+
           {!qrPayload?.qrcode && !isConnected && !(restartMutation.isPending || connectMutation.isPending) && (
             <Alert severity="warning">
               Gere um QR Code e escaneie para finalizar a conexão.
             </Alert>
+          )}
+
+          {qrPayload?.raw && (
+            <Card variant="outlined">
+              <CardContent>
+                <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
+                  Detalhes da evolução (debug)
+                </Typography>
+                <Box component="pre" sx={{ m: 0, maxHeight: 240, overflow: 'auto', fontSize: 12, bgcolor: 'grey.100', p: 1, borderRadius: 1 }}>
+                  {JSON.stringify(qrPayload.raw, null, 2)}
+                </Box>
+              </CardContent>
+            </Card>
           )}
         </>
       )}
     </Stack>
   )
 }
+  const fallbackSegments = useMemo(() => {
+    if (!qrPayload?.code) return []
+    return String(qrPayload.code)
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean)
+  }, [qrPayload?.code])
+
+  const copyText = (text) => {
+    if (!text) return
+    navigator?.clipboard?.writeText(text).catch(()=>{})
+  }
