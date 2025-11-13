@@ -17,6 +17,17 @@ function canRead(user, selectedCompanyId, targetCompanyId){
   return Number(selectedCompanyId) === Number(targetCompanyId)
 }
 
+function formatEvoResponse(row, data) {
+  return {
+    instance: data?.instance?.instanceName || row.evo_instance,
+    qrcode: data?.qrcode ?? null,
+    connectionStatus: data?.connectionStatus || data?.instance?.state || 'pending',
+    code: data?.code ?? null,
+    pairingCode: data?.pairingCode ?? null,
+    data,
+  };
+}
+
 // GET evo status
 router.get('/:id/integration/evo', requireAuth, async (req, res) => {
   const id = Number(req.params.id)
@@ -64,14 +75,7 @@ router.post('/:id/integration/evo/restart', requireAuth, async (req, res) => {
   }
   try {
     const data = await restartInstance(row.evo_instance, evoOptions)
-    res.json({
-      instance: data?.instance?.instanceName || row.evo_instance,
-      qrcode: data?.qrcode ?? null,
-      connectionStatus: data?.connectionStatus || data?.instance?.state || 'pending',
-      code: data?.code ?? null,
-      pairingCode: data?.pairingCode ?? null,
-      data,
-    })
+    res.json(formatEvoResponse(row, data))
   } catch (err) {
     console.error('[integration] restart failed', {
       companyId: id,
@@ -98,14 +102,7 @@ router.post('/:id/integration/evo/connect', requireAuth, async (req, res) => {
   }
   try {
     const data = await connectInstance(row.evo_instance, evoOptions)
-    res.json({
-      instance: data?.instance?.instanceName || row.evo_instance,
-      qrcode: data?.qrcode ?? null,
-      connectionStatus: data?.connectionStatus || data?.instance?.state || 'pending',
-      code: data?.code ?? null,
-      pairingCode: data?.pairingCode ?? null,
-      data,
-    })
+    res.json(formatEvoResponse(row, data))
   } catch (err) {
     console.error('[integration] connect failed', {
       companyId: id,
@@ -131,16 +128,27 @@ router.get('/:id/integration/evo/qrcode', requireAuth, async (req, res) => {
     apiKeyOverride: row.evo_api_key || null,
   }
   try {
-    const data = await getQrCode(row.evo_instance, evoOptions)
-    res.json({
-      instance: data?.instance?.instanceName || row.evo_instance,
-      qrcode: data?.qrcode ?? null,
-      connectionStatus: data?.connectionStatus || data?.instance?.state || 'pending',
-      code: data?.code ?? null,
-      pairingCode: data?.pairingCode ?? null,
-      data,
-    })
+    let data = await getQrCode(row.evo_instance, evoOptions)
+    if ((!data?.qrcode && !data?.pairingCode) || data?.connectionStatus === 'close') {
+      data = await connectInstance(row.evo_instance, evoOptions)
+    }
+    res.json(formatEvoResponse(row, data))
   } catch (err) {
+    if (err.status === 425 || err.status === 404) {
+      try {
+        const regenerated = await connectInstance(row.evo_instance, evoOptions)
+        return res.json(formatEvoResponse(row, regenerated))
+      } catch (inner) {
+        console.error('[integration] qrcode connect fallback failed', {
+          companyId: id,
+          instance: row.evo_instance,
+          status: inner.status,
+          message: inner.message,
+          data: inner.data,
+        })
+        return res.status(inner.status || 502).json({ error: inner.message || 'Falha ao gerar novo QR Code', data: inner.data || null })
+      }
+    }
     console.error('[integration] qrcode failed', {
       companyId: id,
       instance: row.evo_instance,

@@ -210,7 +210,7 @@ async function restartInstance(instanceName, options = {}) {
 
 async function connectInstance(instanceName, options = {}) {
   const data = await evoRequest({
-    method: 'post',
+    method: 'get',
     path: `/instance/connect/${encodeURIComponent(instanceName)}`,
     data: { pairingCode: true },
     ...options,

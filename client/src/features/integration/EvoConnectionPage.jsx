@@ -290,30 +290,6 @@ export default function EvoConnectionPage() {
           )}
 
 
-          {!qrPayload?.pairingCode && fallbackSegments.length > 0 && (
-            <Card variant="outlined">
-              <CardContent>
-                <Stack spacing={1}>
-                  <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>Pareamento multi-dispositivo</Typography>
-                  <Alert severity="info">
-                    Este código é retornado pela Evolution no formato original. Caso o aplicativo peça “código de pareamento”, use os segmentos abaixo em ordem.
-                  </Alert>
-                  {fallbackSegments.map((segment, idx) => (
-                    <Stack key={idx} direction="row" spacing={1} alignItems="center">
-                      <Typography sx={{ fontFamily: 'monospace', fontSize: 14, flexGrow: 1 }}>
-                        {`Segmento ${idx + 1}: ${segment}`}
-                      </Typography>
-                      <Tooltip title="Copiar">
-                        <IconButton size="small" onClick={() => copyText(segment)}>
-                          <ContentCopyIcon fontSize="inherit" />
-                        </IconButton>
-                      </Tooltip>
-                    </Stack>
-                  ))}
-                </Stack>
-              </CardContent>
-            </Card>
-          )}
 
           {!qrPayload?.qrcode && !isConnected && !(restartMutation.isPending || connectMutation.isPending) && (
             <Alert severity="warning">
@@ -321,18 +297,7 @@ export default function EvoConnectionPage() {
             </Alert>
           )}
 
-          {qrPayload?.raw && (
-            <Card variant="outlined">
-              <CardContent>
-                <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
-                  Detalhes da evolução (debug)
-                </Typography>
-                <Box component="pre" sx={{ m: 0, maxHeight: 240, overflow: 'auto', fontSize: 12, bgcolor: 'grey.100', p: 1, borderRadius: 1 }}>
-                  {JSON.stringify(qrPayload.raw, null, 2)}
-                </Box>
-              </CardContent>
-            </Card>
-          )}
+     
         </>
       )}
     </Stack>
