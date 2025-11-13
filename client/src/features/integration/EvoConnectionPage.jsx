@@ -24,6 +24,7 @@ export default function EvoConnectionPage() {
   const { selectedCompanyId, user } = useAuth()
   const [qrPayload, setQrPayload] = useState(null)
   const [errorMessage, setErrorMessage] = useState(null)
+  const [qrCountdown, setQrCountdown] = useState(null)
 
   const enabled = useMemo(() => Number.isInteger(selectedCompanyId), [selectedCompanyId])
 
@@ -37,6 +38,7 @@ export default function EvoConnectionPage() {
       return status && status !== 'open' ? 5000 : false
     },
   })
+  const [showPollingStatus, setShowPollingStatus] = useState(false)
 
   const connectionStatus = statusQuery.data?.connectionStatus || statusQuery.data?.state?.instance?.state || 'unknown'
   const connectionStatusLower = String(connectionStatus || '').toLowerCase()
@@ -94,6 +96,7 @@ export default function EvoConnectionPage() {
 
   useEffect(() => {
     setQrPayload(null)
+    setQrCountdown(null)
   }, [selectedCompanyId])
 
   useEffect(() => {
@@ -115,12 +118,41 @@ export default function EvoConnectionPage() {
   }, [isConnected])
 
   useEffect(() => {
+    if (qrPayload?.qrcode && !isConnected) {
+      setQrCountdown(40)
+    } else {
+      setQrCountdown(null)
+    }
+  }, [qrPayload?.qrcode, isConnected])
+
+  useEffect(() => {
+    if (qrCountdown == null || qrCountdown <= 0) return undefined
+    const timer = setInterval(() => {
+      setQrCountdown(prev => (prev != null ? prev - 1 : null))
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [qrCountdown])
+
+  useEffect(() => {
     if (!isClosed || !qrPayload?.qrcode || connectMutation.isPending) return undefined
     const timer = setTimeout(() => {
       connectMutation.mutate()
     }, 20000)
     return () => clearTimeout(timer)
   }, [isClosed, qrPayload?.qrcode, connectMutation])
+
+  useEffect(() => {
+    if (isConnected) return
+    const id = setInterval(() => statusQuery.refetch(), 5000)
+    return () => clearInterval(id)
+  }, [qrPayload?.qrcode, qrCountdown, isConnected, statusQuery])
+
+  useEffect(() => {
+    if (!qrPayload?.qrcode || isConnected || qrCountdown == null) return
+    if (qrCountdown <= 0 && !connectMutation.isPending) {
+      connectMutation.mutate()
+    }
+  }, [qrCountdown, qrPayload?.qrcode, isConnected, connectMutation])
 
   const fallbackSegments = useMemo(() => {
     if (!qrPayload?.code) return []
@@ -232,6 +264,11 @@ export default function EvoConnectionPage() {
                     <Typography variant="h6" sx={{ fontWeight: 600, flexGrow: 1 }}>Escaneie para conectar</Typography>
                     {qrQuery.isFetching && <CircularProgress size={18} />}
                   </Stack>
+                  {qrCountdown != null && (
+                    <Typography variant="caption" color="text.secondary">
+                      QR expira em {Math.max(qrCountdown, 0)}s
+                    </Typography>
+                  )}
                   <Typography variant="body2" color="text.secondary">
                     Abra o WhatsApp Business no celular da empresa → Configurações → Dispositivos conectados → Conectar um dispositivo.
                   </Typography>
