@@ -5,6 +5,7 @@ const { createInstance, formatInstanceName, buildSendUrl, getConnectionState, re
 const { requireAuth } = require("./auth");
 
 const router = express.Router();
+const SCHEMA = process.env.DB_SCHEMA || 'public';
 
 const MASTER_EMAIL = (process.env.MASTER_EMAIL || process.env.SEED_MASTER_EMAIL || "").trim();
 const MASTER_PASSWORD = (process.env.MASTER_PASSWORD || process.env.SEED_MASTER_PASSWORD || "").trim();
@@ -126,6 +127,18 @@ router.post("/", requireAuth, async (req, res) => {
     );
 
     await ensureEnvMasterUser(newCompany.id);
+    await query(
+      `INSERT INTO ${SCHEMA}.contract_types (company_id, name, is_recurring, adjustment_percent)
+       VALUES ($1,'Fixo',false,0)
+       ON CONFLICT (company_id, name) DO NOTHING`,
+      [newCompany.id]
+    );
+    await query(
+      `INSERT INTO ${SCHEMA}.contract_types (company_id, name, is_recurring, adjustment_percent)
+       VALUES ($1,'Recorrente',true,5)
+       ON CONFLICT (company_id, name) DO NOTHING`,
+      [newCompany.id]
+    );
 
     const connection = await getConnectionState(instanceName).catch(() => null);
 

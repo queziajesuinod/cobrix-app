@@ -33,7 +33,7 @@ export default function CompanySelector() {
 
   const handleCompanyChange = (event) => {
     const companyId = event.target.value
-    setSelectedCompanyId(companyId)
+    setSelectedCompanyId(companyId === '' ? null : Number(companyId))
   }
 
   const selectedCompany = companies.find(c => c.id === selectedCompanyId)
@@ -71,7 +71,7 @@ export default function CompanySelector() {
         </InputLabel>
         <Select
           labelId="company-selector-label"
-          value={selectedCompanyId || ''}
+          value={selectedCompanyId ?? ''}
           onChange={handleCompanyChange}
           label="Empresa Ativa"
           sx={{

@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Button, Card, CardContent, Dialog, DialogTitle, DialogContent, DialogActions,
+  Alert, Button, Card, CardContent, Dialog, DialogTitle, DialogContent, DialogActions,
   TextField, Table, TableHead, TableRow, TableCell, TableBody,
   Stack, Switch, FormControlLabel, IconButton
 } from '@mui/material'
@@ -11,6 +11,7 @@ import AddIcon from '@mui/icons-material/Add'
 import PageHeader from '@/components/PageHeader'
 import { contractTypesService } from '@/features/contracts/contractTypes.service'
 import { useForm } from 'react-hook-form'
+import { useAuth } from '@/features/auth/AuthContext'
 
 function TypeDialog({ open, onClose, onSubmit, defaultValues }) {
   const { register, handleSubmit, reset, watch } = useForm({
@@ -50,18 +51,25 @@ function TypeDialog({ open, onClose, onSubmit, defaultValues }) {
 }
 
 export default function ContractTypesPage() {
+  const { selectedCompanyId } = useAuth()
+  const enabled = Number.isInteger(selectedCompanyId)
   const qc = useQueryClient()
-  const list = useQuery({ queryKey: ['contract_types'], queryFn: contractTypesService.list })
+  const list = useQuery({
+    queryKey: ['contract_types', selectedCompanyId],
+    queryFn: () => contractTypesService.list(selectedCompanyId),
+    enabled,
+    retry: false,
+  })
   const create = useMutation({
-    mutationFn: contractTypesService.create,
+    mutationFn: (payload) => contractTypesService.create(payload, selectedCompanyId),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['contract_types'] }) }
   })
   const update = useMutation({
-    mutationFn: ({ id, payload }) => contractTypesService.update(id, payload),
+    mutationFn: ({ id, payload }) => contractTypesService.update(id, payload, selectedCompanyId),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['contract_types'] }) }
   })
   const remove = useMutation({
-    mutationFn: contractTypesService.remove,
+    mutationFn: (id) => contractTypesService.remove(id, selectedCompanyId),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['contract_types'] }) }
   })
 
@@ -70,6 +78,7 @@ export default function ContractTypesPage() {
   const rows = useMemo(() => list.data || [], [list.data])
 
   const handleSubmit = async (form) => {
+    if (!enabled) return
     const payload = {
       name: form.name?.trim(),
       is_recurring: !!form.is_recurring,
@@ -84,6 +93,7 @@ export default function ContractTypesPage() {
   }
 
   const handleDelete = async (row) => {
+    if (!enabled) return
     if (window.confirm(`Excluir o tipo ${row.name}?`)) {
       await remove.mutateAsync(row.id)
     }
@@ -91,9 +101,17 @@ export default function ContractTypesPage() {
 
   return (
     <Stack spacing={2}>
-      <PageHeader title="Tipos de contrato" actions={<Button startIcon={<AddIcon />} variant="contained" onClick={() => { setEditing(null); setDialogOpen(true) }}>Novo tipo</Button>} />
+      <PageHeader title="Tipos de contrato" actions={<Button startIcon={<AddIcon />} variant="contained" onClick={() => { setEditing(null); setDialogOpen(true) }} disabled={!enabled}>Novo tipo</Button>} />
+      {!enabled && (
+        <Alert severity="info">Selecione uma empresa para gerenciar os tipos de contrato.</Alert>
+      )}
       <Card>
         <CardContent>
+          {list.isError && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              Erro ao carregar tipos de contrato: {list.error?.message || 'tente novamente.'}
+            </Alert>
+          )}
           <Table size="small">
             <TableHead>
               <TableRow>

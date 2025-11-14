@@ -20,11 +20,15 @@ function QrCodeViewer({ base64 }) {
   )
 }
 
+const TEST_NUMBER = '5567992625560'
+const TEST_MESSAGE = '🔄 Teste de conexão Cobrix: se você recebeu esta mensagem, o WhatsApp da empresa está pronto para enviar notificações automáticas.'
+
 export default function EvoConnectionPage() {
   const { selectedCompanyId, user } = useAuth()
   const [qrPayload, setQrPayload] = useState(null)
   const [errorMessage, setErrorMessage] = useState(null)
   const [qrCountdown, setQrCountdown] = useState(null)
+  const [testResult, setTestResult] = useState(null)
 
   const enabled = useMemo(() => Number.isInteger(selectedCompanyId), [selectedCompanyId])
 
@@ -93,10 +97,34 @@ export default function EvoConnectionPage() {
       setErrorMessage(err?.response?.data?.error || err?.message || 'Falha ao gerar QR Code')
     }
   })
+  const testMutation = useMutation({
+    mutationFn: () => companyIntegrationService.testEvo(selectedCompanyId, {
+      number: TEST_NUMBER,
+      text: TEST_MESSAGE,
+    }),
+    onMutate: () => {
+      setTestResult(null)
+    },
+    onSuccess: () => {
+      setTestResult({
+        severity: 'success',
+        message: `Mensagem de teste enviada para ${TEST_NUMBER}. Verifique o WhatsApp para confirmar o recebimento.`,
+        at: new Date(),
+      })
+    },
+    onError: (err) => {
+      setTestResult({
+        severity: 'error',
+        message: err?.response?.data?.error || err?.message || 'Falha ao enviar a mensagem de teste.',
+        at: new Date(),
+      })
+    }
+  })
 
   useEffect(() => {
     setQrPayload(null)
     setQrCountdown(null)
+    setTestResult(null)
   }, [selectedCompanyId])
 
   useEffect(() => {
@@ -237,7 +265,26 @@ export default function EvoConnectionPage() {
                       {isConnected ? 'Gerar QR Code mesmo assim' : 'Reiniciar conexão'}
                     </Button>
                   )}
+                  <Tooltip
+                    title={isConnected ? 'Envia uma mensagem automática para validar o WhatsApp' : 'Conecte o WhatsApp antes de testar o envio'}
+                  >
+                    <span>
+                      <Button
+                        variant="outlined"
+                        color="secondary"
+                        onClick={() => testMutation.mutate()}
+                        disabled={!isConnected || testMutation.isPending}
+                      >
+                        {testMutation.isPending ? 'Enviando teste…' : 'Enviar msg de teste'}
+                      </Button>
+                    </span>
+                  </Tooltip>
                 </Stack>
+                {testResult && (
+                  <Alert severity={testResult.severity} sx={{ mt: 1 }}>
+                    {testResult.message}
+                  </Alert>
+                )}
               </Stack>
             </CardContent>
           </Card>

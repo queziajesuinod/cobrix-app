@@ -3,15 +3,40 @@ import React from 'react'
 import { authService } from './auth.service'
 
 const AuthContext = React.createContext(null)
+const COMPANY_STORAGE_KEY = 'selectedCompanyId'
+
+function readStoredCompanyId() {
+  try {
+    const raw = localStorage.getItem(COMPANY_STORAGE_KEY)
+    if (!raw) return null
+    const numeric = Number(raw)
+    return Number.isInteger(numeric) && numeric > 0 ? numeric : null
+  } catch {
+    return null
+  }
+}
 
 const SESSION_EVENT = 'auth:expired'
 
 export function AuthProvider({ children }) {
   const [user, setUser] = React.useState(null)
   const [loading, setLoading] = React.useState(true)
-  const [selectedCompanyId, setSelectedCompanyId] = React.useState(() => {
-    try { const raw = localStorage.getItem('selectedCompanyId'); return raw ? Number(raw) : null } catch { return null }
-  })
+  const [selectedCompanyId, setSelectedCompanyIdState] = React.useState(() => readStoredCompanyId())
+
+  const persistSelectedCompanyId = React.useCallback((id) => {
+    const numeric = Number(id)
+    const nextValue = Number.isInteger(numeric) && numeric > 0 ? numeric : null
+    setSelectedCompanyIdState(nextValue)
+    try {
+      if (nextValue) {
+        localStorage.setItem(COMPANY_STORAGE_KEY, String(nextValue))
+      } else {
+        localStorage.removeItem(COMPANY_STORAGE_KEY)
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }, [])
 
   // hidrata sessão e valida token
   React.useEffect(() => {
@@ -31,14 +56,12 @@ export function AuthProvider({ children }) {
         if (u?.role === 'master') {
           // Master: manter a empresa selecionada ou limpar se inválida
           if (selectedCompanyId && !u.company_ids?.includes(selectedCompanyId)) {
-            setSelectedCompanyId(null)
-            try { localStorage.removeItem('selectedCompanyId') } catch {}
+            persistSelectedCompanyId(null)
           }
         } else if (u?.company_ids?.length > 0 && !selectedCompanyId) {
           // Usuário normal: usar a primeira empresa disponível
           const defaultCompanyId = u.company_ids[0]
-          setSelectedCompanyId(defaultCompanyId)
-          try { localStorage.setItem('selectedCompanyId', String(defaultCompanyId)) } catch {}
+          persistSelectedCompanyId(defaultCompanyId)
         }
       } catch {
         authService.clearToken()
@@ -76,14 +99,12 @@ export function AuthProvider({ children }) {
       // Master: não selecionar empresa automaticamente, deixar o usuário escolher
       // Limpar seleção anterior se a empresa não estiver mais disponível
       if (selectedCompanyId && !u.company_ids?.includes(selectedCompanyId)) {
-        setSelectedCompanyId(null)
-        try { localStorage.removeItem('selectedCompanyId') } catch {}
+        persistSelectedCompanyId(null)
       }
     } else if (u?.company_ids?.length > 0) {
       // Usuário normal: selecionar automaticamente a primeira empresa
       const defaultCompanyId = u.company_ids[0]
-      setSelectedCompanyId(defaultCompanyId)
-      try { localStorage.setItem('selectedCompanyId', String(defaultCompanyId)) } catch {}
+      persistSelectedCompanyId(defaultCompanyId)
     }
     return data
   }
@@ -91,7 +112,7 @@ export function AuthProvider({ children }) {
   const logout = () => {
     authService.clearToken()
     setUser(null)
-    try { localStorage.removeItem('selectedCompanyId') } catch {}
+    persistSelectedCompanyId(null)
   }
 
   const value = {
@@ -99,10 +120,7 @@ export function AuthProvider({ children }) {
     setUser,
     loading,
     selectedCompanyId,
-    setSelectedCompanyId: (id) => {
-      setSelectedCompanyId(id)
-      try { localStorage.setItem('selectedCompanyId', String(id)) } catch {}
-    },
+    setSelectedCompanyId: persistSelectedCompanyId,
     login,         // 👈 agora o LoginPage consegue usar
     logout,
   }

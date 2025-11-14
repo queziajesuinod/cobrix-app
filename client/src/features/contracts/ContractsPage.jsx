@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { contractsService, clientsPicker } from './contracts.service'
 import { contractTypesService } from './contractTypes.service'
+import { useAuth } from '@/features/auth/AuthContext'
 import PageHeader from '@/components/PageHeader'
 import {
   Alert, Button, Card, CardContent, Dialog, DialogActions, DialogContent, DialogTitle,
@@ -64,7 +65,7 @@ const normalizePayloadDates = (form) => ({
   value: Number(form.value ?? 0),
 });
 
-function ContractDialog({ open, onClose, onSubmit, defaultValues, contractTypes }) {
+function ContractDialog({ open, onClose, onSubmit, defaultValues, contractTypes = [] }) {
   const [clients, setClients] = useState([])
   const formDefaults = useMemo(() => ({
     client_id: defaultValues?.client_id ?? '',
@@ -133,6 +134,8 @@ function ContractDialog({ open, onClose, onSubmit, defaultValues, contractTypes 
 
 export default function ContractsPage() {
   const qc = useQueryClient()
+  const { selectedCompanyId } = useAuth()
+  const enabled = Number.isInteger(selectedCompanyId)
 
   const [page, setPage] = useState(0)
   const [rowsPerPage, setRowsPerPage] = useState(20)
@@ -150,7 +153,10 @@ export default function ContractsPage() {
 
   useEffect(() => { setPage(0) }, [searchTerm, clientFilter, contractTypeFilter])
 
-  const contractsQueryKey = useMemo(() => ['contracts-paginated', { page, rowsPerPage, searchTerm, clientFilter, contractTypeFilter }], [page, rowsPerPage, searchTerm, clientFilter, contractTypeFilter])
+  const contractsQueryKey = useMemo(
+    () => ['contracts-paginated', selectedCompanyId, { page, rowsPerPage, searchTerm, clientFilter, contractTypeFilter }],
+    [selectedCompanyId, page, rowsPerPage, searchTerm, clientFilter, contractTypeFilter]
+  )
 
   const list = useQuery({
     queryKey: contractsQueryKey,
@@ -162,13 +168,20 @@ export default function ContractsPage() {
       contractTypeId: contractTypeFilter || undefined,
     }),
     keepPreviousData: true,
+    enabled,
   })
 
   const clientsOptions = useQuery({
-    queryKey: ['contracts-filter-clients'],
-    queryFn: () => clientsPicker({ pageSize: 500 })
+    queryKey: ['contracts-filter-clients', selectedCompanyId],
+    queryFn: () => clientsPicker({ pageSize: 500 }),
+    enabled,
   })
-  const contractTypesQuery = useQuery({ queryKey: ['contract_types'], queryFn: contractTypesService.list })
+  const contractTypesQuery = useQuery({
+    queryKey: ['contract_types', selectedCompanyId],
+    queryFn: () => contractTypesService.list(selectedCompanyId),
+    enabled,
+    retry: false,
+  })
   const contractTypes = contractTypesQuery.data || []
 
   const create = useMutation({
@@ -198,9 +211,20 @@ export default function ContractsPage() {
   const rows = useMemo(() => list.data?.data || [], [list.data])
   const total = list.data?.total || 0
 
-  const handleCreate = () => { setEditing(null); setDialogOpen(true) }
-  const handleEdit = (row) => { setEditing(row); setDialogOpen(true) }
-  const handleDelete = (row) => { if (confirm('Remover este contrato?')) remove.mutate(row.id) }
+  const handleCreate = () => {
+    if (!enabled) return
+    setEditing(null)
+    setDialogOpen(true)
+  }
+  const handleEdit = (row) => {
+    if (!enabled) return
+    setEditing(row)
+    setDialogOpen(true)
+  }
+  const handleDelete = (row) => {
+    if (!enabled) return
+    if (confirm('Remover este contrato?')) remove.mutate(row.id)
+  }
   const onSubmit = async (form) => {
     const payload = normalizePayloadDates(form)
     if (editing?.id) await update.mutateAsync({ id: editing.id, payload })
@@ -210,7 +234,17 @@ export default function ContractsPage() {
 
   return (
     <Stack spacing={2}>
-      <PageHeader title="Contratos" actions={<Button variant="contained" startIcon={<AddIcon />} onClick={handleCreate}>Novo</Button>} />
+      <PageHeader
+        title="Contratos"
+        actions={
+          <Button variant="contained" startIcon={<AddIcon />} onClick={handleCreate} disabled={!enabled}>
+            Novo
+          </Button>
+        }
+      />
+      {!enabled && (
+        <Alert severity="info">Selecione uma empresa para visualizar e gerenciar os contratos.</Alert>
+      )}
       <Card>
         <CardContent>
           <Grid container spacing={2}>
@@ -221,6 +255,7 @@ export default function ContractsPage() {
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
                 fullWidth
+                disabled={!enabled}
               />
             </Grid>
             <Grid item xs={12} md={4}>
@@ -231,6 +266,7 @@ export default function ContractsPage() {
                 onChange={(e) => setClientFilter(e.target.value)}
                 fullWidth
                 SelectProps={{ displayEmpty: true }}
+                disabled={!enabled}
               >
                 <MenuItem value=""><em>Todos os clientes</em></MenuItem>
                 {(clientsOptions.data || []).map((c) => (
@@ -246,6 +282,7 @@ export default function ContractsPage() {
                 onChange={(e) => setContractTypeFilter(e.target.value)}
                 fullWidth
                 SelectProps={{ displayEmpty: true }}
+                disabled={!enabled}
               >
                 <MenuItem value=""><em>Todos os tipos</em></MenuItem>
                 {contractTypes.map((type) => (
@@ -258,16 +295,23 @@ export default function ContractsPage() {
                 fullWidth
                 variant="outlined"
                 onClick={() => { setSearchInput(''); setClientFilter(''); setContractTypeFilter(''); }}
-                disabled={!searchTerm && !clientFilter && !contractTypeFilter}
+                disabled={!enabled || (!searchTerm && !clientFilter && !contractTypeFilter)}
               >
                 Limpar filtros
               </Button>
             </Grid>
           </Grid>
+          {contractTypesQuery.isError && enabled && (
+            <Alert severity="warning" sx={{ mt: 2 }}>
+              Não foi possível carregar os tipos de contrato: {contractTypesQuery.error?.message || 'tente novamente.'}
+            </Alert>
+          )}
         </CardContent>
       </Card>
       <Card><CardContent>
-        {list.isLoading ? 'Carregando…' : list.error ? <Alert severity="error">Erro ao carregar</Alert> : rows.length === 0 ? (
+        {!enabled ? (
+          <Alert severity="info">Selecione uma empresa para acessar os dados desta página.</Alert>
+        ) : list.isLoading ? 'Carregando…' : list.error ? <Alert severity="error">Erro ao carregar contratos: {list.error?.message || 'tente novamente.'}</Alert> : rows.length === 0 ? (
           <Alert severity="info">Nenhum contrato encontrado.</Alert>
         ) : (
           <Table size="small">
@@ -298,23 +342,25 @@ export default function ContractsPage() {
                   <TableCell>{r.cancellation_date ? `Cancelado em ${formatDateOnly(r.cancellation_date)}` : 'Ativo'}</TableCell>
                   <TableCell>{formatDateOnly(r.last_billed_date)}</TableCell>
                   <TableCell align="right">
-                    <IconButton size="small" onClick={() => handleEdit(r)}><EditIcon fontSize="small" /></IconButton>
-                    <IconButton size="small" color="error" onClick={() => handleDelete(r)}><DeleteIcon fontSize="small" /></IconButton>
+                    <IconButton size="small" onClick={() => handleEdit(r)} disabled={!enabled}><EditIcon fontSize="small" /></IconButton>
+                    <IconButton size="small" color="error" onClick={() => handleDelete(r)} disabled={!enabled}><DeleteIcon fontSize="small" /></IconButton>
                   </TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
         )}
-        <TablePagination
-          component="div"
-          count={total}
-          page={page}
-          onPageChange={(_, newPage) => setPage(newPage)}
-          rowsPerPage={rowsPerPage}
-          onRowsPerPageChange={(event) => { setRowsPerPage(parseInt(event.target.value, 10)); setPage(0); }}
-          rowsPerPageOptions={[10, 20, 50]}
-        />
+        {enabled && (
+          <TablePagination
+            component="div"
+            count={total}
+            page={page}
+            onPageChange={(_, newPage) => setPage(newPage)}
+            rowsPerPage={rowsPerPage}
+            onRowsPerPageChange={(event) => { setRowsPerPage(parseInt(event.target.value, 10)); setPage(0); }}
+            rowsPerPageOptions={[10, 20, 50]}
+          />
+        )}
       </CardContent></Card>
 
       <ContractDialog

@@ -73,10 +73,22 @@ async function initDb() {
     await c.query(`
       CREATE TABLE IF NOT EXISTS contract_types (
         id SERIAL PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE,
+        company_id INTEGER REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
         is_recurring BOOLEAN NOT NULL DEFAULT false,
         adjustment_percent NUMERIC(5,2) NOT NULL DEFAULT 0
       );
+    `);
+    await c.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema='${schema}' AND table_name='contract_types' AND column_name='company_id'
+        ) THEN
+          ALTER TABLE ${schema}.contract_types ADD COLUMN company_id INTEGER REFERENCES ${schema}.companies(id) ON DELETE CASCADE;
+        END IF;
+      END$$;
     `);
     await c.query(`
       CREATE TABLE IF NOT EXISTS contracts (
@@ -99,14 +111,49 @@ async function initDb() {
     await c.query(`ALTER TABLE ${schema}.contracts ADD COLUMN IF NOT EXISTS contract_type_id INTEGER REFERENCES ${schema}.contract_types(id);`);
     await c.query(`ALTER TABLE ${schema}.contracts ADD COLUMN IF NOT EXISTS recurrence_of INTEGER REFERENCES ${schema}.contracts(id);`);
     await c.query(`
-      INSERT INTO ${schema}.contract_types (name, is_recurring, adjustment_percent)
-      VALUES ('Fixo', false, 0), ('Recorrente', true, 5)
-      ON CONFLICT (name) DO NOTHING;
+      INSERT INTO ${schema}.contract_types (company_id, name, is_recurring, adjustment_percent)
+      SELECT c.id, 'Fixo', false, 0
+      FROM ${schema}.companies c
+      WHERE NOT EXISTS (
+        SELECT 1 FROM ${schema}.contract_types ct
+        WHERE ct.company_id = c.id AND ct.name = 'Fixo'
+      )
     `);
     await c.query(`
-      UPDATE ${schema}.contracts
-      SET contract_type_id = (SELECT id FROM ${schema}.contract_types WHERE name='Fixo' LIMIT 1)
-      WHERE contract_type_id IS NULL
+      INSERT INTO ${schema}.contract_types (company_id, name, is_recurring, adjustment_percent)
+      SELECT c.id, 'Recorrente', true, 5
+      FROM ${schema}.companies c
+      WHERE NOT EXISTS (
+        SELECT 1 FROM ${schema}.contract_types ct
+        WHERE ct.company_id = c.id AND ct.name = 'Recorrente'
+      )
+    `);
+    await c.query(`
+      WITH base AS (
+        SELECT id AS old_id, name
+        FROM ${schema}.contract_types
+        WHERE company_id IS NULL
+      )
+      UPDATE ${schema}.contracts c
+      SET contract_type_id = ct_new.id
+      FROM base b
+      JOIN ${schema}.contract_types ct_new
+        ON ct_new.company_id = c.company_id AND ct_new.name = b.name
+      WHERE c.contract_type_id = b.old_id;
+    `);
+    await c.query(`DELETE FROM ${schema}.contract_types WHERE company_id IS NULL`);
+    await c.query(`
+      ALTER TABLE ${schema}.contract_types
+      ALTER COLUMN company_id SET NOT NULL
+    `);
+    await c.query(`
+      UPDATE ${schema}.contracts c
+      SET contract_type_id = (
+        SELECT id FROM ${schema}.contract_types ct
+        WHERE ct.company_id = c.company_id AND ct.name = 'Fixo'
+        LIMIT 1
+      )
+      WHERE c.contract_type_id IS NULL
     `);
     await c.query(`
       CREATE TABLE IF NOT EXISTS contract_month_status (
@@ -226,3 +273,14 @@ async function dbRequestContext(req, res, next) {
 }
 
 module.exports = { pool, initDb, withClient, query, dbRequestContext };
+    await c.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.table_constraints
+          WHERE table_schema='${schema}' AND table_name='contract_types' AND constraint_name='contract_types_company_name_key'
+        ) THEN
+          ALTER TABLE ${schema}.contract_types ADD CONSTRAINT contract_types_company_name_key UNIQUE (company_id, name);
+        END IF;
+      END$$;
+    `);
