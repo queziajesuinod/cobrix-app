@@ -4,13 +4,13 @@ const { requireAuth, companyScope } = require('./auth');
 const { runDaily } = require('../jobs/billing-cron');
 const { sendWhatsapp } = require('../services/messenger');
 const { msgPre, msgDue, msgLate } = require('../services/message-templates');
+const { ensureDateOnly, formatISODate } = require('../utils/date-only');
 
 const router = express.Router();
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 
 function validStatus(s) { return ['pending', 'paid', 'canceled'].includes(String(s || '').toLowerCase()); }
-function pad2(n) { return String(n).padStart(2, '0'); }
-function isoDate(d) { return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
+function isoDate(value) { return formatISODate(value); }
 function monthBounds(ym) {
   const [y, m] = ym.split('-').map(Number);
   const start = new Date(y, m - 1, 1);
@@ -19,17 +19,8 @@ function monthBounds(ym) {
 }
 
 // NEW: parse "YYYY-MM-DD" as local date to avoid timezone shift
-function parseDateIsoLocal(s) {
-  if (!s) return null;
-  const raw = String(s).slice(0, 10);
-  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) {
-    const d = new Date(s);
-    if (isNaN(d)) return null;
-    return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  }
-  const y = Number(m[1]), mo = Number(m[2]), da = Number(m[3]);
-  return new Date(y, mo - 1, da);
+function parseDateIsoLocal(value) {
+  return ensureDateOnly(value);
 }
 
 // helper para inserir na billing_notifications (todas colunas)

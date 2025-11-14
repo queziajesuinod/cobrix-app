@@ -1,12 +1,14 @@
 const { query } = require('../db');
+const { ensureDateOnly, formatISODate } = require('../utils/date-only');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 
 const meses = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
 
 function dd(n) { return String(n).padStart(2, '0'); }
-function formatPtDate(d) {
-  if (!(d instanceof Date) || Number.isNaN(d.getTime())) return '';
+function formatPtDate(value) {
+  const d = ensureDateOnly(value);
+  if (!d) return '';
   const dia = dd(d.getDate());
   const mes = meses[d.getMonth()] || '';
   const ano = d.getFullYear();
@@ -114,13 +116,6 @@ function clearCompanyCache(companyId) {
   companyPixCache.delete(`pix:${companyId}`);
 }
 
-function ensureDate(value) {
-  if (value instanceof Date) return value;
-  if (!value) return null;
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
 async function getCompanyName(companyId) {
   if (!companyId) return 'Teifelt Contabilidade';
   const cached = readCache(companyNameCache, `company:${companyId}`);
@@ -173,9 +168,9 @@ function applyTemplate(template, values = {}) {
 }
 
 function buildBindings(ctx = {}) {
-  const mesRefDate = ensureDate(ctx.mesRefDate || ctx.referenceDate);
-  const vencimentoDate = ensureDate(ctx.vencimentoDate || ctx.dueDate);
-  const now = ensureDate(ctx.now) || new Date();
+  const mesRefDate = ensureDateOnly(ctx.mesRefDate || ctx.referenceDate);
+  const vencimentoDate = ensureDateOnly(ctx.vencimentoDate || ctx.dueDate);
+  const now = ensureDateOnly(ctx.now) || new Date();
   const responsible = ctx.responsavel || ctx.client_responsavel || ctx.client_responsible || ctx.nome || ctx.client_name;
   const clientLegalName =
     ctx.client_legal_name ||
@@ -194,7 +189,7 @@ function buildBindings(ctx = {}) {
     reference_month_number: mesRefDate ? dd(mesRefDate.getMonth() + 1) : '',
     reference_year: mesRefDate ? String(mesRefDate.getFullYear()) : '',
     due_date: vencimentoDate ? formatPtDate(vencimentoDate) : '',
-    due_date_iso: vencimentoDate ? vencimentoDate.toISOString().slice(0, 10) : '',
+    due_date_iso: vencimentoDate ? formatISODate(vencimentoDate) : '',
     amount: ctx.valor != null ? moneyBR(ctx.valor) : '',
     pix_key: ctx.pix || ctx.pix_key || '',
     company_name: ctx.empresa || ctx.company_name || '',

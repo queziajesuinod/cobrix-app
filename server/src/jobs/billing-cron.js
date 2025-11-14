@@ -2,27 +2,21 @@
 const { query, withClient } = require("../db");
 const { sendWhatsapp } = require("../services/messenger");
 const { msgPre, msgDue, msgLate } = require("../services/message-templates");
+const { ensureDateOnly, formatISODate, addDays } = require("../utils/date-only");
 const SCHEMA = process.env.DB_SCHEMA || "public";
 
-// Utils
-function pad2(n) { return String(n).padStart(2, "0"); }
-function isoDate(d) {
-  const date = new Date(d);
-  const year = date.getFullYear();
-  const month = pad2(date.getMonth() + 1);
-  const day = pad2(date.getDate());
-  return `${year}-${month}-${day}`;
-}
-function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
-function effectiveBillingDay(date, billingDay) {
-  const y = date.getFullYear(), m = date.getMonth();
+function isoDate(value) { return formatISODate(value); }
+function effectiveBillingDay(dateValue, billingDay) {
+  const base = ensureDateOnly(dateValue) || new Date();
+  const y = base.getFullYear();
+  const m = base.getMonth();
   const last = new Date(y, m + 1, 0).getDate();
   return Math.min(Number(billingDay), last);
 }
 function dueDateForMonth(baseDate, billingDay) {
-  const y = baseDate.getFullYear(), m = baseDate.getMonth();
-  const eff = effectiveBillingDay(baseDate, billingDay);
-  return new Date(y, m, eff);
+  const base = ensureDateOnly(baseDate) || new Date();
+  const eff = effectiveBillingDay(base, billingDay);
+  return new Date(base.getFullYear(), base.getMonth(), eff);
 }
 
 // Grava/atualiza notificação sem violar UNIQUE
@@ -80,7 +74,7 @@ async function renewRecurringContracts(now = new Date()) {
   `, [todayStr]);
 
   for (const c of rows.rows) {
-    const baseEnd = new Date(c.end_date || todayStr);
+    const baseEnd = ensureDateOnly(c.end_date || todayStr) || ensureDateOnly(todayStr);
     const newStart = addDays(baseEnd, 1);
     const newEnd = addDays(newStart, 365);
     const factor = 1 + Number(c.adjustment_percent || 0) / 100;
@@ -278,7 +272,7 @@ async function sendDueReminders(now = new Date()) {
       client_name: r.client_name,
       tipoContrato: r.description,
       mesRefDate,
-      vencimentoDate: new Date(todayStr),
+      vencimentoDate: ensureDateOnly(todayStr),
       valor: r.amount,
       companyId: r.company_id,
     });
@@ -339,7 +333,7 @@ async function sendLateReminders(now = new Date()) {
       client_name: r.client_name,
       tipoContrato: r.description,
       mesRefDate,
-      vencimentoDate: new Date(targetStr),
+      vencimentoDate: ensureDateOnly(targetStr),
       valor: r.amount,
       companyId: r.company_id,
     });
