@@ -228,6 +228,23 @@ async function getQrCode(instanceName, options = {}) {
   return normalizeQrResponse(instanceName, data);
 }
 
+async function fetchInstances(instanceName, options = {}) {
+  return evoRequest({
+    method: 'get',
+    path: `/instance/fetchInstances`,
+    params: { instanceName },
+    ...options,
+  });
+}
+
+async function deleteInstance(instanceName, options = {}) {
+  return evoRequest({
+    method: 'delete',
+    path: `/instance/delete/${encodeURIComponent(instanceName)}`,
+    ...options,
+  });
+}
+
 function normalizeQrResponse(instanceName, data) {
   if (data == null || data === 'null') {
     return {
@@ -282,5 +299,7 @@ module.exports = {
   restartInstance,
   connectInstance,
   getQrCode,
+  fetchInstances,
+  deleteInstance,
   formatInstanceName,
 };

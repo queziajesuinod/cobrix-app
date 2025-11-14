@@ -31,7 +31,7 @@ const cron = require('node-cron');
 const app = require('./app');
 
 // 3) CRON JOBS
-const { runDueOnly, runPreOnly, runLateOnly } = require('./jobs/billing-cron');
+const { runDueOnly, runPreOnly, runLateOnly, runRenewOnly } = require('./jobs/billing-cron');
 
 // D0 - Due
 if (process.env.CRON_DUE) {
@@ -54,6 +54,13 @@ if (process.env.CRON_LATE) {
   cron.schedule(process.env.CRON_LATE, () => {
     console.log(`[CRON] Executando LATE em ${new Date().toISOString()}`);
     runLateOnly().catch(err => console.error('CRON_LATE erro:', err));
+  });
+}
+
+if (process.env.CRON_RENEW) {
+  cron.schedule(process.env.CRON_RENEW, () => {
+    console.log(`[CRON] Executando RENEW em ${new Date().toISOString()}`);
+    runRenewOnly().catch(err => console.error('CRON_RENEW erro:', err));
   });
 }
 

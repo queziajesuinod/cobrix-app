@@ -13,6 +13,7 @@ import MenuIcon from '@mui/icons-material/Menu'
 import HomeIcon from '@mui/icons-material/Home'
 import PeopleIcon from '@mui/icons-material/People'
 import AssignmentIcon from '@mui/icons-material/Assignment'
+import CategoryIcon from '@mui/icons-material/Category'
 import BusinessIcon from '@mui/icons-material/Business'
 import LogoutIcon from '@mui/icons-material/Logout'
 import AutorenewIcon from '@mui/icons-material/Autorenew'
@@ -32,6 +33,7 @@ const navItems = (role, companyId) => [
   { type: 'item', to: '/dashboard', label: 'Início', icon: <HomeIcon /> },
   { type: 'item', to: '/clients', label: 'Clientes', icon: <PeopleIcon /> },
   { type: 'item', to: '/contracts', label: 'Contratos', icon: <AssignmentIcon /> },
+  { type: 'item', to: '/contracts/types', label: 'Tipos de contrato', icon: <CategoryIcon /> },
   { type: 'item', to: '/integration/evo', label: 'Integração', icon: <QrCodeIcon /> },
 
   {

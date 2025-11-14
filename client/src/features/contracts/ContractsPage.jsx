@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { contractsService, clientsPicker } from './contracts.service'
+import { contractTypesService } from './contractTypes.service'
 import PageHeader from '@/components/PageHeader'
 import {
   Alert, Button, Card, CardContent, Dialog, DialogActions, DialogContent, DialogTitle,
@@ -32,11 +33,13 @@ function formatDateOnly(val) {
 
 const schema = z.object({
   client_id: z.coerce.number().int().positive({ message: 'Selecione um cliente' }),
+  contract_type_id: z.coerce.number().int().positive({ message: 'Selecione o tipo de contrato' }),
   description: z.string().min(3, 'Descrição obrigatória'),
   value: z.coerce.number().nonnegative('Valor inválido'),
   start_date: z.string().min(10, 'Data inicial obrigatória'),
   end_date: z.string().min(10, 'Data final obrigatória'),
-  billing_day: z.coerce.number().int().min(1).max(31)
+  billing_day: z.coerce.number().int().min(1).max(31),
+  cancellation_date: z.string().optional()
 })
 
 const toDateInput = (value) => {
@@ -55,17 +58,23 @@ const normalizePayloadDates = (form) => ({
   ...form,
   start_date: toDateInput(form.start_date),
   end_date: toDateInput(form.end_date),
+  cancellation_date: toDateInput(form.cancellation_date) || null,
+  contract_type_id: form.contract_type_id ? Number(form.contract_type_id) : null,
+  client_id: form.client_id ? Number(form.client_id) : null,
+  value: Number(form.value ?? 0),
 });
 
-function ContractDialog({ open, onClose, onSubmit, defaultValues }) {
+function ContractDialog({ open, onClose, onSubmit, defaultValues, contractTypes }) {
   const [clients, setClients] = useState([])
   const formDefaults = useMemo(() => ({
     client_id: defaultValues?.client_id ?? '',
+    contract_type_id: defaultValues?.contract_type_id ?? '',
     description: defaultValues?.description ?? '',
     value: defaultValues?.value ?? 0,
     start_date: toDateInput(defaultValues?.start_date),
     end_date: toDateInput(defaultValues?.end_date),
     billing_day: defaultValues?.billing_day ?? 1,
+    cancellation_date: toDateInput(defaultValues?.cancellation_date),
   }), [defaultValues])
   const { register, handleSubmit, formState:{ errors, isSubmitting }, reset } = useForm({ resolver: zodResolver(schema), defaultValues: formDefaults })
   useEffect(() => { reset(formDefaults) }, [formDefaults, reset])
@@ -83,6 +92,16 @@ function ContractDialog({ open, onClose, onSubmit, defaultValues }) {
             </TextField>
           </Grid>
           <Grid item xs={12} md={6}>
+            <TextField select fullWidth label="Tipo de contrato" defaultValue={defaultValues?.contract_type_id ?? ''} {...register('contract_type_id')} error={!!errors.contract_type_id} helperText={errors.contract_type_id?.message}>
+              <MenuItem value="">Selecione…</MenuItem>
+              {(contractTypes || []).map((type) => (
+                <MenuItem key={type.id} value={type.id}>
+                  {type.name}{type.is_recurring ? ` (+${Number(type.adjustment_percent).toFixed(2)}%/ano)` : ''}
+                </MenuItem>
+              ))}
+            </TextField>
+          </Grid>
+          <Grid item xs={12}>
             <TextField fullWidth label="Descrição" {...register('description')} error={!!errors.description} helperText={errors.description?.message} />
           </Grid>
           <Grid item xs={12} md={4}>
@@ -96,6 +115,9 @@ function ContractDialog({ open, onClose, onSubmit, defaultValues }) {
           </Grid>
           <Grid item xs={12} md={4}>
             <TextField fullWidth label="Dia de cobrança" type="number" inputProps={{ min:1, max:31 }} {...register('billing_day')} error={!!errors.billing_day} helperText={errors.billing_day?.message} />
+          </Grid>
+          <Grid item xs={12} md={4}>
+            <TextField fullWidth label="Cancelado em" type="date" InputLabelProps={{ shrink: true }} {...register('cancellation_date')} error={!!errors.cancellation_date} helperText={errors.cancellation_date?.message || 'Preencha apenas se o contrato foi encerrado.'} />
           </Grid>
         </Grid>
       </DialogContent>
@@ -117,6 +139,7 @@ export default function ContractsPage() {
   const [searchInput, setSearchInput] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [clientFilter, setClientFilter] = useState('')
+  const [contractTypeFilter, setContractTypeFilter] = useState('')
 
   useEffect(() => {
     const handle = setTimeout(() => {
@@ -125,9 +148,9 @@ export default function ContractsPage() {
     return () => clearTimeout(handle)
   }, [searchInput])
 
-  useEffect(() => { setPage(0) }, [searchTerm, clientFilter])
+  useEffect(() => { setPage(0) }, [searchTerm, clientFilter, contractTypeFilter])
 
-  const contractsQueryKey = useMemo(() => ['contracts-paginated', { page, rowsPerPage, searchTerm, clientFilter }], [page, rowsPerPage, searchTerm, clientFilter])
+  const contractsQueryKey = useMemo(() => ['contracts-paginated', { page, rowsPerPage, searchTerm, clientFilter, contractTypeFilter }], [page, rowsPerPage, searchTerm, clientFilter, contractTypeFilter])
 
   const list = useQuery({
     queryKey: contractsQueryKey,
@@ -136,6 +159,7 @@ export default function ContractsPage() {
       pageSize: rowsPerPage,
       q: searchTerm || undefined,
       clientId: clientFilter || undefined,
+      contractTypeId: contractTypeFilter || undefined,
     }),
     keepPreviousData: true,
   })
@@ -144,6 +168,8 @@ export default function ContractsPage() {
     queryKey: ['contracts-filter-clients'],
     queryFn: () => clientsPicker({ pageSize: 500 })
   })
+  const contractTypesQuery = useQuery({ queryKey: ['contract_types'], queryFn: contractTypesService.list })
+  const contractTypes = contractTypesQuery.data || []
 
   const create = useMutation({
     mutationFn: contractsService.create,
@@ -188,7 +214,7 @@ export default function ContractsPage() {
       <Card>
         <CardContent>
           <Grid container spacing={2}>
-            <Grid item xs={12} md={5}>
+            <Grid item xs={12} md={4}>
               <TextField
                 label="Buscar serviço"
                 placeholder="Descrição do contrato"
@@ -197,7 +223,7 @@ export default function ContractsPage() {
                 fullWidth
               />
             </Grid>
-            <Grid item xs={12} md={5}>
+            <Grid item xs={12} md={4}>
               <TextField
                 select
                 label="Cliente"
@@ -212,12 +238,27 @@ export default function ContractsPage() {
                 ))}
               </TextField>
             </Grid>
-            <Grid item xs={12} md={2} sx={{ display: 'flex', alignItems: 'center' }}>
+            <Grid item xs={12} md={3}>
+              <TextField
+                select
+                label="Tipo"
+                value={contractTypeFilter}
+                onChange={(e) => setContractTypeFilter(e.target.value)}
+                fullWidth
+                SelectProps={{ displayEmpty: true }}
+              >
+                <MenuItem value=""><em>Todos os tipos</em></MenuItem>
+                {contractTypes.map((type) => (
+                  <MenuItem key={type.id} value={type.id}>{type.name}</MenuItem>
+                ))}
+              </TextField>
+            </Grid>
+            <Grid item xs={12} md={1} sx={{ display: 'flex', alignItems: 'center' }}>
               <Button
                 fullWidth
                 variant="outlined"
-                onClick={() => { setSearchInput(''); setClientFilter(''); }}
-                disabled={!searchTerm && !clientFilter}
+                onClick={() => { setSearchInput(''); setClientFilter(''); setContractTypeFilter(''); }}
+                disabled={!searchTerm && !clientFilter && !contractTypeFilter}
               >
                 Limpar filtros
               </Button>
@@ -235,9 +276,11 @@ export default function ContractsPage() {
                 <TableCell>ID</TableCell>
                 <TableCell>Cliente</TableCell>
                 <TableCell>Descrição</TableCell>
+                <TableCell>Tipo</TableCell>
                 <TableCell>Valor</TableCell>
                 <TableCell>Período</TableCell>
                 <TableCell>Dia</TableCell>
+                <TableCell>Status</TableCell>
                 <TableCell>Última cobrança</TableCell>
                 <TableCell align="right">Ações</TableCell>
               </TableRow>
@@ -248,11 +291,11 @@ export default function ContractsPage() {
                   <TableCell>{r.id}</TableCell>
                   <TableCell>{r.client_name}</TableCell>
                   <TableCell>{r.description}</TableCell>
-                  <TableCell>R$ {Number(r.value).toFixed(2)}</TableCell>                                        
-                  <TableCell>
-  {formatDateOnly(r.start_date)} → {formatDateOnly(r.end_date)}
-</TableCell>
+                  <TableCell>{r.contract_type_name || '-'}</TableCell>
+                  <TableCell>{Number(r.value).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</TableCell>
+                  <TableCell>{formatDateOnly(r.start_date)} → {formatDateOnly(r.end_date)}</TableCell>
                   <TableCell>{r.billing_day}</TableCell>
+                  <TableCell>{r.cancellation_date ? `Cancelado em ${formatDateOnly(r.cancellation_date)}` : 'Ativo'}</TableCell>
                   <TableCell>{formatDateOnly(r.last_billed_date)}</TableCell>
                   <TableCell align="right">
                     <IconButton size="small" onClick={() => handleEdit(r)}><EditIcon fontSize="small" /></IconButton>
@@ -278,7 +321,8 @@ export default function ContractsPage() {
         open={dialogOpen}
         onClose={() => setDialogOpen(false)}
         onSubmit={onSubmit}
-        defaultValues={editing || { client_id:'', description:'', value:0, start_date:'', end_date:'', billing_day:1 }}
+        defaultValues={editing || { client_id:'', contract_type_id:'', description:'', value:0, start_date:'', end_date:'', billing_day:1, cancellation_date:'' }}
+        contractTypes={contractTypes}
       />
     </Stack>
   )

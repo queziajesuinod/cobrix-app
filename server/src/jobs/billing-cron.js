@@ -2,7 +2,6 @@
 const { query, withClient } = require("../db");
 const { sendWhatsapp } = require("../services/messenger");
 const { msgPre, msgDue, msgLate } = require("../services/message-templates");
-
 const SCHEMA = process.env.DB_SCHEMA || "public";
 
 // Utils
@@ -65,6 +64,47 @@ async function upsertAutoNotification({
   return r.rows[0]?.id;
 }
 
+async function renewRecurringContracts(now = new Date()) {
+  const todayStr = isoDate(now);
+  const rows = await query(`
+    SELECT c.*, ct.adjustment_percent, ct.is_recurring
+    FROM ${SCHEMA}.contracts c
+    JOIN ${SCHEMA}.contract_types ct ON ct.id = c.contract_type_id
+    WHERE ct.is_recurring = true
+      AND c.cancellation_date IS NULL
+      AND DATE(c.end_date) <= DATE($1)
+      AND NOT EXISTS (
+        SELECT 1 FROM ${SCHEMA}.contracts c2
+        WHERE c2.recurrence_of = c.id
+      )
+  `, [todayStr]);
+
+  for (const c of rows.rows) {
+    const baseEnd = new Date(c.end_date || todayStr);
+    const newStart = addDays(baseEnd, 1);
+    const newEnd = addDays(newStart, 365);
+    const factor = 1 + Number(c.adjustment_percent || 0) / 100;
+    const newValue = Number(c.value || 0) * factor;
+    await query(`
+      INSERT INTO ${SCHEMA}.contracts
+        (company_id, client_id, contract_type_id, description, value, start_date, end_date, billing_day, recurrence_of, cancellation_date)
+      VALUES
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL)
+    `, [
+      c.company_id,
+      c.client_id,
+      c.contract_type_id,
+      c.description,
+      newValue,
+      isoDate(newStart),
+      isoDate(newEnd),
+      c.billing_day,
+      c.id,
+    ]);
+    console.log(`[RENEW] Contrato #${c.id} renovado para ${isoDate(newStart)}-${isoDate(newEnd)} com valor ${newValue.toFixed(2)}`);
+  }
+}
+
 // 1) Gera cobranças do dia (idempotente)
 async function generateBillingsForToday(now = new Date()) {
   const todayStr = isoDate(now);
@@ -75,6 +115,7 @@ async function generateBillingsForToday(now = new Date()) {
     FROM ${SCHEMA}.contracts c
     JOIN ${SCHEMA}.clients  cl ON cl.id = c.client_id
     WHERE c.start_date <= $1 AND c.end_date >= $1
+      AND (c.cancellation_date IS NULL OR c.cancellation_date >= $1)
   `, [todayStr]);
 
   for (const c of contracts.rows) {
@@ -153,6 +194,7 @@ async function sendPreReminders(now = new Date()) {
     LEFT JOIN ${SCHEMA}.contract_month_status cms
       ON cms.contract_id = c.id AND cms.year = $2 AND cms.month = $3
     WHERE c.start_date <= $1 AND c.end_date >= $1
+      AND (c.cancellation_date IS NULL OR c.cancellation_date >= $1)
       AND LOWER(COALESCE(cms.status, 'pending')) <> 'paid'
   `, [baseStr, year, month]);
 
@@ -217,6 +259,7 @@ async function sendDueReminders(now = new Date()) {
     LEFT JOIN ${SCHEMA}.contract_month_status cms
       ON cms.contract_id = c.id AND cms.year = $2 AND cms.month = $3
     WHERE b.billing_date = $1
+      AND (c.cancellation_date IS NULL OR c.cancellation_date >= $1)
       AND LOWER(COALESCE(cms.status, 'pending')) <> 'paid'
   `, [todayStr, year, month]);
 
@@ -279,6 +322,7 @@ async function sendLateReminders(now = new Date()) {
     LEFT JOIN ${SCHEMA}.contract_month_status cms
       ON cms.contract_id = c.id AND cms.year = $2 AND cms.month = $3
     WHERE b.billing_date = $1
+      AND (c.cancellation_date IS NULL OR c.cancellation_date >= $1)
       AND LOWER(COALESCE(cms.status, 'pending')) <> 'paid'
   `, [targetStr, year, month]);
 
@@ -324,6 +368,7 @@ async function sendLateReminders(now = new Date()) {
 // Orquestração
 async function runDaily(now = new Date(), opts = {}) {
   const { generate = true, pre = true, due = true, late = true } = opts;
+  await renewRecurringContracts(now);
   if (generate) await generateBillingsForToday(now);
   if (pre) await sendPreReminders(now);
   if (due) await sendDueReminders(now);
@@ -334,12 +379,14 @@ async function runDaily(now = new Date(), opts = {}) {
 async function runPreOnly(now = new Date()) { await sendPreReminders(now); }
 async function runDueOnly(now = new Date()) { await sendDueReminders(now); }
 async function runLateOnly(now = new Date()) { await sendLateReminders(now); }
+async function runRenewOnly(now = new Date()) { await renewRecurringContracts(now); }
 
 module.exports = {
   runDaily,
   runPreOnly,
   runDueOnly,
   runLateOnly,
+  runRenewOnly,
   generateBillingsForToday,
   sendPreReminders,
   sendDueReminders,

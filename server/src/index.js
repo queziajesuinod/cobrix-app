@@ -71,18 +71,42 @@ async function initDb() {
     `);
     await c.query(`ALTER TABLE ${schema}.clients ADD COLUMN IF NOT EXISTS responsavel TEXT;`);
     await c.query(`
+      CREATE TABLE IF NOT EXISTS contract_types (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        is_recurring BOOLEAN NOT NULL DEFAULT false,
+        adjustment_percent NUMERIC(5,2) NOT NULL DEFAULT 0
+      );
+    `);
+    await c.query(`
       CREATE TABLE IF NOT EXISTS contracts (
         id SERIAL PRIMARY KEY,
         company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
         client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+        contract_type_id INTEGER REFERENCES ${schema}.contract_types(id),
         description TEXT NOT NULL,
         value NUMERIC(10, 2) NOT NULL,
         start_date DATE NOT NULL,
         end_date DATE NOT NULL,
         billing_day INTEGER NOT NULL,
+        cancellation_date DATE,
+        recurrence_of INTEGER REFERENCES ${schema}.contracts(id),
         last_billed_date DATE,
         created_at TIMESTAMPTZ DEFAULT now()
       );
+    `);
+    await c.query(`ALTER TABLE ${schema}.contracts ADD COLUMN IF NOT EXISTS cancellation_date DATE;`);
+    await c.query(`ALTER TABLE ${schema}.contracts ADD COLUMN IF NOT EXISTS contract_type_id INTEGER REFERENCES ${schema}.contract_types(id);`);
+    await c.query(`ALTER TABLE ${schema}.contracts ADD COLUMN IF NOT EXISTS recurrence_of INTEGER REFERENCES ${schema}.contracts(id);`);
+    await c.query(`
+      INSERT INTO ${schema}.contract_types (name, is_recurring, adjustment_percent)
+      VALUES ('Fixo', false, 0), ('Recorrente', true, 5)
+      ON CONFLICT (name) DO NOTHING;
+    `);
+    await c.query(`
+      UPDATE ${schema}.contracts
+      SET contract_type_id = (SELECT id FROM ${schema}.contract_types WHERE name='Fixo' LIMIT 1)
+      WHERE contract_type_id IS NULL
     `);
     await c.query(`
       CREATE TABLE IF NOT EXISTS contract_month_status (

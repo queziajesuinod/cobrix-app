@@ -1,7 +1,7 @@
 const express = require("express");
 const { query } = require("../db");
 const { clearCompanyCache } = require("../services/message-templates");
-const { createInstance, formatInstanceName, buildSendUrl, getConnectionState, restartInstance } = require("../services/evo-api");
+const { createInstance, formatInstanceName, buildSendUrl, getConnectionState, restartInstance, deleteInstance, resolveBase } = require("../services/evo-api");
 const { requireAuth } = require("./auth");
 
 const router = express.Router();
@@ -196,10 +196,26 @@ router.put("/:id", requireAuth, async (req, res) => {
 router.delete("/:id", requireAuth, async (req, res) => {
   if (!isMaster(req.user)) return res.status(403).json({ error: "Apenas master remove empresa" });
   const id = Number(req.params.id);
+  const rCompany = await query("SELECT id, evo_instance, evo_api_url, evo_api_key FROM companies WHERE id=$1", [id]);
+  const companyRow = rCompany.rows[0];
   // Remover todos os vínculos de user_companies antes de deletar a empresa
   await query("DELETE FROM user_companies WHERE company_id = $1", [id]);
   const r = await query("DELETE FROM companies WHERE id=$1 RETURNING id", [id]);
   if (!r.rows[0]) return res.status(404).json({ error: "Empresa não encontrada" });
+  if (companyRow?.evo_instance) {
+    const evoOptions = {
+      baseOverride: resolveBase(companyRow.evo_api_url) || null,
+      apiKeyOverride: companyRow.evo_api_key || null,
+    };
+    deleteInstance(companyRow.evo_instance, evoOptions).catch(err => {
+      console.warn('[companies] delete evo instance failed', {
+        companyId: id,
+        instance: companyRow.evo_instance,
+        status: err?.status,
+        message: err?.message,
+      });
+    });
+  }
   res.json({ ok: true });
 });
 

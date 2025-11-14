@@ -52,25 +52,29 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
         <Typography variant="body2">Sem dados para {ym}.</Typography>
       ) : items.map(it => {
         const allPaid = it.month_status === 'paid'
+        const isCanceled = it.month_status === 'canceled'
         return (
           <Card key={it.contract_id} variant="outlined">
             <CardContent>
               <Grid container alignItems="center">
                 <Grid item xs={12} md={7}>
                   <Stack direction="row" spacing={1} alignItems="center">
-                    {allPaid ? <CheckCircleIcon color="success" /> : <CheckCircleIcon color="disabled" />}
+                    {allPaid ? <CheckCircleIcon color="success" /> : isCanceled ? <CheckCircleIcon color="warning" /> : <CheckCircleIcon color="disabled" />}
                     <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
                       Contrato #{it.contract_id} · {it.contract_description || '-'}
                       {it.client_name ? ` — ${it.client_name}` : ''}
                     </Typography>
                     <Chip size="small" label={`Mês: ${ym}`} />
-                    <Chip size="small" color={allPaid ? 'success' : it.month_status === 'canceled' ? 'default' : 'warning'} label={`Status do mês: ${String(it.month_status||'pending').toUpperCase()}`} />
+                    <Chip size="small" color={allPaid ? 'success' : isCanceled ? 'default' : 'warning'} label={`Status do mês: ${String(it.month_status||'pending').toUpperCase()}`} />
+                    {isCanceled && it.cancellation_date && (
+                      <Chip size="small" label={`Cancelado em ${formatDateOnly(it.cancellation_date)}`} />
+                    )}
                   </Stack>
                 </Grid>
                 <Grid item xs={12} md={5} sx={{ textAlign: { xs:'left', md:'right' } }}>
                   <Tooltip title="Marcar o mês inteiro como PAGO">
                     <span>
-                      <Button size="small" variant="contained" onClick={() => bulk.mutateAsync({ contractId: it.contract_id, y, m, status: 'paid' })}>Marcar mês PAGO</Button>
+                      <Button size="small" variant="contained" disabled={allPaid || isCanceled} onClick={() => bulk.mutateAsync({ contractId: it.contract_id, y, m, status: 'paid' })}>Marcar mês PAGO</Button>
                     </span>
                   </Tooltip>
                 </Grid>

@@ -21,13 +21,23 @@ const dateField = z.preprocess(
   z.string().regex(DATE_ISO)
 );
 
+const optionalDateField = z.preprocess(
+  (value) => {
+    if (value === undefined || value === null || value === '') return null;
+    return normalizeDateInput(value);
+  },
+  z.nullable(z.string().regex(DATE_ISO))
+);
+
 const contractSchema = z.object({
   client_id: z.number().int().positive(),
+  contract_type_id: z.number().int().positive(),
   description: z.string().min(3),
   value: z.number().nonnegative(),
   start_date: dateField,
   end_date: dateField,
-  billing_day: z.number().int().min(1).max(31)
+  billing_day: z.number().int().min(1).max(31),
+  cancellation_date: optionalDateField.optional()
 });
 
 router.get('/', requireAuth, companyScope(true), async (req, res) => {
@@ -43,8 +53,13 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
   const month = baseDate.getMonth() + 1;
   const clientIdRaw = req.query.clientId;
   const clientId = clientIdRaw != null && clientIdRaw !== '' ? Number(clientIdRaw) : null;
+  const contractTypeRaw = req.query.contractTypeId;
+  const contractTypeId = contractTypeRaw != null && contractTypeRaw !== '' ? Number(contractTypeRaw) : null;
   if (clientIdRaw && (clientId == null || Number.isNaN(clientId))) {
     return res.status(400).json({ error: 'clientId inválido' });
+  }
+  if (contractTypeRaw && (contractTypeId == null || Number.isNaN(contractTypeId))) {
+    return res.status(400).json({ error: 'contractTypeId inválido' });
   }
   const q = String(req.query.q || '').trim();
 
@@ -59,6 +74,7 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
        AND cms.year = ${add(year)}
        AND cms.month = ${add(month)}
       JOIN ${SCHEMA}.clients cl ON cl.id = c.client_id
+      LEFT JOIN ${SCHEMA}.contract_types ct ON ct.id = c.contract_type_id
     `;
 
     // WHERE (sempre dentro da empresa)
@@ -68,11 +84,14 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
     // Contratos ativos na data (se active_on vier)
     if (req.query.active_on) {
       const activeOn = add(req.query.active_on);
-      filters.push(`DATE(c.start_date) <= DATE(${activeOn}) AND DATE(c.end_date) >= DATE(${activeOn})`);
+      filters.push(`DATE(c.start_date) <= DATE(${activeOn}) AND DATE(c.end_date) >= DATE(${activeOn}) AND (c.cancellation_date IS NULL OR DATE(c.cancellation_date) >= DATE(${activeOn}))`);
     }
 
     if (clientId) {
       filters.push(`c.client_id = ${add(clientId)}`);
+    }
+    if (contractTypeId) {
+      filters.push(`c.contract_type_id = ${add(contractTypeId)}`);
     }
 
     if (q) {
@@ -97,6 +116,9 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
              cl.name  AS client_name,
              cl.email AS client_email,
              cl.responsavel AS client_responsavel,
+             ct.name AS contract_type_name,
+             ct.is_recurring,
+             ct.adjustment_percent,
              cms.status AS month_status,
              cms.year, cms.month
       ${fromSql}
@@ -140,17 +162,25 @@ router.post('/', requireAuth, companyScope(true), async (req, res) => {
     billing_day: Number(req.body.billing_day)
   });
   if (!parse.success) return res.status(400).json({ error: parse.error.flatten() });
-  const { client_id, description, value, start_date, end_date, billing_day } = parse.data;
+  const { client_id, contract_type_id, description, value, start_date, end_date, billing_day, cancellation_date } = parse.data;
   if (new Date(start_date) >= new Date(end_date)) return res.status(400).json({ error: 'Data de início deve ser anterior à data de fim' });
+  if (cancellation_date) {
+    const cancelDt = new Date(cancellation_date);
+    if (cancelDt < new Date(start_date)) return res.status(400).json({ error: 'Data de cancelamento não pode ser anterior ao início' });
+    if (cancelDt > new Date(end_date)) return res.status(400).json({ error: 'Data de cancelamento não pode ser após o fim' });
+  }
 
   try {
     const hasClient = await query('SELECT id FROM clients WHERE id=$1 AND company_id=$2', [client_id, req.companyId]);
     if (!hasClient.rows[0]) return res.status(400).json({ error: 'Cliente não encontrado nesta empresa' });
 
+    const typeExists = await query(`SELECT id FROM ${SCHEMA}.contract_types WHERE id=$1`, [contract_type_id]);
+    if (!typeExists.rows[0]) return res.status(400).json({ error: 'Tipo de contrato inválido' });
+
     const r = await query(`
-      INSERT INTO contracts (company_id, client_id, description, value, start_date, end_date, billing_day)
-      VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *
-    `, [req.companyId, client_id, description, value, start_date, end_date, billing_day]);
+      INSERT INTO contracts (company_id, client_id, contract_type_id, description, value, start_date, end_date, billing_day, cancellation_date)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *
+    `, [req.companyId, client_id, contract_type_id, description, value, start_date, end_date, billing_day, cancellation_date]);
     res.status(201).json(r.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -165,18 +195,26 @@ router.put('/:id', requireAuth, companyScope(true), async (req, res) => {
     billing_day: Number(req.body.billing_day)
   });
   if (!parse.success) return res.status(400).json({ error: parse.error.flatten() });
-  const { client_id, description, value, start_date, end_date, billing_day } = parse.data;
+  const { client_id, contract_type_id, description, value, start_date, end_date, billing_day, cancellation_date } = parse.data;
   if (new Date(start_date) >= new Date(end_date)) return res.status(400).json({ error: 'Data de início deve ser anterior à data de fim' });
+  if (cancellation_date) {
+    const cancelDt = new Date(cancellation_date);
+    if (cancelDt < new Date(start_date)) return res.status(400).json({ error: 'Data de cancelamento não pode ser anterior ao início' });
+    if (cancelDt > new Date(end_date)) return res.status(400).json({ error: 'Data de cancelamento não pode ser após o fim' });
+  }
 
   try {
     const hasClient = await query('SELECT id FROM clients WHERE id=$1 AND company_id=$2', [client_id, req.companyId]);
     if (!hasClient.rows[0]) return res.status(400).json({ error: 'Cliente não encontrado nesta empresa' });
 
+    const typeExists = await query(`SELECT id FROM ${SCHEMA}.contract_types WHERE id=$1`, [contract_type_id]);
+    if (!typeExists.rows[0]) return res.status(400).json({ error: 'Tipo de contrato inválido' });
+
     const r = await query(`
       UPDATE contracts
-      SET client_id=$1, description=$2, value=$3, start_date=$4, end_date=$5, billing_day=$6
-      WHERE id=$7 AND company_id=$8 RETURNING *
-    `, [client_id, description, value, start_date, end_date, billing_day, req.params.id, req.companyId]);
+      SET client_id=$1, contract_type_id=$2, description=$3, value=$4, start_date=$5, end_date=$6, billing_day=$7, cancellation_date=$8
+      WHERE id=$9 AND company_id=$10 RETURNING *
+    `, [client_id, contract_type_id, description, value, start_date, end_date, billing_day, cancellation_date, req.params.id, req.companyId]);
     if (!r.rows[0]) return res.status(404).json({ error: 'Contrato não encontrado' });
     res.json({ ok: true });
   } catch (err) {

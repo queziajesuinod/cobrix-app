@@ -12,6 +12,7 @@ const LoginPage = lazy(() => import('@/features/auth/LoginPage'))
 const DashboardPage = lazy(() => import('@/features/dashboard/DashboardPage'))
 const ClientsPage = lazy(() => import('@/features/clients/ClientsPage'))
 const ContractsPage = lazy(() => import('@/features/contracts/ContractsPage'))
+const ContractTypesPage = lazy(() => import('@/features/contracts/ContractTypesPage'))
 const PaidContractsPage = lazy(() => import('@/features/billings/PaidContractsPage'))
 const CompanyListPage = lazy(() => import('@/features/companies/CompanyListPage'))
 const CompanyFormPage = lazy(() => import('@/features/companies/CompanyFormPage'))
@@ -29,6 +30,7 @@ export default function AppRouter() {
         <Route path="/companies/:id/settings" element={<ProtectedRoute><AppShell><CompanySettingsPage /></AppShell></ProtectedRoute>} />
         <Route path="/clients" element={<ProtectedRoute><AppShell><ClientsPage /></AppShell></ProtectedRoute>} />
         <Route path="/contracts" element={<ProtectedRoute><AppShell><ContractsPage /></AppShell></ProtectedRoute>} />
+        <Route path="/contracts/types" element={<ProtectedRoute><AppShell><ContractTypesPage /></AppShell></ProtectedRoute>} />
         <Route path="/notifications/auto" element={<ProtectedRoute><AppShell><AutoNotificationsPage /></AppShell></ProtectedRoute>} />
         <Route path="/notifications/manual" element={<ProtectedRoute><AppShell><ManualNotificationsPage /></AppShell></ProtectedRoute>} />
         <Route path="/notifications/templates" element={<ProtectedRoute><AppShell><MessageTemplatesPage /></AppShell></ProtectedRoute>} />

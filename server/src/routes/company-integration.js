@@ -2,7 +2,7 @@ const express = require('express')
 const { query } = require('../db')
 const { requireAuth } = require('./auth')
 const { sendWhatsapp } = require('../services/messenger')
-const { getConnectionState, restartInstance, connectInstance, getQrCode, resolveBase } = require('../services/evo-api')
+const { getConnectionState, restartInstance, connectInstance, getQrCode, fetchInstances, resolveBase } = require('../services/evo-api')
 
 const router = express.Router()
 
@@ -102,7 +102,20 @@ router.post('/:id/integration/evo/connect', requireAuth, async (req, res) => {
   }
   try {
     const data = await connectInstance(row.evo_instance, evoOptions)
-    res.json(formatEvoResponse(row, data))
+    let fetched = null
+    try {
+      fetched = await fetchInstances(row.evo_instance, evoOptions)
+    } catch (fetchErr) {
+      console.warn('[integration] fetchInstances after connect failed', {
+        companyId: id,
+        instance: row.evo_instance,
+        status: fetchErr.status,
+        message: fetchErr.message,
+      })
+    }
+    const payload = formatEvoResponse(row, data)
+    payload.fetchInstances = fetched
+    res.json(payload)
   } catch (err) {
     console.error('[integration] connect failed', {
       companyId: id,
