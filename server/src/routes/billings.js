@@ -392,7 +392,9 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
     const monthStartIso = `${ym}-01`;
     const notif = await query(`
       SELECT bn.contract_id, bn.type, COUNT(*) AS cnt, MAX(bn.sent_at) AS last_sent_at,
-             c.client_id, c.description AS contract_description, cl.name AS client_name, MAX(c.cancellation_date) AS cancellation_date
+             c.client_id, c.description AS contract_description, cl.name AS client_name,
+             MAX(c.cancellation_date) AS cancellation_date,
+             MAX(c.billing_day) AS billing_day
       FROM ${SCHEMA}.billing_notifications bn
       JOIN ${SCHEMA}.contracts c ON c.id = bn.contract_id
       JOIN ${SCHEMA}.clients cl ON cl.id = c.client_id
@@ -411,7 +413,8 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
     `, [req.companyId, year, month, clientId, contractId, dueDay, monthStartIso]);
 
     const cms = await query(`
-      SELECT cms.contract_id, cms.status, c.client_id, c.description AS contract_description, cl.name AS client_name, c.cancellation_date
+      SELECT cms.contract_id, cms.status, c.client_id, c.description AS contract_description,
+             cl.name AS client_name, c.cancellation_date, c.billing_day
       FROM ${SCHEMA}.contract_month_status cms
       JOIN ${SCHEMA}.contracts c ON c.id = cms.contract_id
       JOIN ${SCHEMA}.clients cl ON cl.id = c.client_id
@@ -423,7 +426,8 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
     `, [req.companyId, year, month, clientId, contractId, monthStartIso]);
 
     const bills = await query(`
-      SELECT b.*, c.description AS contract_description, c.client_id AS contract_client_id, cl.name AS client_name, c.cancellation_date
+      SELECT b.*, c.description AS contract_description, c.client_id AS contract_client_id,
+             cl.name AS client_name, c.cancellation_date, c.billing_day
       FROM ${SCHEMA}.billings b
       JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
       JOIN ${SCHEMA}.clients   cl ON cl.id = c.client_id
@@ -453,33 +457,37 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
         notifications: {},
         billings: [],
         cancellation_date: null,
+        billing_day: null,
       };
       entry.contract_description ??= r.contract_description;
       entry.client_name ??= r.client_name;
       entry.client_id ??= r.contract_client_id != null ? Number(r.contract_client_id) : entry.client_id;
       entry.cancellation_date ??= r.cancellation_date ?? entry.cancellation_date;
       entry.billings.push(r);
+      if (r.billing_day != null) entry.billing_day ??= Number(r.billing_day);
       byContract[key] = entry;
     }
     for (const n of notif.rows) {
       const key = n.contract_id;
-      const entry = byContract[key] ?? { contract_id: key, contract_description: null, client_name: null, client_id: null, month_status: 'pending', notifications: {}, billings: [], cancellation_date: null };
+      const entry = byContract[key] ?? { contract_id: key, contract_description: null, client_name: null, client_id: null, month_status: 'pending', notifications: {}, billings: [], cancellation_date: null, billing_day: null };
       entry.contract_description ??= n.contract_description || entry.contract_description;
       entry.client_name ??= n.client_name || entry.client_name;
       entry.client_id ??= n.client_id != null ? Number(n.client_id) : entry.client_id;
       entry.cancellation_date ??= n.cancellation_date ?? entry.cancellation_date;
+      if (n.billing_day != null) entry.billing_day ??= Number(n.billing_day);
       entry.notifications[n.type] = { count: Number(n.cnt), last_sent_at: n.last_sent_at };
       byContract[key] = entry;
     }
     for (const s of cms.rows) {
       if (dueDay != null && !byContract[s.contract_id]) continue;
       const key = s.contract_id;
-      const entry = byContract[key] ?? { contract_id: key, contract_description: null, client_name: null, client_id: null, month_status: 'pending', notifications: {}, billings: [], cancellation_date: null };
+      const entry = byContract[key] ?? { contract_id: key, contract_description: null, client_name: null, client_id: null, month_status: 'pending', notifications: {}, billings: [], cancellation_date: null, billing_day: null };
       entry.month_status = s.status;
       entry.contract_description ??= s.contract_description || entry.contract_description;
       entry.client_name ??= s.client_name || entry.client_name;
       entry.client_id ??= s.client_id != null ? Number(s.client_id) : entry.client_id;
       entry.cancellation_date ??= s.cancellation_date ?? entry.cancellation_date;
+      if (s.billing_day != null) entry.billing_day ??= Number(s.billing_day);
       byContract[key] = entry;
     }
     const result = Object.values(byContract).map(item => {
@@ -492,6 +500,11 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
         }
       }
       return item;
+    }).sort((a, b) => {
+      const dayA = Number.isFinite(a.billing_day) ? a.billing_day : 999;
+      const dayB = Number.isFinite(b.billing_day) ? b.billing_day : 999;
+      if (dayA !== dayB) return dayA - dayB;
+      return (a.contract_id || 0) - (b.contract_id || 0);
     });
     res.json(result);
   } catch (e) {

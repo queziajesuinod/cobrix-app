@@ -36,7 +36,12 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
     if (clientId) {
       list = list.filter(item => item.client_id != null && Number(item.client_id) === Number(clientId))
     }
-    return list
+    return [...list].sort((a, b) => {
+      const dayA = Number.isFinite(a.billing_day) ? a.billing_day : 999
+      const dayB = Number.isFinite(b.billing_day) ? b.billing_day : 999
+      if (dayA !== dayB) return dayA - dayB
+      return Number(a.contract_id || 0) - Number(b.contract_id || 0)
+    })
   }, [q.data, contractId, clientId])
 
   if (!ym) return null
@@ -58,16 +63,17 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
             <CardContent>
               <Grid container alignItems="center">
                 <Grid item xs={12} md={7}>
-                  <Stack direction="row" spacing={1} alignItems="center">
-                    {allPaid ? <CheckCircleIcon color="success" /> : isCanceled ? <CheckCircleIcon color="warning" /> : <CheckCircleIcon color="disabled" />}
-                    <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                      Contrato #{it.contract_id} · {it.contract_description || '-'}
-                      {it.client_name ? ` — ${it.client_name}` : ''}
-                    </Typography>
-                    <Chip size="small" label={`Mês: ${ym}`} />
-                    <Chip size="small" color={allPaid ? 'success' : isCanceled ? 'default' : 'warning'} label={`Status do mês: ${String(it.month_status||'pending').toUpperCase()}`} />
-                    {isCanceled && it.cancellation_date && (
-                      <Chip size="small" label={`Cancelado em ${formatDateOnly(it.cancellation_date)}`} />
+                  <Stack spacing={0.5}>
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      {allPaid ? <CheckCircleIcon color="success" /> : isCanceled ? <CheckCircleIcon color="warning" /> : <CheckCircleIcon color="disabled" />}
+                      <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                        Contrato #{it.contract_id} · {it.contract_description || '-'}
+                      </Typography>
+                    </Stack>
+                    {it.client_name && (
+                      <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                        Cliente: {it.client_name}
+                      </Typography>
                     )}
                   </Stack>
                 </Grid>
@@ -80,23 +86,42 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
                 </Grid>
               </Grid>
 
-           <Stack direction="row" spacing={1} sx={{ mt: 1, flexWrap: 'wrap' }}>
-  {['pre', 'due', 'late'].map(t => {
-    const n = it.notifications?.[t]
-    const active = !!(n && Number(n.count) > 0) // já houve notificação deste tipo?
+              <Stack direction="row" spacing={1} sx={{ mt: 1, flexWrap: 'wrap' }}>
+                <Chip size="small" label={`Mês: ${ym}`} />
+                <Chip
+                  size="small"
+                  color={allPaid ? 'success' : isCanceled ? 'default' : 'warning'}
+                  label={`Status: ${String(it.month_status || 'pending').toUpperCase()}`}
+                />
+                {Number.isInteger(it.billing_day) && (
+                  <Chip
+                    size="small"
+                    color="info"
+                    label={`Vencimento dia ${String(it.billing_day).padStart(2, '0')}`}
+                  />
+                )}
+                {isCanceled && it.cancellation_date && (
+                  <Chip size="small" label={`Cancelado em ${formatDateOnly(it.cancellation_date)}`} />
+                )}
+              </Stack>
 
-    return (
-      <Chip
-        key={t}
-        size="small"
-        label={label(t)}
-        color={active ? color(t) : 'default'}   // acende com a cor do tipo, senão cinza
-        variant={active ? 'filled' : 'outlined'}
-        sx={!active ? { opacity: 0.6 } : undefined} // opcional: deixa “apagadinho” quando inativo
-      />
-    )
-  })}
-</Stack>
+              <Stack direction="row" spacing={1} sx={{ mt: 1, flexWrap: 'wrap' }}>
+                {['pre', 'due', 'late'].map(t => {
+                  const n = it.notifications?.[t]
+                  const active = !!(n && Number(n.count) > 0)
+
+                  return (
+                    <Chip
+                      key={t}
+                      size="small"
+                      label={label(t)}
+                      color={active ? color(t) : 'default'}
+                      variant={active ? 'filled' : 'outlined'}
+                      sx={!active ? { opacity: 0.6 } : undefined}
+                    />
+                  )
+                })}
+              </Stack>
 
 
               <Table size="small" sx={{ mt: 1 }}>
