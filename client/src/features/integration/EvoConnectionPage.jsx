@@ -119,7 +119,7 @@ export default function EvoConnectionPage() {
 
   useEffect(() => {
     if (qrPayload?.qrcode && !isConnected) {
-      setQrCountdown(40)
+      setQrCountdown(29)
     } else {
       setQrCountdown(null)
     }

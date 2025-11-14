@@ -401,7 +401,7 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
     const monthStartIso = `${ym}-01`;
     const notif = await query(`
       SELECT bn.contract_id, bn.type, COUNT(*) AS cnt, MAX(bn.sent_at) AS last_sent_at,
-             c.client_id, c.description AS contract_description, cl.name AS client_name, c.cancellation_date
+             c.client_id, c.description AS contract_description, cl.name AS client_name, MAX(c.cancellation_date) AS cancellation_date
       FROM ${SCHEMA}.billing_notifications bn
       JOIN ${SCHEMA}.contracts c ON c.id = bn.contract_id
       JOIN ${SCHEMA}.clients cl ON cl.id = c.client_id
