@@ -1,10 +1,11 @@
-const express = require('express');
+﻿const express = require('express');
 const { query } = require('../db');
 const { requireAuth, companyScope } = require('./auth');
 const { runDaily } = require('../jobs/billing-cron');
 const { sendWhatsapp } = require('../services/messenger');
 const { msgPre, msgDue, msgLate } = require('../services/message-templates');
 const { ensureGatewayPaymentLink } = require('../services/payment-gateway');
+const { notifyBillingPaid } = require('../services/payment-notifications');
 const { isGatewayConfigured } = require('../services/company-gateway');
 const { ensureDateOnly, formatISODate } = require('../utils/date-only');
 
@@ -43,6 +44,35 @@ function encodeProviderResponse(value) {
   } catch {
     return null;
   }
+}
+
+async function setContractMonthStatusPaid(contractId, companyId, billingDate) {
+  if (!contractId || !companyId || !billingDate) return;
+  const date = ensureDateOnly(billingDate);
+  if (!date) return;
+  const year = date.getFullYear();
+  const month = date.getMonth() + 1;
+  await query(
+    `INSERT INTO ${SCHEMA}.contract_month_status (contract_id, company_id, year, month, status)
+     VALUES ($1,$2,$3,$4,'paid')
+     ON CONFLICT (contract_id, year, month)
+     DO UPDATE SET status='paid', updated_at=NOW()`,
+    [Number(contractId), Number(companyId), year, month]
+  ).catch(() => {});
+}
+
+async function ensureContractMonthStatusPending(contractId, companyId, billingDate) {
+  if (!contractId || !companyId || !billingDate) return;
+  const date = ensureDateOnly(billingDate);
+  if (!date) return;
+  const year = date.getFullYear();
+  const month = date.getMonth() + 1;
+  await query(
+    `INSERT INTO ${SCHEMA}.contract_month_status (contract_id, company_id, year, month, status)
+     VALUES ($1,$2,$3,$4,'pending')
+     ON CONFLICT (contract_id, year, month) DO NOTHING`,
+    [Number(contractId), Number(companyId), year, month]
+  ).catch(() => {});
 }
 
 // helper para inserir na billing_notifications (todas colunas)
@@ -129,7 +159,7 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
   }
 });
 
-// KPIs do mês
+// KPIs do m├¬s
 router.get('/kpis', requireAuth, companyScope(true), async (req, res) => {
   try {
     const { ym, clientId, contractId } = req.query;
@@ -198,16 +228,16 @@ router.get('/kpis', requireAuth, companyScope(true), async (req, res) => {
   }
 });
 
-// Notificação MANUAL (pre/due/late)
+// Notifica├º├úo MANUAL (pre/due/late)
 router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
   try {
     const { contract_id, date, type } = req.body || {};
     const typ = String(type || '').toLowerCase();
     if (!['pre', 'due', 'late'].includes(typ)) return res.status(400).json({ error: 'type inválido' });
-    if (!contract_id || !date) return res.status(400).json({ error: 'contract_id e date são obrigatórios' });
+    if (!contract_id || !date) return res.status(400).json({ error: 'contract_id e date s├úo obrigatórios' });
     const gatewayReady = await isGatewayConfigured(req.companyId);
     if (!gatewayReady) {
-      return res.status(400).json({ error: 'Gateway de pagamento não configurado para esta empresa.' });
+      return res.status(400).json({ error: 'Gateway de pagamento n├úo configurado para esta empresa.' });
     }
 
     const c = await query(`
@@ -218,24 +248,24 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
       WHERE c.id = $1 AND c.company_id = $2
     `, [contract_id, req.companyId]);
     const row = c.rows[0];
-    if (!row) return res.status(404).json({ error: 'Contrato não encontrado' });
+    if (!row) return res.status(404).json({ error: 'Contrato n├úo encontrado' });
 
     // parse de date como local para evitar shift de timezone
-    const baseDate = new Date(); // mês atual
-    const dueDay = row.billing_day || 1; // default 1 se não tiver
+    const baseDate = new Date(); // m├¬s atual
+    const dueDay = row.billing_day || 1; // default 1 se n├úo tiver
     const year = baseDate.getFullYear();
-    const month = baseDate.getMonth(); // mês atual (0-11)
+    const month = baseDate.getMonth(); // m├¬s atual (0-11)
 
-    // evita erro se o mês tiver menos dias (ex: dia 30 em fevereiro)
+    // evita erro se o m├¬s tiver menos dias (ex: dia 30 em fevereiro)
     const lastDay = new Date(year, month + 1, 0).getDate();
     const day = Math.min(dueDay, lastDay);
 
-    // 🔹 Cria a data final de vencimento
+    // ­ƒö╣ Cria a data final de vencimento
     const due = new Date(year, month, day);
-    if (!due) return res.status(400).json({ error: 'date inválida' });
+    if (!due) return res.status(400).json({ error: 'date inv├ílida' });
     const dueStr = isoDate(due);
 
-    // se mês já pago/cancelado, bloqueia
+    // se m├¬s j├í pago/cancelado, bloqueia
     const cms = await query(`
       SELECT status FROM ${SCHEMA}.contract_month_status
       WHERE contract_id=$1 AND year=$2 AND month=$3
@@ -244,7 +274,7 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
       return res.status(409).json({ error: 'Mês já está PAGO/CANCELADO — notificação bloqueada' });
     }
 
-    // se for due/late, não envia se já houver billing pago/cancelado
+    // se for due/late, n├úo envia se j├í houver billing pago/cancelado
     if (typ !== 'pre') {
       const b = await query(`
         SELECT 1 FROM ${SCHEMA}.billings
@@ -256,7 +286,7 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
     // usa advisory lock por contrato para evitar race conditions
     await query('SELECT pg_advisory_lock($1)', [Number(contract_id)]);
     try {
-      // checa existência novamente dentro da lock
+      // checa exist├¬ncia novamente dentro da lock
       const exists2 = await query(`
         SELECT 1 FROM ${SCHEMA}.billing_notifications
         WHERE contract_id=$1 AND due_date=$2 AND type=$3 LIMIT 1
@@ -273,7 +303,22 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
         WHERE company_id=$1 AND contract_id=$2 AND billing_date=$3
         LIMIT 1
       `, [req.companyId, Number(contract_id), dueStr]);
-      const billingId = billingLookup.rows[0]?.id || null;
+      let billingId = billingLookup.rows[0]?.id || null;
+      let createdBilling = false;
+      if (!billingId) {
+        const inserted = await query(`
+          INSERT INTO ${SCHEMA}.billings (company_id, contract_id, billing_date, amount, status)
+          VALUES ($1,$2,$3,$4,'pending')
+          ON CONFLICT (contract_id, billing_date)
+          DO UPDATE SET amount = EXCLUDED.amount
+          RETURNING id
+        `, [req.companyId, Number(contract_id), dueStr, row.value]);
+        billingId = inserted.rows[0]?.id || billingId;
+        createdBilling = Boolean(billingId);
+      }
+      if (createdBilling) {
+        await ensureContractMonthStatusPending(contract_id, req.companyId, dueStr);
+      }
       const map = { pre: msgPre, due: msgDue, late: msgLate };
       const recipientName = row.client_responsavel || row.client_name;
       const clientDocument = {
@@ -320,7 +365,7 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
 
       await insertBillingNotification({
         companyId: req.companyId,
-        billingId: null,                         // manual direto, sem billing atrelado
+        billingId,
         contractId: Number(contract_id),
         clientId: Number(row.client_id),
         kind: 'manual',
@@ -355,22 +400,60 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
 router.put('/:id/status', requireAuth, companyScope(true), async (req, res) => {
   const status = String(req.body?.status || '').toLowerCase();
   if (!validStatus(status)) return res.status(400).json({ error: 'status inválido' });
+  const billingId = Number(req.params.id);
+  if (!billingId) return res.status(400).json({ error: 'cobrança inválida' });
   try {
-    const r = await query(`
+    const existing = await query(
+      `
+      SELECT b.id, b.status, b.amount, b.contract_id, b.billing_date
+      FROM ${SCHEMA}.billings b
+      JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
+      WHERE b.id = $1 AND c.company_id = $2
+    `, [billingId, req.companyId]);
+    const row = existing.rows[0];
+    if (!row) return res.status(404).json({ error: 'Cobrança não encontrada' });
+    const previousStatus = String(row.status || '').toLowerCase();
+
+    const updated = await query(
+      `
       UPDATE ${SCHEMA}.billings b
-      SET status=$1
+      SET status=$1,
+          updated_at=NOW(),
+          gateway_paid_at = CASE
+            WHEN $1 = 'paid' THEN COALESCE(gateway_paid_at, NOW())
+            ELSE gateway_paid_at
+          END
       FROM ${SCHEMA}.contracts c
       WHERE b.id=$2 AND c.id=b.contract_id AND c.company_id=$3
       RETURNING b.id, b.status
-    `, [status, req.params.id, req.companyId]);
-    if (!r.rows[0]) return res.status(404).json({ error: 'Cobrança não encontrada' });
-    res.json(r.rows[0]);
+    `, [status, billingId, req.companyId]);
+    if (!updated.rows[0]) return res.status(404).json({ error: 'Cobrança não encontrada' });
+
+    if (status === 'paid' && previousStatus !== 'paid') {
+      try {
+        await setContractMonthStatusPaid(row.contract_id, req.companyId, row.billing_date);
+      } catch (cmsErr) {
+        console.error('[billing-status] falha ao atualizar contract_month_status billing=%s err=%s', billingId, cmsErr.message);
+      }
+      try {
+        await notifyBillingPaid({
+          billingId,
+          companyId: req.companyId,
+          amount: row.amount,
+          paymentDate: new Date(),
+          detail: { source: 'manual-status', status: 'CONCLUIDA' },
+        });
+      } catch (notifyErr) {
+        console.error('[billing-status] falha ao notificar pagamento manual billing=%s err=%s', billingId, notifyErr.message);
+      }
+    }
+
+    res.json(updated.rows[0]);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
-
-// Histórico de notificações de uma cobrança
+// Hist├│rico de notifica├º├Áes de uma cobran├ºa
 router.get('/:id/notifications', requireAuth, companyScope(true), async (req, res) => {
   try {
     const b = await query(`
@@ -396,7 +479,7 @@ router.get('/:id/notifications', requireAuth, companyScope(true), async (req, re
   }
 });
 
-// Marca status do mês por contrato (sincroniza billings do mês)
+// Marca status do m├¬s por contrato (sincroniza billings do m├¬s)
 router.put('/by-contract/:contractId/month/:year/:month/status', requireAuth, companyScope(true), async (req, res) => {
   const contractId = Number(req.params.contractId);
   const year = Number(req.params.year);
@@ -431,10 +514,10 @@ router.put('/by-contract/:contractId/month/:year/:month/status', requireAuth, co
   }
 });
 
-// Visão agrupada do mês (para o front) — somente contratos com month_status diferente de 'paid'
+// Vis├úo agrupada do m├¬s (para o front) ÔÇö somente contratos com month_status diferente de 'paid'
 router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
   const ym = String(req.query.ym || '').trim();
-  if (!/^\d{4}-\d{2}$/.test(ym)) return res.status(400).json({ error: 'Parâmetro ym (YYYY-MM) obrigatório' });
+  if (!/^\d{4}-\d{2}$/.test(ym)) return res.status(400).json({ error: 'Parametro ym (YYYY-MM) obrigatório' });
   const [year, month] = ym.split('-').map(Number);
   const clientIdRaw = req.query.clientId;
   const contractIdRaw = req.query.contractId;
@@ -573,10 +656,10 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
   }
 });
 
-// Lista contratos marcados como PAGO em um mês
+// Lista contratos marcados como PAGO em um m├¬s
 router.get('/paid', requireAuth, companyScope(true), async (req, res) => {
   const ym = String(req.query.ym || '').trim();
-  if (!/^\d{4}-\d{2}$/.test(ym)) return res.status(400).json({ error: 'Parâmetro ym (YYYY-MM) obrigatório' });
+  if (!/^\d{4}-\d{2}$/.test(ym)) return res.status(400).json({ error: 'Par├ómetro ym (YYYY-MM) obrigatório' });
   const [year, month] = ym.split('-').map(Number);
   const clientIdRaw = req.query.clientId;
   const contractIdRaw = req.query.contractId;

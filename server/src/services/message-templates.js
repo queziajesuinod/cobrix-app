@@ -1,4 +1,4 @@
-﻿const { query } = require('../db');
+const { query } = require('../db');
 const { ensureDateOnly, formatISODate } = require('../utils/date-only');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
@@ -111,22 +111,37 @@ Se j� pagou, desconsidere esta mensagem. Qualquer d�vida, fale conosco.
 Atenciosamente,
 Equipe Financeira
 {{company_name}}`,
+  paid: `Olá {{client_name}}, tudo bem?
+
+Recebemos o pagamento referente ao {{contract_type}} de {{reference_month}} (vencimento em {{due_date}}) no valor de {{amount}}.
+
+Pagamento confirmado em {{payment_date}}.
+
+Obrigado pela parceria!
+
+Atenciosamente,
+Equipe Financeira
+{{company_name}}`,
 };
 
 const PLACEHOLDERS = [
-  { key: 'client_name', label: 'Nome do destinatÃ¡rio', example: 'Maria Souza' },
-  { key: 'client_responsible', label: 'ResponsÃ¡vel pelo cliente', example: 'JoÃ£o Pereira' },
+  { key: 'client_name', label: 'Nome do destinatário', example: 'Maria Souza' },
+  { key: 'client_responsible', label: 'Responsável pelo cliente', example: 'JoÃ£o Pereira' },
   { key: 'client_legal_name', label: 'Nome oficial do cliente', example: 'Empresa XPTO Ltda' },
-  { key: 'contract_type', label: 'DescriÃ§Ã£o do contrato', example: 'Consultoria ContÃ¡bil' },
-  { key: 'reference_month', label: 'MÃªs de referÃªncia (extenso)', example: 'setembro' },
-  { key: 'reference_month_number', label: 'MÃªs de referÃªncia (nÃºmero)', example: '09' },
-  { key: 'reference_year', label: 'Ano de referÃªncia', example: '2024' },
-  { key: 'due_date', label: 'Data de vencimento (dd/mÃªs/aaaa)', example: '25/setembro/2024' },
+  { key: 'contract_type', label: 'Descrição do contrato', example: 'Consultoria Contábil' },
+  { key: 'reference_month', label: 'Mês de referência (extenso)', example: 'setembro' },
+  { key: 'reference_month_number', label: 'Mês de referência (número)', example: '09' },
+  { key: 'reference_year', label: 'Ano de referência', example: '2024' },
+  { key: 'due_date', label: 'Data de vencimento (dd/mês/aaaa)', example: '25/setembro/2024' },
   { key: 'due_date_iso', label: 'Data de vencimento (YYYY-MM-DD)', example: '2024-09-25' },
   { key: 'amount', label: 'Valor formatado (R$)', example: 'R$ 1234,56' },
   { key: 'pix_key', label: 'Chave PIX', example: '11.222.333/0001-44' },
   { key: 'company_name', label: 'Nome da empresa', example: 'Teifelt Contabilidade' },
-  { key: 'current_date', label: 'Data de hoje (dd/mÃªs/aaaa)', example: '10/setembro/2024' },
+  { key: 'payment_date', label: 'Data em que o pagamento foi confirmado', example: '26/setembro/2024' },
+  { key: 'payment_date_iso', label: 'Data ISO do pagamento', example: '2024-09-26' },
+  { key: 'payment_amount', label: 'Valor pago formatado', example: 'R$ 123,45' },
+  { key: 'payment_txid', label: 'TXID informado pelo Pix', example: '123e4567...' },
+  { key: 'current_date', label: 'Data de hoje (dd/mês/aaaa)', example: '10/setembro/2024' },
   { key: 'current_date_iso', label: 'Data de hoje (YYYY-MM-DD)', example: '2024-09-10' },
   { key: 'payment_link', label: 'Link de pagamento (gateway)', example: 'https://pagamento.seusite.com/pix/abc123' },
   { key: 'payment_code', label: 'Pix copia e cola', example: '0002010102122687...' },
@@ -260,6 +275,26 @@ function buildBindings(ctx = {}) {
   const paymentExpiresDisplay =
     ctx.payment_expires_at ||
     (paymentExpiresIso ? formatPtDateTime(paymentExpiresIso) : '');
+  const paymentDateValue =
+    ctx.payment_date ||
+    ctx.paymentDate ||
+    ctx.payment_date_iso ||
+    ctx.paymentDateIso ||
+    ctx.payment_datetime ||
+    ctx.paymentDateTime ||
+    ctx.payment_confirmed_at ||
+    ctx.payment_confirmed_at_iso ||
+    ctx.gateway_payment_paid_at ||
+    '';
+  let paymentDateObj = null;
+  if (paymentDateValue) {
+    if (paymentDateValue instanceof Date) {
+      paymentDateObj = paymentDateValue;
+    } else {
+      const parsedPaymentDate = new Date(paymentDateValue);
+      if (!Number.isNaN(parsedPaymentDate.getTime())) paymentDateObj = parsedPaymentDate;
+    }
+  }
 
   return {
     client_name: responsible || clientLegalName || '',
@@ -281,6 +316,10 @@ function buildBindings(ctx = {}) {
     payment_qrcode: paymentQr,
     payment_expires_at: paymentExpiresDisplay,
     payment_expires_at_iso: paymentExpiresIso,
+    payment_date: paymentDateObj ? formatPtDateTime(paymentDateObj) : '',
+    payment_date_iso: paymentDateObj ? paymentDateObj.toISOString() : '',
+    payment_amount: ctx.payment_amount != null ? moneyBR(ctx.payment_amount) : (ctx.valor != null ? moneyBR(ctx.valor) : ''),
+    payment_txid: ctx.payment_txid || ctx.gateway_payment_txid || ctx.txid || '',
   };
 }
 
@@ -328,6 +367,9 @@ async function msgLate(ctx) {
   const type = hasGatewayContext(ctx) ? 'late_gateway' : 'late';
   return renderMessage(type, ctx);
 }
+async function msgPaid(ctx) {
+  return renderMessage('paid', ctx);
+}
 
 async function getTemplatesForCompany(companyId) {
   const result = { ...DEFAULT_TEMPLATES };
@@ -364,6 +406,7 @@ module.exports = {
   msgPre,
   msgDue,
   msgLate,
+  msgPaid,
   renderMessage,
   getTemplatesForCompany,
   upsertTemplate,

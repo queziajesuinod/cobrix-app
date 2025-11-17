@@ -350,7 +350,7 @@ async function sendDueReminders(now = new Date()) {
 
     let evo = { ok: false, error: "no-phone" };
     try { evo = await sendWhatsapp(r.company_id, { number: r.client_phone, text }); }
-    catch (e) { evo = { ok: false, error: e.message }; }
+    catch (e) { evo = { ok: false, error: e.message }; }l
     const providerResponse = {
       messenger: evo.data ?? null,
       messengerStatus: evo.status ?? null,

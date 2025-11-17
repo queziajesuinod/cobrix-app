@@ -1,5 +1,6 @@
 const { query } = require('../db');
 const { getChargeStatus } = require('../services/payment-gateway');
+const { notifyBillingPaid } = require('../services/payment-notifications');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 const SUCCESS_STATUSES = new Set(['CONCLUIDA']);
@@ -67,6 +68,7 @@ async function markBillingPaid({ companyId, contractId, dueDate, billingId, txid
       updatedBilling.billing_date || dueDate
     );
   }
+  return updatedBilling;
 }
 
 async function markLinkAsPaid(link, detail) {
@@ -75,21 +77,26 @@ async function markLinkAsPaid(link, detail) {
     `UPDATE ${SCHEMA}.billing_gateway_links
         SET status='paid',
             paid_at=NOW(),
-            gateway_payload = COALESCE(gateway_payload, '{}'::jsonb) || jsonb_build_object('lastDetail', COALESCE($2::jsonb, '{}'::jsonb)),
+            gateway_payload = CASE
+              WHEN $2::text IS NULL THEN gateway_payload
+              ELSE COALESCE(gateway_payload, '{}'::jsonb) || jsonb_build_object('lastDetail', $2::jsonb)
+            END,
             updated_at=NOW()
       WHERE id=$1
       RETURNING company_id, contract_id, billing_id, due_date, txid`,
     [link.id, detailJson]
   );
   const row = update.rows[0];
-  if (!row) return;
-  await markBillingPaid({
+  if (!row) return null;
+  const billingResult = await markBillingPaid({
     companyId: row.company_id,
     contractId: row.contract_id,
     dueDate: row.due_date,
     billingId: row.billing_id || link.billing_id || null,
     txid: row.txid || link.txid,
   });
+  const mergedLink = { ...link, ...row };
+  return { link: mergedLink, billing: billingResult };
 }
 
 async function reconcileLink(link) {
@@ -97,10 +104,36 @@ async function reconcileLink(link) {
     const detail = await getChargeStatus({ companyId: link.company_id, txid: link.txid });
     const status = (detail?.status || '').toUpperCase();
     if (SUCCESS_STATUSES.has(status)) {
-      await markLinkAsPaid(link, detail);
+      const result = await markLinkAsPaid(link, detail);
+      if (result && (result.billing?.id || result.link?.billing_id)) {
+        const billingId = result.billing?.id || result.link?.billing_id;
+        const notification = await notifyBillingPaid({
+          billingId,
+          companyId: result.link?.company_id || link.company_id,
+          detail,
+        });
+        if (notification?.sent) {
+          console.log(
+            '[gateway-reconcile] pagamento confirmado -> notify billing=%s status=sent',
+            billingId
+          );
+        }
+      }
     }
   } catch (err) {
-    console.error('[gateway-reconcile] company=%s txid=%s erro=%s', link.company_id, link.txid, err.message);
+    let rawDetail =
+      err?.response?.data ??
+      err?.data ??
+      err?.message ??
+      err;
+    if (rawDetail && typeof rawDetail !== 'string') {
+      try {
+        rawDetail = JSON.stringify(rawDetail);
+      } catch {
+        rawDetail = String(rawDetail);
+      }
+    }
+    console.error('[gateway-reconcile] company=%s txid=%s erro=%s', link.company_id, link.txid, rawDetail || 'unknown-error');
   }
 }
 
