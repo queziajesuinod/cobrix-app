@@ -16,4 +16,5 @@ export const clientsService = {
   create: async (payload) => (await api.post('/clients', payload)).data,
   update: async (id, payload) => (await api.put(`/clients/${id}`, payload)).data,
   remove: async (id) => (await api.delete(`/clients/${id}`)).data,
+  setStatus: async (id, payload) => (await api.patch(`/clients/${id}/status`, payload)).data,
 }

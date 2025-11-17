@@ -32,6 +32,7 @@ const app = require('./app');
 
 // 3) CRON JOBS
 const { runDueOnly, runPreOnly, runLateOnly, runRenewOnly } = require('./jobs/billing-cron');
+const { runGatewayReconcile } = require('./jobs/gateway-reconcile');
 
 // D0 - Due
 if (process.env.CRON_DUE) {
@@ -62,6 +63,14 @@ if (process.env.CRON_RENEW) {
     console.log(`[CRON] Executando RENEW em ${new Date().toISOString()}`);
     runRenewOnly().catch(err => console.error('CRON_RENEW erro:', err));
   });
+}
+
+const gatewayPollMs = Number(process.env.GATEWAY_POLL_MS || 20000);
+if (!Number.isNaN(gatewayPollMs) && gatewayPollMs > 0) {
+  console.log('[gateway-reconcile] Poll ativo a cada %d ms', gatewayPollMs);
+  setInterval(() => {
+    runGatewayReconcile().catch(err => console.error('[gateway-reconcile] erro:', err));
+  }, gatewayPollMs);
 }
 
 // 4) Servir o frontend buildado (procura dist/local public)

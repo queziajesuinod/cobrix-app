@@ -27,6 +27,8 @@ async function run() {
         email TEXT
       );
     `);
+    await c.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS clients_limit INT;`);
+    await c.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS contracts_limit INT;`);
 
     await c.query(`
       CREATE TABLE IF NOT EXISTS users (
@@ -40,7 +42,9 @@ async function run() {
 
     // 2) Garantir colunas company_id em clients e contracts
     await c.query(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS company_id INT;`);
+    await c.query(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT true;`);
     await c.query(`ALTER TABLE contracts ADD COLUMN IF NOT EXISTS company_id INT;`);
+    await c.query(`ALTER TABLE contracts ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT true;`);
 
     // 3) Empresa default, caso não exista nenhuma
     const cmp = await c.query(`SELECT id FROM companies ORDER BY id LIMIT 1`);

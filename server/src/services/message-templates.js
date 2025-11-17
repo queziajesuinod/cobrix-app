@@ -1,9 +1,9 @@
-const { query } = require('../db');
+﻿const { query } = require('../db');
 const { ensureDateOnly, formatISODate } = require('../utils/date-only');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 
-const meses = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
+const meses = ['janeiro','fevereiro','marÃ§o','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
 
 function dd(n) { return String(n).padStart(2, '0'); }
 function formatPtDate(value) {
@@ -21,40 +21,92 @@ function moneyBR(v) {
   return `R$ ${fixed.replace('.', ',')}`;
 }
 
-const DEFAULT_TEMPLATES = {
-  pre: `Olá {{client_name}}, tudo bem?
+function formatPtDateTime(value) {
+  if (!value) return '';
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return `${dd(date.getDate())}/${dd(date.getMonth() + 1)}/${date.getFullYear()} ${dd(date.getHours())}:${dd(date.getMinutes())}`;
+}
 
-Gostaríamos de lembrar que o vencimento referente ao {{contract_type}} do mês de {{reference_month}} está programado para o dia {{due_date}}, no valor de {{amount}}.
+const DEFAULT_TEMPLATES = {
+  pre: `Ol� {{client_name}}, tudo bem?
+
+Gostar�amos de lembrar que o vencimento referente ao {{contract_type}} do m�s de {{reference_month}} est� programado para o dia {{due_date}}, no valor de {{amount}}.
 
 Para sua comodidade, seguem os dados para o pagamento:
 
 PIX: {{pix_key}}
 
-Caso precise de alguma informação adicional, não hesite em nos procurar. Estamos à disposição para ajudá-lo.
+Caso precise de alguma informa��o adicional, n�o hesite em nos procurar. Estamos � disposi��o para ajud�-lo.
 
-Agradecemos pela confiança em nossos serviços e seguimos à disposição para o que for necessário.
-
-Atenciosamente,
-Equipe Financeira
-{{company_name}}`,
-  due: `Olá {{client_name}}, tudo bem?
-
-Lembrete: o pagamento referente ao {{contract_type}} do mês de {{reference_month}} vence HOJE ({{due_date}}), no valor de {{amount}}.
-
-PIX: {{pix_key}}
-
-Qualquer dúvida, fale com a gente.
+Agradecemos pela confian�a em nossos servi�os e seguimos � disposi��o para o que for necess�rio.
 
 Atenciosamente,
 Equipe Financeira
 {{company_name}}`,
-  late: `Olá {{client_name}}, tudo bem?
+  pre_gateway: `Ol� {{client_name}}, tudo bem?
 
-Identificamos que o pagamento referente ao {{contract_type}} do mês de {{reference_month}} está em ATRASO desde {{due_date}}. Valor: {{amount}}.
+Seu {{contract_type}} referente ao m�s de {{reference_month}} vencer� em {{due_date}}, no valor de {{amount}}.
+
+Voc� pode pagar acessando o link seguro abaixo:
+{{payment_link}}
+
+Se preferir Pix copia e cola:
+{{payment_code}}
+
+Ficamos � disposi��o caso precise de algo.
+
+Atenciosamente,
+Equipe Financeira
+{{company_name}}`,
+  due: `Ol� {{client_name}}, tudo bem?
+
+Lembrete: o pagamento referente ao {{contract_type}} do m�s de {{reference_month}} vence HOJE ({{due_date}}), no valor de {{amount}}.
 
 PIX: {{pix_key}}
 
-Se já realizou o pagamento, por favor desconsidere esta mensagem. Caso contrário, estamos à disposição para ajudar.
+Qualquer d�vida, fale com a gente.
+
+Atenciosamente,
+Equipe Financeira
+{{company_name}}`,
+  due_gateway: `Ol� {{client_name}}, tudo bem?
+
+Seu pagamento do {{contract_type}} ({{reference_month}}) vence HOJE, {{due_date}}, no valor de {{amount}}.
+
+Pague agora pelo link:
+{{payment_link}}
+
+Ou use o Pix copia e cola:
+{{payment_code}}
+
+Qualquer d�vida, fale com a gente.
+
+Atenciosamente,
+Equipe Financeira
+{{company_name}}`,
+  late: `Ol� {{client_name}}, tudo bem?
+
+Identificamos que o pagamento referente ao {{contract_type}} do m�s de {{reference_month}} est� em ATRASO desde {{due_date}}. Valor: {{amount}}.
+
+PIX: {{pix_key}}
+
+Se j� realizou o pagamento, por favor desconsidere esta mensagem. Caso contr�rio, estamos � disposi��o para ajudar.
+
+Atenciosamente,
+Equipe Financeira
+{{company_name}}`,
+  late_gateway: `Ol� {{client_name}}, tudo bem?
+
+Percebemos que o pagamento do {{contract_type}} ({{reference_month}}) est� em atraso desde {{due_date}}. Valor: {{amount}}.
+
+Voc� pode regularizar acessando este link:
+{{payment_link}}
+
+Ou utilize o Pix copia e cola:
+{{payment_code}}
+
+Se j� pagou, desconsidere esta mensagem. Qualquer d�vida, fale conosco.
 
 Atenciosamente,
 Equipe Financeira
@@ -62,20 +114,25 @@ Equipe Financeira
 };
 
 const PLACEHOLDERS = [
-  { key: 'client_name', label: 'Nome do destinatário', example: 'Maria Souza' },
-  { key: 'client_responsible', label: 'Responsável pelo cliente', example: 'João Pereira' },
+  { key: 'client_name', label: 'Nome do destinatÃ¡rio', example: 'Maria Souza' },
+  { key: 'client_responsible', label: 'ResponsÃ¡vel pelo cliente', example: 'JoÃ£o Pereira' },
   { key: 'client_legal_name', label: 'Nome oficial do cliente', example: 'Empresa XPTO Ltda' },
-  { key: 'contract_type', label: 'Descrição do contrato', example: 'Consultoria Contábil' },
-  { key: 'reference_month', label: 'Mês de referência (extenso)', example: 'setembro' },
-  { key: 'reference_month_number', label: 'Mês de referência (número)', example: '09' },
-  { key: 'reference_year', label: 'Ano de referência', example: '2024' },
-  { key: 'due_date', label: 'Data de vencimento (dd/mês/aaaa)', example: '25/setembro/2024' },
+  { key: 'contract_type', label: 'DescriÃ§Ã£o do contrato', example: 'Consultoria ContÃ¡bil' },
+  { key: 'reference_month', label: 'MÃªs de referÃªncia (extenso)', example: 'setembro' },
+  { key: 'reference_month_number', label: 'MÃªs de referÃªncia (nÃºmero)', example: '09' },
+  { key: 'reference_year', label: 'Ano de referÃªncia', example: '2024' },
+  { key: 'due_date', label: 'Data de vencimento (dd/mÃªs/aaaa)', example: '25/setembro/2024' },
   { key: 'due_date_iso', label: 'Data de vencimento (YYYY-MM-DD)', example: '2024-09-25' },
   { key: 'amount', label: 'Valor formatado (R$)', example: 'R$ 1234,56' },
   { key: 'pix_key', label: 'Chave PIX', example: '11.222.333/0001-44' },
   { key: 'company_name', label: 'Nome da empresa', example: 'Teifelt Contabilidade' },
-  { key: 'current_date', label: 'Data de hoje (dd/mês/aaaa)', example: '10/setembro/2024' },
+  { key: 'current_date', label: 'Data de hoje (dd/mÃªs/aaaa)', example: '10/setembro/2024' },
   { key: 'current_date_iso', label: 'Data de hoje (YYYY-MM-DD)', example: '2024-09-10' },
+  { key: 'payment_link', label: 'Link de pagamento (gateway)', example: 'https://pagamento.seusite.com/pix/abc123' },
+  { key: 'payment_code', label: 'Pix copia e cola', example: '0002010102122687...' },
+  { key: 'payment_qrcode', label: 'QR Code em base64', example: 'data:image/png;base64,...' },
+  { key: 'payment_expires_at', label: 'Expira em (dd/mm/aaaa hh:mm)', example: '25/09/2025 23:59' },
+  { key: 'payment_expires_at_iso', label: 'Expira em (ISO8601)', example: '2025-09-25T23:59:00Z' },
 ];
 
 const CACHE_TTL_MS = 60_000;
@@ -180,6 +237,30 @@ function buildBindings(ctx = {}) {
     ctx.clientName ||
     '';
 
+  const paymentLink =
+    ctx.payment_link ||
+    ctx.paymentLink ||
+    ctx.gateway_payment_link ||
+    '';
+  const paymentCode =
+    ctx.payment_code ||
+    ctx.paymentCode ||
+    ctx.payment_copy_paste ||
+    ctx.payment_code_payload ||
+    '';
+  const paymentQr =
+    ctx.payment_qrcode ||
+    ctx.payment_qr_code ||
+    ctx.gateway_payment_qrcode ||
+    '';
+  const paymentExpiresIso =
+    ctx.payment_expires_at_iso ||
+    ctx.gateway_payment_expires_at_iso ||
+    '';
+  const paymentExpiresDisplay =
+    ctx.payment_expires_at ||
+    (paymentExpiresIso ? formatPtDateTime(paymentExpiresIso) : '');
+
   return {
     client_name: responsible || clientLegalName || '',
     client_responsible: responsible || '',
@@ -195,6 +276,11 @@ function buildBindings(ctx = {}) {
     company_name: ctx.empresa || ctx.company_name || '',
     current_date: formatPtDate(now),
     current_date_iso: now.toISOString().slice(0, 10),
+    payment_link: paymentLink,
+    payment_code: paymentCode,
+    payment_qrcode: paymentQr,
+    payment_expires_at: paymentExpiresDisplay,
+    payment_expires_at_iso: paymentExpiresIso,
   };
 }
 
@@ -209,13 +295,39 @@ async function renderMessage(type, ctx = {}) {
   const companyName = ctx.empresa || ctx.company_name || await getCompanyName(companyId);
   const pix = ctx.pix || ctx.pix_key || await getCompanyPix(companyId);
   const template = await loadTemplate(companyId, type);
-  const bindings = buildBindings({ ...ctx, empresa: companyName, pix, pix_key: pix });
+  const gatewayPayment = ctx.gatewayPayment || null;
+  const paymentCtx = {};
+  if (gatewayPayment) {
+    if (!ctx.payment_link && gatewayPayment.paymentUrl) paymentCtx.payment_link = gatewayPayment.paymentUrl;
+    if (!ctx.payment_code && gatewayPayment.copyPaste) paymentCtx.payment_code = gatewayPayment.copyPaste;
+    if (!ctx.payment_qrcode && gatewayPayment.qrCodeImage) paymentCtx.payment_qrcode = gatewayPayment.qrCodeImage;
+    if (!ctx.payment_expires_at_iso && gatewayPayment.expiresAtIso) paymentCtx.payment_expires_at_iso = gatewayPayment.expiresAtIso;
+  }
+  const bindings = buildBindings({ ...ctx, ...paymentCtx, empresa: companyName, pix, pix_key: pix });
   return applyTemplate(template, bindings);
 }
 
-async function msgPre(ctx) { return renderMessage('pre', ctx); }
-async function msgDue(ctx) { return renderMessage('due', ctx); }
-async function msgLate(ctx) { return renderMessage('late', ctx); }
+function hasGatewayContext(ctx = {}) {
+  return Boolean(
+    ctx.gatewayPayment ||
+    ctx.gatewayPaymentLink ||
+    ctx.payment_link ||
+    ctx.payment_code
+  );
+}
+
+async function msgPre(ctx) {
+  const type = hasGatewayContext(ctx) ? 'pre_gateway' : 'pre';
+  return renderMessage(type, ctx);
+}
+async function msgDue(ctx) {
+  const type = hasGatewayContext(ctx) ? 'due_gateway' : 'due';
+  return renderMessage(type, ctx);
+}
+async function msgLate(ctx) {
+  const type = hasGatewayContext(ctx) ? 'late_gateway' : 'late';
+  return renderMessage(type, ctx);
+}
 
 async function getTemplatesForCompany(companyId) {
   const result = { ...DEFAULT_TEMPLATES };
@@ -232,7 +344,7 @@ async function getTemplatesForCompany(companyId) {
 }
 
 async function upsertTemplate(companyId, type, template) {
-  if (!companyId) throw new Error('companyId obrigatório');
+  if (!companyId) throw new Error('companyId obrigatÃ³rio');
   const clean = String(template ?? '').trim();
   await query(
     `INSERT INTO ${SCHEMA}.message_templates (company_id, type, template)
@@ -258,3 +370,6 @@ module.exports = {
   clearTemplateCache,
   clearCompanyCache,
 };
+
+
+

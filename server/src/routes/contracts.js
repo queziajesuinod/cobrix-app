@@ -2,6 +2,7 @@ const express = require('express');
 const { query } = require('../db');
 const { z } = require('zod');
 const { requireAuth, companyScope } = require('./auth');
+const { assertContractLimit } = require('../utils/company-limits');
 
 const router = express.Router();
 const DATE_ISO = /^\d{4}-\d{2}-\d{2}$/;
@@ -28,6 +29,28 @@ const optionalDateField = z.preprocess(
   },
   z.nullable(z.string().regex(DATE_ISO))
 );
+
+async function ensureUniqueContractDescription(companyId, clientId, description, ignoreId) {
+  const normalizedDescription = String(description || '').trim();
+  if (!normalizedDescription) return;
+  const params = [companyId, clientId, normalizedDescription];
+  let sql = `
+    SELECT 1 FROM ${SCHEMA}.contracts
+     WHERE company_id=$1
+       AND client_id=$2
+       AND LOWER(TRIM(description)) = LOWER(TRIM($3))
+  `;
+  if (ignoreId) {
+    params.push(ignoreId);
+    sql += ' AND id <> $4';
+  }
+  const exists = await query(sql, params);
+  if (exists.rowCount) {
+    const err = new Error('Já existe um contrato com esta descrição para este cliente');
+    err.status = 409;
+    throw err;
+  }
+}
 
 const contractSchema = z.object({
   client_id: z.number().int().positive(),
@@ -80,6 +103,12 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
     // WHERE (sempre dentro da empresa)
     const filters = [];
     filters.push(`c.company_id = ${add(req.companyId)}`);
+    const statusFilter = String(req.query.status || 'active').toLowerCase();
+    if (statusFilter === 'inactive') {
+      filters.push('c.active = false');
+    } else if (statusFilter !== 'all') {
+      filters.push('c.active = true');
+    }
 
     // Contratos ativos na data (se active_on vier)
     if (req.query.active_on) {
@@ -141,6 +170,7 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
 
 router.get('/:id', requireAuth, companyScope(true), async (req, res) => {
   try {
+    await ensureUniqueContractDescription(req.companyId, client_id, description, req.params.id);
     const r = await query(`
       SELECT c.*, cl.name as client_name, cl.email as client_email
       FROM contracts c
@@ -177,6 +207,8 @@ router.post('/', requireAuth, companyScope(true), async (req, res) => {
     const typeExists = await query(`SELECT id FROM ${SCHEMA}.contract_types WHERE id=$1`, [contract_type_id]);
     if (!typeExists.rows[0]) return res.status(400).json({ error: 'Tipo de contrato inválido' });
 
+    await ensureUniqueContractDescription(req.companyId, client_id, description, null);
+    await assertContractLimit(req.companyId);
     const r = await query(`
       INSERT INTO contracts (company_id, client_id, contract_type_id, description, value, start_date, end_date, billing_day, cancellation_date)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *
@@ -222,14 +254,30 @@ router.put('/:id', requireAuth, companyScope(true), async (req, res) => {
   }
 });
 
+router.patch('/:id/status', requireAuth, companyScope(true), async (req, res) => {
+  const { active } = req.body || {};
+  if (typeof active !== 'boolean') return res.status(400).json({ error: 'Campo active obrigatorio' });
+  try {
+    if (active) await assertContractLimit(req.companyId);
+    const r = await query('UPDATE contracts SET active=$1 WHERE id=$2 AND company_id=$3 RETURNING *', [active, req.params.id, req.companyId]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'Contrato nao encontrado' });
+    res.json(r.rows[0]);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
 router.delete('/:id', requireAuth, companyScope(true), async (req, res) => {
   try {
-    const r = await query('DELETE FROM contracts WHERE id=$1 AND company_id=$2', [req.params.id, req.companyId]);
-    if (r.rowCount === 0) return res.status(404).json({ error: 'Contrato não encontrado' });
-    res.json({ ok: true });
+    const r = await query('UPDATE contracts SET active=false WHERE id=$1 AND company_id=$2 RETURNING *', [req.params.id, req.companyId]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'Contrato nao encontrado' });
+    res.json({ ok: true, active: false });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 module.exports = router;
+
+
+

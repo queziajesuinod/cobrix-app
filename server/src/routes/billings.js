@@ -4,6 +4,8 @@ const { requireAuth, companyScope } = require('./auth');
 const { runDaily } = require('../jobs/billing-cron');
 const { sendWhatsapp } = require('../services/messenger');
 const { msgPre, msgDue, msgLate } = require('../services/message-templates');
+const { ensureGatewayPaymentLink } = require('../services/payment-gateway');
+const { isGatewayConfigured } = require('../services/company-gateway');
 const { ensureDateOnly, formatISODate } = require('../utils/date-only');
 
 const router = express.Router();
@@ -21,6 +23,26 @@ function monthBounds(ym) {
 // NEW: parse "YYYY-MM-DD" as local date to avoid timezone shift
 function parseDateIsoLocal(value) {
   return ensureDateOnly(value);
+}
+
+function summarizeGatewayPayment(gatewayPayment) {
+  if (!gatewayPayment) return null;
+  return {
+    txid: gatewayPayment.txid || null,
+    paymentUrl: gatewayPayment.paymentUrl || null,
+    copyPaste: gatewayPayment.copyPaste || null,
+    expiresAtIso: gatewayPayment.expiresAtIso || null,
+  };
+}
+
+function encodeProviderResponse(value) {
+  if (!value) return null;
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return null;
+  }
 }
 
 // helper para inserir na billing_notifications (todas colunas)
@@ -53,6 +75,7 @@ async function insertBillingNotification({
        $13, NOW(), $14, $15, $16)
     RETURNING id
   `;
+  const serializedProviderResponse = encodeProviderResponse(providerResponse);
   const params = [
     Number(companyId),
     billingId != null ? Number(billingId) : null,
@@ -65,7 +88,7 @@ async function insertBillingNotification({
     toNumber != null ? String(toNumber) : null,
     message != null ? String(message) : '',
     providerStatus != null ? String(providerStatus) : null,
-    providerResponse ?? null,
+    serializedProviderResponse,
     error != null ? String(error) : null,
     sentAt ?? null,
     String(type),
@@ -182,9 +205,14 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
     const typ = String(type || '').toLowerCase();
     if (!['pre', 'due', 'late'].includes(typ)) return res.status(400).json({ error: 'type inválido' });
     if (!contract_id || !date) return res.status(400).json({ error: 'contract_id e date são obrigatórios' });
+    const gatewayReady = await isGatewayConfigured(req.companyId);
+    if (!gatewayReady) {
+      return res.status(400).json({ error: 'Gateway de pagamento não configurado para esta empresa.' });
+    }
 
     const c = await query(`
-      SELECT c.*, cl.name AS client_name, cl.phone AS client_phone, cl.responsavel AS client_responsavel
+      SELECT c.*, cl.name AS client_name, cl.phone AS client_phone, cl.responsavel AS client_responsavel, cl.email AS client_email,
+             cl.document_cpf AS client_document_cpf, cl.document_cnpj AS client_document_cnpj
       FROM ${SCHEMA}.contracts c
       JOIN ${SCHEMA}.clients   cl ON cl.id = c.client_id
       WHERE c.id = $1 AND c.company_id = $2
@@ -240,8 +268,29 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
       if (!row.client_phone) return res.status(400).json({ error: 'Contrato sem telefone do cliente' });
 
       const mesRefDate = new Date(due.getFullYear(), due.getMonth(), 1);
+      const billingLookup = await query(`
+        SELECT id FROM ${SCHEMA}.billings
+        WHERE company_id=$1 AND contract_id=$2 AND billing_date=$3
+        LIMIT 1
+      `, [req.companyId, Number(contract_id), dueStr]);
+      const billingId = billingLookup.rows[0]?.id || null;
       const map = { pre: msgPre, due: msgDue, late: msgLate };
       const recipientName = row.client_responsavel || row.client_name;
+      const clientDocument = {
+        cpf: row.client_document_cpf || null,
+        cnpj: row.client_document_cnpj || null,
+      };
+      const gatewayPayment = await ensureGatewayPaymentLink({
+        companyId: req.companyId,
+        contractId: Number(contract_id),
+        billingId,
+        dueDate: dueStr,
+        amount: row.value,
+        contractDescription: row.description,
+        clientName: recipientName,
+        clientDocument,
+      });
+      const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
       const text = await map[typ]({
         nome: recipientName,
         responsavel: row.client_responsavel,
@@ -251,12 +300,24 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
         vencimentoDate: due,
         valor: row.value,
         companyId: req.companyId,
+        gatewayPayment,
+        gatewayPaymentLink: Boolean(gatewaySummary?.paymentUrl || gatewaySummary?.copyPaste),
+        payment_link: gatewaySummary?.paymentUrl || null,
+        payment_code: gatewaySummary?.copyPaste || null,
+        payment_qrcode: gatewayPayment?.qrCodeImage || null,
+        payment_expires_at_iso: gatewaySummary?.expiresAtIso || null,
       });
 
       // envia via EVO com config da empresa
       const evo = await sendWhatsapp(req.companyId, { number: row.client_phone, text });
 
       // registra completo
+      const providerResponse = {
+        messenger: evo.data ?? null,
+        messengerStatus: evo.status ?? null,
+        gateway: gatewaySummary,
+      };
+
       await insertBillingNotification({
         companyId: req.companyId,
         billingId: null,                         // manual direto, sem billing atrelado
@@ -269,7 +330,7 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
         toNumber: row.client_phone,
         message: text,
         providerStatus: evo.status != null ? String(evo.status) : null,
-        providerResponse: evo.data ?? null,
+        providerResponse,
         error: evo.ok ? null : (evo.error || null),
         sentAt: evo.ok ? new Date() : null,
         type: typ,

@@ -5,13 +5,14 @@ import { contractTypesService } from './contractTypes.service'
 import { useAuth } from '@/features/auth/AuthContext'
 import PageHeader from '@/components/PageHeader'
 import {
-  Alert, Button, Card, CardContent, Dialog, DialogActions, DialogContent, DialogTitle,
-  Grid, IconButton, MenuItem, Stack, Table, TableBody, TableCell, TableHead, TableRow,
-  TablePagination, TextField
+  Alert, Button, Card, CardContent, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
+  Grid, IconButton, MenuItem, Snackbar, Stack, Table, TableBody, TableCell, TableHead, TableRow,
+  TablePagination, TextField, Tooltip
 } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
 import EditIcon from '@mui/icons-material/Edit'
-import DeleteIcon from '@mui/icons-material/Delete'
+import ToggleOnIcon from '@mui/icons-material/ToggleOn'
+import ToggleOffIcon from '@mui/icons-material/ToggleOff'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -40,8 +41,15 @@ const schema = z.object({
   start_date: z.string().min(10, 'Data inicial obrigatória'),
   end_date: z.string().min(10, 'Data final obrigatória'),
   billing_day: z.coerce.number().int().min(1).max(31),
-  cancellation_date: z.string().optional()
-})
+  cancellation_date: z.string().optional(),
+});
+
+const STATUS_OPTIONS = [
+  { value: 'active', label: 'Ativos' },
+  { value: 'inactive', label: 'Inativos' },
+  { value: 'all', label: 'Todos' },
+];
+
 
 const toDateInput = (value) => {
   if (!value) return '';
@@ -143,6 +151,8 @@ export default function ContractsPage() {
   const [searchTerm, setSearchTerm] = useState('')
   const [clientFilter, setClientFilter] = useState('')
   const [contractTypeFilter, setContractTypeFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useState('active')
+  const [errorToast, setErrorToast] = useState(null)
 
   useEffect(() => {
     const handle = setTimeout(() => {
@@ -151,11 +161,11 @@ export default function ContractsPage() {
     return () => clearTimeout(handle)
   }, [searchInput])
 
-  useEffect(() => { setPage(0) }, [searchTerm, clientFilter, contractTypeFilter])
+  useEffect(() => { setPage(0) }, [searchTerm, clientFilter, contractTypeFilter, statusFilter])
 
   const contractsQueryKey = useMemo(
-    () => ['contracts-paginated', selectedCompanyId, { page, rowsPerPage, searchTerm, clientFilter, contractTypeFilter }],
-    [selectedCompanyId, page, rowsPerPage, searchTerm, clientFilter, contractTypeFilter]
+    () => ['contracts-paginated', selectedCompanyId, { page, rowsPerPage, searchTerm, clientFilter, contractTypeFilter, statusFilter }],
+    [selectedCompanyId, page, rowsPerPage, searchTerm, clientFilter, contractTypeFilter, statusFilter]
   )
 
   const list = useQuery({
@@ -166,6 +176,7 @@ export default function ContractsPage() {
       q: searchTerm || undefined,
       clientId: clientFilter || undefined,
       contractTypeId: contractTypeFilter || undefined,
+      status: statusFilter || undefined,
     }),
     keepPreviousData: true,
     enabled,
@@ -184,26 +195,34 @@ export default function ContractsPage() {
   })
   const contractTypes = contractTypesQuery.data || []
 
+  const showError = (error) => {
+    const message = error?.response?.data?.error || error?.message || 'Falha na operação'
+    setErrorToast(message)
+  }
+
   const create = useMutation({
     mutationFn: contractsService.create,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['contracts-paginated'] })
       qc.invalidateQueries({ queryKey: ['contracts'] })
-    }
+    },
+    onError: showError,
   })
   const update = useMutation({
     mutationFn: ({ id, payload }) => contractsService.update(id, payload),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['contracts-paginated'] })
       qc.invalidateQueries({ queryKey: ['contracts'] })
-    }
+    },
+    onError: showError,
   })
-  const remove = useMutation({
-    mutationFn: contractsService.remove,
+  const setStatus = useMutation({
+    mutationFn: ({ id, active }) => contractsService.setStatus(id, { active }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['contracts-paginated'] })
       qc.invalidateQueries({ queryKey: ['contracts'] })
-    }
+    },
+    onError: showError,
   })
 
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -221,9 +240,12 @@ export default function ContractsPage() {
     setEditing(row)
     setDialogOpen(true)
   }
-  const handleDelete = (row) => {
+  const handleToggleActive = (row) => {
     if (!enabled) return
-    if (confirm('Remover este contrato?')) remove.mutate(row.id)
+    const next = !row.active
+    const action = next ? 'Ativar' : 'Inativar'
+    if (!confirm(`${action} este contrato?`)) return
+    setStatus.mutate({ id: row.id, active: next })
   }
   const onSubmit = async (form) => {
     const payload = normalizePayloadDates(form)
@@ -248,7 +270,7 @@ export default function ContractsPage() {
       <Card>
         <CardContent>
           <Grid container spacing={2}>
-            <Grid item xs={12} md={4}>
+            <Grid item xs={12} md={3}>
               <TextField
                 label="Buscar serviço"
                 placeholder="Descrição do contrato"
@@ -258,14 +280,14 @@ export default function ContractsPage() {
                 disabled={!enabled}
               />
             </Grid>
-            <Grid item xs={12} md={4}>
+            <Grid item xs={12} md={3}>
               <TextField
                 select
                 label="Cliente"
                 value={clientFilter}
                 onChange={(e) => setClientFilter(e.target.value)}
                 fullWidth
-                SelectProps={{ displayEmpty: true }}
+               
                 disabled={!enabled}
               >
                 <MenuItem value=""><em>Todos os clientes</em></MenuItem>
@@ -281,7 +303,7 @@ export default function ContractsPage() {
                 value={contractTypeFilter}
                 onChange={(e) => setContractTypeFilter(e.target.value)}
                 fullWidth
-                SelectProps={{ displayEmpty: true }}
+                
                 disabled={!enabled}
               >
                 <MenuItem value=""><em>Todos os tipos</em></MenuItem>
@@ -290,12 +312,26 @@ export default function ContractsPage() {
                 ))}
               </TextField>
             </Grid>
+            <Grid item xs={12} md={2}>
+              <TextField
+                select
+                label="Status"
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                fullWidth
+                disabled={!enabled}
+              >
+                {STATUS_OPTIONS.map((opt) => (
+                  <MenuItem key={opt.value} value={opt.value}>{opt.label}</MenuItem>
+                ))}
+              </TextField>
+            </Grid>
             <Grid item xs={12} md={1} sx={{ display: 'flex', alignItems: 'center' }}>
               <Button
                 fullWidth
                 variant="outlined"
-                onClick={() => { setSearchInput(''); setClientFilter(''); setContractTypeFilter(''); }}
-                disabled={!enabled || (!searchTerm && !clientFilter && !contractTypeFilter)}
+                onClick={() => { setSearchInput(''); setClientFilter(''); setContractTypeFilter(''); setStatusFilter('active'); }}
+                disabled={!enabled || (!searchTerm && !clientFilter && !contractTypeFilter && statusFilter === 'active')}
               >
                 Limpar filtros
               </Button>
@@ -325,25 +361,36 @@ export default function ContractsPage() {
                 <TableCell>Período</TableCell>
                 <TableCell>Dia</TableCell>
                 <TableCell>Status</TableCell>
-                <TableCell>Última cobrança</TableCell>
+                <TableCell>última cobrança</TableCell>
                 <TableCell align="right">Ações</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
               {rows.map(r => (
-                <TableRow key={r.id} hover>
+                <TableRow key={r.id} hover sx={{ opacity: r.active ? 1 : 0.7 }}>
                   <TableCell>{r.id}</TableCell>
                   <TableCell>{r.client_name}</TableCell>
                   <TableCell>{r.description}</TableCell>
                   <TableCell>{r.contract_type_name || '-'}</TableCell>
                   <TableCell>{Number(r.value).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</TableCell>
-                  <TableCell>{formatDateOnly(r.start_date)} → {formatDateOnly(r.end_date)}</TableCell>
+                  <TableCell>{formatDateOnly(r.start_date)} ? {formatDateOnly(r.end_date)}</TableCell>
                   <TableCell>{r.billing_day}</TableCell>
-                  <TableCell>{r.cancellation_date ? `Cancelado em ${formatDateOnly(r.cancellation_date)}` : 'Ativo'}</TableCell>
+                  <TableCell>
+                    <Stack spacing={0.5}>
+                      <Chip label={r.active ? 'Ativo' : 'Inativo'} color={r.active ? 'success' : 'default'} size="small" />
+                      {r.cancellation_date ? <small style={{ color: 'rgba(0,0,0,0.6)' }}>Cancelado em {formatDateOnly(r.cancellation_date)}</small> : null}
+                    </Stack>
+                  </TableCell>
                   <TableCell>{formatDateOnly(r.last_billed_date)}</TableCell>
                   <TableCell align="right">
                     <IconButton size="small" onClick={() => handleEdit(r)} disabled={!enabled}><EditIcon fontSize="small" /></IconButton>
-                    <IconButton size="small" color="error" onClick={() => handleDelete(r)} disabled={!enabled}><DeleteIcon fontSize="small" /></IconButton>
+                    <Tooltip title={r.active ? 'Inativar' : 'Ativar'}>
+                      <span>
+                        <IconButton size="small" color={r.active ? 'warning' : 'success'} onClick={() => handleToggleActive(r)} disabled={!enabled}>
+                          {r.active ? <ToggleOffIcon fontSize="small" /> : <ToggleOnIcon fontSize="small" />}
+                        </IconButton>
+                      </span>
+                    </Tooltip>
                   </TableCell>
                 </TableRow>
               ))}
@@ -370,6 +417,11 @@ export default function ContractsPage() {
         defaultValues={editing || { client_id:'', contract_type_id:'', description:'', value:0, start_date:'', end_date:'', billing_day:1, cancellation_date:'' }}
         contractTypes={contractTypes}
       />
+      <Snackbar open={!!errorToast} autoHideDuration={4000} onClose={() => setErrorToast(null)}>
+        <Alert severity="error" variant="filled" onClose={() => setErrorToast(null)}>
+          {errorToast}
+        </Alert>
+      </Snackbar>
     </Stack>
   )
 }

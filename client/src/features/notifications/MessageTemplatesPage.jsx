@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+﻿import React, { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
 import { messageTemplatesService } from './messageTemplates.service'
@@ -21,11 +21,16 @@ import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined'
 import RestoreIcon from '@mui/icons-material/Restore'
 
 const TEMPLATE_TYPES = [
-  { key: 'pre', title: 'Pré-vencimento (D−3)', description: 'Aviso enviado três dias antes do vencimento.' },
-  { key: 'due', title: 'Dia do vencimento (D0)', description: 'Mensagem enviada no dia do vencimento.' },
-  { key: 'late', title: 'Em atraso (D+4)', description: 'Cobrança enviada quatro dias após o vencimento.' },
-]
+  { key: 'pre', title: 'Pré-vencimento (sem gateway)', description: 'Aviso enviado três dias antes para empresas sem link Pix.' },
+  { key: 'pre_gateway', title: 'Pré-vencimento (com gateway)', description: 'Versão enviada quando existe link de pagamento automático.' },
+  { key: 'due', title: 'Dia do vencimento (sem gateway)', description: 'Mensagem enviada no dia do vencimento sem link Pix.' },
+  { key: 'due_gateway', title: 'Dia do vencimento (com gateway)', description: 'Mensagem com link Pix enviada no D0.' },
+  { key: 'late', title: 'Em atraso (sem gateway)', description: 'Cobrança enviada quatro dias após o vencimento.' },
+  { key: 'late_gateway', title: 'Em atraso (com gateway)', description: 'Cobrança com link Pix para empresas integradas ao gateway.' },
+];
 
+const TEMPLATE_KEYS = TEMPLATE_TYPES.map((item) => item.key);
+const INITIAL_VALUES = TEMPLATE_KEYS.reduce((acc, key) => ({ ...acc, [key]: '' }), {});
 const tokenFromKey = (key) => `{{${key}}}`
 
 export default function MessageTemplatesPage() {
@@ -35,22 +40,28 @@ export default function MessageTemplatesPage() {
     queryFn: messageTemplatesService.list,
   })
 
-  const [values, setValues] = useState({ pre: '', due: '', late: '' })
+  const [values, setValues] = useState({ ...INITIAL_VALUES })
   const [activeType, setActiveType] = useState('pre')
   const [snack, setSnack] = useState(null)
 
-  const fieldRefs = {
-    pre: useRef(null),
-    due: useRef(null),
-    late: useRef(null),
-  }
+  const fieldRefs = useMemo(() => {
+    return TEMPLATE_KEYS.reduce((acc, key) => {
+      acc[key] = React.createRef()
+      return acc
+    }, {})
+  }, [])
 
   useEffect(() => {
     if (data?.templates) {
-      setValues((prev) => ({
-        ...prev,
-        ...data.templates,
-      }))
+      setValues((prev) => {
+        const next = { ...prev }
+        TEMPLATE_KEYS.forEach((key) => {
+          next[key] = data.templates[key] ?? ''
+        })
+        return next
+      })
+    } else {
+      setValues({ ...INITIAL_VALUES })
     }
   }, [data])
 
@@ -149,11 +160,11 @@ export default function MessageTemplatesPage() {
     <Stack spacing={3}>
       <PageHeader
         title="Mensagens automáticas"
-        subtitle="Monte os textos das notificações arrastando os campos disponíveis. Use os tokens para preencher dados automaticamente."
+        subtitle="Monte os textos das notificações arrastando os campos disponí­veis. Use os tokens para preencher dados automaticamente."
       />
 
       <Card variant="outlined">
-        <CardHeader title="Campos disponíveis" subheader="Arraste um campo para dentro do texto ou clique para inserir onde estiver o cursor." />
+        <CardHeader title="Campos disponí­veis" subheader="Arraste um campo para dentro do texto ou clique para inserir onde estiver o cursor." />
         <CardContent>
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
             {(data?.placeholders || []).map((item) => {
@@ -257,3 +268,8 @@ export default function MessageTemplatesPage() {
     </Stack>
   )
 }
+
+
+
+
+

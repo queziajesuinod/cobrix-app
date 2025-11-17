@@ -16,6 +16,7 @@ export const contractsService = {
   create: async (payload) => (await api.post('/contracts', payload)).data,
   update: async (id, payload) => (await api.put(`/contracts/${id}`, payload)).data,
   remove: async (id) => (await api.delete(`/contracts/${id}`)).data,
+  setStatus: async (id, payload) => (await api.patch(`/contracts/${id}/status`, payload)).data,
 }
 export const clientsPicker = async (params = {}) => {
   const { page, pageSize, ...rest } = params;

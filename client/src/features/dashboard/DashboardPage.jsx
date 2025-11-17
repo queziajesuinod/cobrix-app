@@ -81,8 +81,8 @@ function FutureReceivablesCard({ data }) {
     <Card
       sx={{
         borderRadius: 3,
-        background: 'linear-gradient(135deg, #f7971e 0%, #ffd200 100%)',
-        color: 'common.white',
+        background: 'linear-gradient(135deg, #b3b3b3ff 0%, #9b9b9bff 100%)',
+        color: 'common.black',
         boxShadow: '0 12px 30px rgba(15,23,42,0.25)',
       }}
     >
@@ -223,8 +223,8 @@ export default function DashboardPage() {
         <Grid item xs={12}>
           {summaryQuery.isLoading ? (
             <Skeleton variant="rounded" height={190} />
-          ) : (
-            <FutureReceivablesCard data={future} />
+          ) : (null
+           /* <FutureReceivablesCard data={future} />*/
           )}
         </Grid>
       </Grid>

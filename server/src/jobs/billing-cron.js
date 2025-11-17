@@ -2,6 +2,7 @@
 const { query, withClient } = require("../db");
 const { sendWhatsapp } = require("../services/messenger");
 const { msgPre, msgDue, msgLate } = require("../services/message-templates");
+const { ensureGatewayPaymentLink } = require("../services/payment-gateway");
 const { ensureDateOnly, formatISODate, addDays } = require("../utils/date-only");
 const SCHEMA = process.env.DB_SCHEMA || "public";
 
@@ -19,10 +20,30 @@ function dueDateForMonth(baseDate, billingDay) {
   return new Date(base.getFullYear(), base.getMonth(), eff);
 }
 
+function summarizeGatewayPayment(gatewayPayment) {
+  if (!gatewayPayment) return null;
+  return {
+    txid: gatewayPayment.txid || null,
+    paymentUrl: gatewayPayment.paymentUrl || null,
+    copyPaste: gatewayPayment.copyPaste || null,
+    expiresAtIso: gatewayPayment.expiresAtIso || null,
+  };
+}
+
+function encodeProviderResponse(value) {
+  if (!value) return null;
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return null;
+  }
+}
+
 // Grava/atualiza notificação sem violar UNIQUE
 async function upsertAutoNotification({
   companyId, billingId = null, contractId, clientId,
-  targetDate, toNumber, message, type, dueDate, evoResult
+  targetDate, toNumber, message, type, dueDate, evoResult, providerResponse = null
 }) {
   const sql = `
     INSERT INTO ${SCHEMA}.billing_notifications
@@ -48,7 +69,7 @@ async function upsertAutoNotification({
     String(toNumber || ''),   // $8
     String(message || ''),    // $9
     evoResult?.status ?? null, // $10
-    evoResult?.data ?? null,  // $11
+    encodeProviderResponse(providerResponse ?? (evoResult?.data ?? null)),  // $11
     evoResult?.ok ? null : (evoResult?.error || null), // $12
     evoResult?.ok ? new Date() : null, // $13
     String(dueDate)           // $14
@@ -182,6 +203,7 @@ async function sendPreReminders(now = new Date()) {
   const rows = await query(`
     SELECT c.id, c.company_id, c.client_id, c.description, c.value, c.billing_day,
            cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone,
+           cl.document_cpf AS client_document_cpf, cl.document_cnpj AS client_document_cnpj,
            cms.status AS month_status
     FROM ${SCHEMA}.contracts c
     JOIN ${SCHEMA}.clients   cl ON cl.id = c.client_id
@@ -200,6 +222,21 @@ async function sendPreReminders(now = new Date()) {
 
     const mesRefDate = new Date(due.getFullYear(), due.getMonth(), 1);
     const recipientName = c.client_responsavel || c.client_name;
+    const clientDocument = {
+      cpf: c.client_document_cpf || null,
+      cnpj: c.client_document_cnpj || null,
+    };
+    const gatewayPayment = await ensureGatewayPaymentLink({
+      companyId: c.company_id,
+      contractId: c.id,
+      billingId: null,
+      dueDate: dueStr,
+      amount: c.value,
+      contractDescription: c.description,
+      clientName: recipientName,
+      clientDocument,
+    });
+    const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
     const text = await msgPre({
       nome: recipientName,
       responsavel: c.client_responsavel,
@@ -209,11 +246,22 @@ async function sendPreReminders(now = new Date()) {
       vencimentoDate: due,
       valor: c.value,
       companyId: c.company_id,
+      gatewayPayment,
+      gatewayPaymentLink: Boolean(gatewaySummary?.paymentUrl || gatewaySummary?.copyPaste),
+      payment_link: gatewaySummary?.paymentUrl || null,
+      payment_code: gatewaySummary?.copyPaste || null,
+      payment_qrcode: gatewayPayment?.qrCodeImage || null,
+      payment_expires_at_iso: gatewaySummary?.expiresAtIso || null,
     });
 
     let evo = { ok: false, error: "no-phone" };
     try { evo = await sendWhatsapp(c.company_id, { number: c.client_phone, text }); }
     catch (e) { evo = { ok: false, error: e.message }; }
+    const providerResponse = {
+      messenger: evo.data ?? null,
+      messengerStatus: evo.status ?? null,
+      gateway: gatewaySummary,
+    };
 
     await upsertAutoNotification({
       companyId: c.company_id,
@@ -225,7 +273,8 @@ async function sendPreReminders(now = new Date()) {
       message: text,
       type: "pre",
       dueDate: dueStr,
-      evoResult: evo
+      evoResult: evo,
+      providerResponse,
     });
 
     console.log(`↗ [PRE] c#${c.id} due=${dueStr} -> ${evo.ok ? "sent" : "failed"}`);
@@ -246,6 +295,7 @@ async function sendDueReminders(now = new Date()) {
     SELECT b.id AS billing_id, b.contract_id, b.amount, b.status,
            c.company_id, c.client_id, c.description,
            cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone,
+           cl.document_cpf AS client_document_cpf, cl.document_cnpj AS client_document_cnpj,
            cms.status AS month_status
     FROM ${SCHEMA}.billings b
     JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
@@ -266,6 +316,21 @@ async function sendDueReminders(now = new Date()) {
 
     const mesRefDate = new Date(now.getFullYear(), now.getMonth(), 1);
     const recipientName = r.client_responsavel || r.client_name;
+    const clientDocument = {
+      cpf: r.client_document_cpf || null,
+      cnpj: r.client_document_cnpj || null,
+    };
+    const gatewayPayment = await ensureGatewayPaymentLink({
+      companyId: r.company_id,
+      contractId: r.contract_id,
+      billingId: r.billing_id || null,
+      dueDate: todayStr,
+      amount: r.amount,
+      contractDescription: r.description,
+      clientName: recipientName,
+      clientDocument,
+    });
+    const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
     const text = await msgDue({
       nome: recipientName,
       responsavel: r.client_responsavel,
@@ -275,11 +340,22 @@ async function sendDueReminders(now = new Date()) {
       vencimentoDate: ensureDateOnly(todayStr),
       valor: r.amount,
       companyId: r.company_id,
+      gatewayPayment,
+      gatewayPaymentLink: Boolean(gatewaySummary?.paymentUrl || gatewaySummary?.copyPaste),
+      payment_link: gatewaySummary?.paymentUrl || null,
+      payment_code: gatewaySummary?.copyPaste || null,
+      payment_qrcode: gatewayPayment?.qrCodeImage || null,
+      payment_expires_at_iso: gatewaySummary?.expiresAtIso || null,
     });
 
     let evo = { ok: false, error: "no-phone" };
     try { evo = await sendWhatsapp(r.company_id, { number: r.client_phone, text }); }
     catch (e) { evo = { ok: false, error: e.message }; }
+    const providerResponse = {
+      messenger: evo.data ?? null,
+      messengerStatus: evo.status ?? null,
+      gateway: gatewaySummary,
+    };
 
     await upsertAutoNotification({
       companyId: r.company_id,
@@ -291,7 +367,8 @@ async function sendDueReminders(now = new Date()) {
       message: text,
       type: "due",
       dueDate: todayStr,
-      evoResult: evo
+      evoResult: evo,
+      providerResponse,
     });
 
     console.log(`→ [DUE] c#${r.contract_id} ${todayStr} -> ${evo.ok ? "sent" : `failed (${evo.error || evo.status})`}`);
@@ -309,6 +386,7 @@ async function sendLateReminders(now = new Date()) {
     SELECT b.id AS billing_id, b.contract_id, b.amount, b.status, b.billing_date,
            c.company_id, c.client_id, c.description,
            cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone,
+           cl.document_cpf AS client_document_cpf, cl.document_cnpj AS client_document_cnpj,
            cms.status AS month_status
     FROM ${SCHEMA}.billings b
     JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
@@ -327,6 +405,21 @@ async function sendLateReminders(now = new Date()) {
 
     const mesRefDate = new Date(target.getFullYear(), target.getMonth(), 1);
     const recipientName = r.client_responsavel || r.client_name;
+    const clientDocument = {
+      cpf: r.client_document_cpf || null,
+      cnpj: r.client_document_cnpj || null,
+    };
+    const gatewayPayment = await ensureGatewayPaymentLink({
+      companyId: r.company_id,
+      contractId: r.contract_id,
+      billingId: r.billing_id || null,
+      dueDate: targetStr,
+      amount: r.amount,
+      contractDescription: r.description,
+      clientName: recipientName,
+      clientDocument,
+    });
+    const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
     const text = await msgLate({
       nome: recipientName,
       responsavel: r.client_responsavel,
@@ -336,11 +429,22 @@ async function sendLateReminders(now = new Date()) {
       vencimentoDate: ensureDateOnly(targetStr),
       valor: r.amount,
       companyId: r.company_id,
+      gatewayPayment,
+      gatewayPaymentLink: Boolean(gatewaySummary?.paymentUrl || gatewaySummary?.copyPaste),
+      payment_link: gatewaySummary?.paymentUrl || null,
+      payment_code: gatewaySummary?.copyPaste || null,
+      payment_qrcode: gatewayPayment?.qrCodeImage || null,
+      payment_expires_at_iso: gatewaySummary?.expiresAtIso || null,
     });
 
     let evo = { ok: false, error: "no-phone" };
     try { evo = await sendWhatsapp(r.company_id, { number: r.client_phone, text }); }
     catch (e) { evo = { ok: false, error: e.message }; }
+    const providerResponse = {
+      messenger: evo.data ?? null,
+      messengerStatus: evo.status ?? null,
+      gateway: gatewaySummary,
+    };
 
     await upsertAutoNotification({
       companyId: r.company_id,
@@ -352,7 +456,8 @@ async function sendLateReminders(now = new Date()) {
       message: text,
       type: "late",
       dueDate: targetStr,
-      evoResult: evo
+      evoResult: evo,
+      providerResponse,
     });
 
     console.log(`↘ [LATE] c#${r.contract_id} ${targetStr} -> ${evo.ok ? "sent" : "failed"}`);

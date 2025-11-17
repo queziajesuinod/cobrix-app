@@ -26,11 +26,21 @@ async function initDb() {
         evo_api_key TEXT,
         pix_key TEXT,
         evo_instance TEXT,
+        clients_limit INTEGER,
+        contracts_limit INTEGER,
+        efi_client_id_enc TEXT,
+        efi_client_secret_enc TEXT,
+        efi_cert_base64_enc TEXT,
         created_at TIMESTAMPTZ DEFAULT now()
       );
     `);
     await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS pix_key TEXT;`);
     await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS evo_instance TEXT;`);
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS clients_limit INTEGER;`);
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS contracts_limit INTEGER;`);
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS efi_client_id_enc TEXT;`);
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS efi_client_secret_enc TEXT;`);
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS efi_cert_base64_enc TEXT;`);
     await c.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -66,10 +76,16 @@ async function initDb() {
         email TEXT,
         phone TEXT,
         responsavel TEXT,
+        document_cpf TEXT,
+        document_cnpj TEXT,
+        active BOOLEAN NOT NULL DEFAULT true,
         created_at TIMESTAMPTZ DEFAULT now()
       );
     `);
     await c.query(`ALTER TABLE ${schema}.clients ADD COLUMN IF NOT EXISTS responsavel TEXT;`);
+    await c.query(`ALTER TABLE ${schema}.clients ADD COLUMN IF NOT EXISTS document_cpf TEXT;`);
+    await c.query(`ALTER TABLE ${schema}.clients ADD COLUMN IF NOT EXISTS document_cnpj TEXT;`);
+    await c.query(`ALTER TABLE ${schema}.clients ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT true;`);
     await c.query(`
       CREATE TABLE IF NOT EXISTS contract_types (
         id SERIAL PRIMARY KEY,
@@ -104,12 +120,14 @@ async function initDb() {
         cancellation_date DATE,
         recurrence_of INTEGER REFERENCES ${schema}.contracts(id),
         last_billed_date DATE,
+        active BOOLEAN NOT NULL DEFAULT true,
         created_at TIMESTAMPTZ DEFAULT now()
       );
     `);
     await c.query(`ALTER TABLE ${schema}.contracts ADD COLUMN IF NOT EXISTS cancellation_date DATE;`);
     await c.query(`ALTER TABLE ${schema}.contracts ADD COLUMN IF NOT EXISTS contract_type_id INTEGER REFERENCES ${schema}.contract_types(id);`);
     await c.query(`ALTER TABLE ${schema}.contracts ADD COLUMN IF NOT EXISTS recurrence_of INTEGER REFERENCES ${schema}.contracts(id);`);
+    await c.query(`ALTER TABLE ${schema}.contracts ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT true;`);
     await c.query(`
       INSERT INTO ${schema}.contract_types (company_id, name, is_recurring, adjustment_percent)
       SELECT c.id, 'Fixo', false, 0
@@ -174,10 +192,14 @@ async function initDb() {
         billing_date DATE NOT NULL,
         amount NUMERIC(10, 2) NOT NULL,
         status TEXT NOT NULL DEFAULT 'pending', -- pending, paid, canceled
+        gateway_txid TEXT,
+        gateway_paid_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ DEFAULT now(),
         UNIQUE (contract_id, billing_date)
       );
     `);
+    await c.query(`ALTER TABLE ${schema}.billings ADD COLUMN IF NOT EXISTS gateway_txid TEXT;`);
+    await c.query(`ALTER TABLE ${schema}.billings ADD COLUMN IF NOT EXISTS gateway_paid_at TIMESTAMPTZ;`);
     await c.query(`
       CREATE TABLE IF NOT EXISTS billing_notifications (
         id SERIAL PRIMARY KEY,
@@ -217,6 +239,30 @@ async function initDb() {
         UNIQUE (company_id, type)
       );
     `);
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.billing_gateway_links (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
+        contract_id INTEGER NOT NULL REFERENCES ${schema}.contracts(id) ON DELETE CASCADE,
+        billing_id INTEGER REFERENCES ${schema}.billings(id) ON DELETE SET NULL,
+        due_date DATE NOT NULL,
+        txid TEXT,
+        loc_id TEXT,
+        payment_link TEXT,
+        copy_paste TEXT,
+        qr_code TEXT,
+        amount NUMERIC(14,2),
+        status TEXT,
+        expires_at TIMESTAMPTZ,
+        paid_at TIMESTAMPTZ,
+        gateway_payload JSONB,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (company_id, contract_id, due_date)
+      );
+    `);
+    await c.query(`ALTER TABLE ${schema}.billing_gateway_links ADD COLUMN IF NOT EXISTS billing_id INTEGER REFERENCES ${schema}.billings(id) ON DELETE SET NULL;`);
+    await c.query(`ALTER TABLE ${schema}.billing_gateway_links ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ;`);
   });
 }
 
