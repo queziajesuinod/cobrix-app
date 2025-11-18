@@ -59,24 +59,7 @@ async function ensureUniqueClientIdentifiers(companyId, { email, phone }, ignore
     }
   }
 
-  const normalizedPhone = normalizePhone(phone);
-  if (normalizedPhone) {
-    const params = [companyId, normalizedPhone];
-    let sql = `SELECT 1 FROM clients
-               WHERE company_id=$1
-                 AND phone IS NOT NULL
-                 AND regexp_replace(phone, '\\D', '', 'g') = $2`;
-    if (ignoreId) {
-      params.push(ignoreId);
-      sql += ' AND id <> $3';
-    }
-    const existsPhone = await query(sql, params);
-    if (existsPhone.rowCount) {
-      const err = new Error('Já existe um cliente cadastrado com este telefone');
-      err.status = 409;
-      throw err;
-    }
-  }
+  // Permite o mesmo telefone para diferentes clientes/empresas
 }
 
 function normalizeStatus(raw) {
