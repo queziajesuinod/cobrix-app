@@ -32,6 +32,19 @@ function formatDateOnly(val) {
   return dtf.format(d); // dd/mm/aaaa sem horário
 }
 
+const formatInterval = (v) => {
+  const num = Number(v);
+  if (num === 3) return 'Trimestral';
+  if (num === 12) return 'Anual';
+  return 'Mensal';
+};
+
+
+const BILLING_INTERVAL_OPTIONS = [
+  { value: 1, label: 'Mensal' },
+  { value: 3, label: 'Trimestral' },
+  { value: 12, label: 'Anual' },
+];
 
 const schema = z.object({
   client_id: z.coerce.number().int().positive({ message: 'Selecione um cliente' }),
@@ -41,6 +54,7 @@ const schema = z.object({
   start_date: z.string().min(10, 'Data inicial obrigatória'),
   end_date: z.string().min(10, 'Data final obrigatória'),
   billing_day: z.coerce.number().int().min(1).max(31),
+  billing_interval_months: z.coerce.number().int().positive().default(1),
   cancellation_date: z.string().optional(),
 });
 
@@ -71,6 +85,7 @@ const normalizePayloadDates = (form) => ({
   contract_type_id: form.contract_type_id ? Number(form.contract_type_id) : null,
   client_id: form.client_id ? Number(form.client_id) : null,
   value: Number(form.value ?? 0),
+  billing_interval_months: Number(form.billing_interval_months ?? 1),
 });
 
 function ContractDialog({ open, onClose, onSubmit, defaultValues, contractTypes = [] }) {
@@ -83,6 +98,7 @@ function ContractDialog({ open, onClose, onSubmit, defaultValues, contractTypes 
     start_date: toDateInput(defaultValues?.start_date),
     end_date: toDateInput(defaultValues?.end_date),
     billing_day: defaultValues?.billing_day ?? 1,
+    billing_interval_months: defaultValues?.billing_interval_months ?? 1,
     cancellation_date: toDateInput(defaultValues?.cancellation_date),
   }), [defaultValues])
   const { register, handleSubmit, formState:{ errors, isSubmitting }, reset } = useForm({ resolver: zodResolver(schema), defaultValues: formDefaults })
@@ -107,6 +123,21 @@ function ContractDialog({ open, onClose, onSubmit, defaultValues, contractTypes 
                 <MenuItem key={type.id} value={type.id}>
                   {type.name}{type.is_recurring ? ` (+${Number(type.adjustment_percent).toFixed(2)}%/ano)` : ''}
                 </MenuItem>
+              ))}
+            </TextField>
+          </Grid>
+          <Grid item xs={12} md={6}>
+            <TextField
+              select
+              fullWidth
+              label="Periodicidade de cobrança"
+              defaultValue={defaultValues?.billing_interval_months ?? 1}
+              {...register('billing_interval_months')}
+              error={!!errors.billing_interval_months}
+              helperText={errors.billing_interval_months?.message || 'Mensal, trimestral ou anual'}
+            >
+              {BILLING_INTERVAL_OPTIONS.map((opt) => (
+                <MenuItem key={opt.value} value={opt.value}>{opt.label}</MenuItem>
               ))}
             </TextField>
           </Grid>
@@ -357,6 +388,7 @@ export default function ContractsPage() {
                 <TableCell>Cliente</TableCell>
                 <TableCell>Descrição</TableCell>
                 <TableCell>Tipo</TableCell>
+                <TableCell>Periodicidade</TableCell>
                 <TableCell>Valor</TableCell>
                 <TableCell>Período</TableCell>
                 <TableCell>Dia</TableCell>
@@ -372,6 +404,7 @@ export default function ContractsPage() {
                   <TableCell>{r.client_name}</TableCell>
                   <TableCell>{r.description}</TableCell>
                   <TableCell>{r.contract_type_name || '-'}</TableCell>
+                  <TableCell>{formatInterval(r.billing_interval_months)}</TableCell>
                   <TableCell>{Number(r.value).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</TableCell>
                   <TableCell>{formatDateOnly(r.start_date)} ? {formatDateOnly(r.end_date)}</TableCell>
                   <TableCell>{r.billing_day}</TableCell>
@@ -414,7 +447,7 @@ export default function ContractsPage() {
         open={dialogOpen}
         onClose={() => setDialogOpen(false)}
         onSubmit={onSubmit}
-        defaultValues={editing || { client_id:'', contract_type_id:'', description:'', value:0, start_date:'', end_date:'', billing_day:1, cancellation_date:'' }}
+        defaultValues={editing || { client_id:'', contract_type_id:'', description:'', value:0, start_date:'', end_date:'', billing_day:1, billing_interval_months:1, cancellation_date:'' }}
         contractTypes={contractTypes}
       />
       <Snackbar open={!!errorToast} autoHideDuration={4000} onClose={() => setErrorToast(null)}>

@@ -20,6 +20,24 @@ function dueDateForMonth(baseDate, billingDay) {
   return new Date(base.getFullYear(), base.getMonth(), eff);
 }
 
+function normalizeBillingIntervalMonths(value) {
+  const numeric = Number(value);
+  if (numeric === 3 || numeric === 12) return numeric;
+  if (Number.isNaN(numeric) || numeric <= 0) return 1;
+  return 1;
+}
+
+function isBillingMonthFor(contract, dateValue) {
+  const target = ensureDateOnly(dateValue);
+  const start = ensureDateOnly(contract?.start_date);
+  if (!target || !start) return true;
+  const interval = normalizeBillingIntervalMonths(contract?.billing_interval_months);
+  if (interval <= 1) return true;
+  const monthsDiff = (target.getFullYear() - start.getFullYear()) * 12 + (target.getMonth() - start.getMonth());
+  if (monthsDiff < 0) return false;
+  return monthsDiff % interval === 0;
+}
+
 function summarizeGatewayPayment(gatewayPayment) {
   if (!gatewayPayment) return null;
   return {
@@ -102,9 +120,9 @@ async function renewRecurringContracts(now = new Date()) {
     const newValue = Number(c.value || 0) * factor;
     await query(`
       INSERT INTO ${SCHEMA}.contracts
-        (company_id, client_id, contract_type_id, description, value, start_date, end_date, billing_day, recurrence_of, cancellation_date)
+        (company_id, client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, recurrence_of, cancellation_date)
       VALUES
-        ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL)
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
     `, [
       c.company_id,
       c.client_id,
@@ -114,7 +132,9 @@ async function renewRecurringContracts(now = new Date()) {
       isoDate(newStart),
       isoDate(newEnd),
       c.billing_day,
+      c.billing_interval_months || 1,
       c.id,
+      null,
     ]);
     console.log(`[RENEW] Contrato #${c.id} renovado para ${isoDate(newStart)}-${isoDate(newEnd)} com valor ${newValue.toFixed(2)}`);
   }
@@ -134,8 +154,14 @@ async function generateBillingsForToday(now = new Date()) {
   `, [todayStr]);
 
   for (const c of contracts.rows) {
+    const interval = normalizeBillingIntervalMonths(c.billing_interval_months);
+    const inCycle = isBillingMonthFor(c, now);
+    if (!inCycle) {
+      console.log(`[BILL] Contract #${c.id}: Not a billing month for interval=${interval}. Skipping.`);
+      continue;
+    }
     const eff = effectiveBillingDay(now, Number(c.billing_day));
-    console.log(`[BILL] Contract #${c.id}: day=${day}, effectiveBillingDay=${eff}`);
+    console.log(`[BILL] Contract #${c.id}: day=${day}, effectiveBillingDay=${eff}, interval=${interval}`);
 
     await withClient(async (client) => {
         await client.query("BEGIN");
@@ -201,7 +227,7 @@ async function sendPreReminders(now = new Date()) {
   const month = base.getMonth() + 1;
 
   const rows = await query(`
-    SELECT c.id, c.company_id, c.client_id, c.description, c.value, c.billing_day,
+    SELECT c.id, c.company_id, c.client_id, c.description, c.value, c.billing_day, c.start_date, c.billing_interval_months,
            cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone,
            cl.document_cpf AS client_document_cpf, cl.document_cnpj AS client_document_cnpj,
            cms.status AS month_status
@@ -215,6 +241,10 @@ async function sendPreReminders(now = new Date()) {
   `, [baseStr, year, month]);
 
   for (const c of rows.rows) {
+    if (!isBillingMonthFor(c, base)) {
+      console.log(`[PRE] Contract #${c.id}: Skipping because ${isoDate(base)} is not in the billing interval.`);
+      continue;
+    }
     const due = dueDateForMonth(base, c.billing_day);
     const dueStr = isoDate(due);
     if (dueStr !== baseStr) continue;
@@ -350,7 +380,7 @@ async function sendDueReminders(now = new Date()) {
 
     let evo = { ok: false, error: "no-phone" };
     try { evo = await sendWhatsapp(r.company_id, { number: r.client_phone, text }); }
-    catch (e) { evo = { ok: false, error: e.message }; }l
+    catch (e) { evo = { ok: false, error: e.message }; }
     const providerResponse = {
       messenger: evo.data ?? null,
       messengerStatus: evo.status ?? null,

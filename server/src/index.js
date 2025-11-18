@@ -109,25 +109,30 @@ async function initDb() {
     await c.query(`
       CREATE TABLE IF NOT EXISTS contracts (
         id SERIAL PRIMARY KEY,
-        company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-        client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
-        contract_type_id INTEGER REFERENCES ${schema}.contract_types(id),
-        description TEXT NOT NULL,
-        value NUMERIC(10, 2) NOT NULL,
-        start_date DATE NOT NULL,
-        end_date DATE NOT NULL,
-        billing_day INTEGER NOT NULL,
-        cancellation_date DATE,
-        recurrence_of INTEGER REFERENCES ${schema}.contracts(id),
-        last_billed_date DATE,
-        active BOOLEAN NOT NULL DEFAULT true,
-        created_at TIMESTAMPTZ DEFAULT now()
-      );
-    `);
+      company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      contract_type_id INTEGER REFERENCES ${schema}.contract_types(id),
+      description TEXT NOT NULL,
+      value NUMERIC(10, 2) NOT NULL,
+      start_date DATE NOT NULL,
+      end_date DATE NOT NULL,
+      billing_day INTEGER NOT NULL,
+      billing_interval_months INTEGER NOT NULL DEFAULT 1,
+      cancellation_date DATE,
+      recurrence_of INTEGER REFERENCES ${schema}.contracts(id),
+      last_billed_date DATE,
+      active BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
     await c.query(`ALTER TABLE ${schema}.contracts ADD COLUMN IF NOT EXISTS cancellation_date DATE;`);
     await c.query(`ALTER TABLE ${schema}.contracts ADD COLUMN IF NOT EXISTS contract_type_id INTEGER REFERENCES ${schema}.contract_types(id);`);
     await c.query(`ALTER TABLE ${schema}.contracts ADD COLUMN IF NOT EXISTS recurrence_of INTEGER REFERENCES ${schema}.contracts(id);`);
     await c.query(`ALTER TABLE ${schema}.contracts ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT true;`);
+    await c.query(`ALTER TABLE ${schema}.contracts ADD COLUMN IF NOT EXISTS billing_interval_months INTEGER;`);
+    await c.query(`UPDATE ${schema}.contracts SET billing_interval_months = 1 WHERE billing_interval_months IS NULL;`);
+    await c.query(`ALTER TABLE ${schema}.contracts ALTER COLUMN billing_interval_months SET DEFAULT 1;`);
+    await c.query(`ALTER TABLE ${schema}.contracts ALTER COLUMN billing_interval_months SET NOT NULL;`);
     await c.query(`
       INSERT INTO ${schema}.contract_types (company_id, name, is_recurring, adjustment_percent)
       SELECT c.id, 'Fixo', false, 0
@@ -322,6 +327,14 @@ module.exports = { pool, initDb, withClient, query, dbRequestContext };
     await c.query(`
       DO $$
       BEGIN
+        -- limpa unique legada em "name" sem company
+        IF EXISTS (
+          SELECT 1 FROM information_schema.table_constraints
+          WHERE table_schema='${schema}' AND table_name='contract_types' AND constraint_name='contract_types_name_key'
+        ) THEN
+          EXECUTE 'ALTER TABLE ${schema}.contract_types DROP CONSTRAINT contract_types_name_key';
+        END IF;
+
         IF NOT EXISTS (
           SELECT 1 FROM information_schema.table_constraints
           WHERE table_schema='${schema}' AND table_name='contract_types' AND constraint_name='contract_types_company_name_key'

@@ -285,7 +285,8 @@ async function ensureGatewayPaymentLink({
     });
     return formatGatewayRow(record);
   } catch (err) {
-    console.error('[gateway] Falha ao gerar link de pagamento:', err.message);
+    const msg = err?.message || err?.response?.data?.error || String(err);
+    console.error('[gateway] Falha ao gerar link de pagamento:', msg);
     if (err?.stack) console.error(err.stack);
     return null;
   }

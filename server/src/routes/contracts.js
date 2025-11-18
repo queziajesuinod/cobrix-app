@@ -6,6 +6,7 @@ const { assertContractLimit } = require('../utils/company-limits');
 
 const router = express.Router();
 const DATE_ISO = /^\d{4}-\d{2}-\d{2}$/;
+const ALLOWED_BILLING_INTERVALS = [1, 3, 12];
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 
@@ -29,6 +30,17 @@ const optionalDateField = z.preprocess(
   },
   z.nullable(z.string().regex(DATE_ISO))
 );
+
+const billingIntervalField = z.preprocess(
+  (value) => {
+    if (value === undefined || value === null || value === '') return 1;
+    const numeric = Number(value);
+    return Number.isNaN(numeric) ? value : numeric;
+  },
+  z.number().int().positive()
+).refine((val) => ALLOWED_BILLING_INTERVALS.includes(val), {
+  message: 'billing_interval_months deve ser 1 (mensal), 3 (trimestral) ou 12 (anual)'
+});
 
 async function ensureUniqueContractDescription(companyId, clientId, description, ignoreId) {
   const normalizedDescription = String(description || '').trim();
@@ -60,6 +72,7 @@ const contractSchema = z.object({
   start_date: dateField,
   end_date: dateField,
   billing_day: z.number().int().min(1).max(31),
+  billing_interval_months: billingIntervalField,
   cancellation_date: optionalDateField.optional()
 });
 
@@ -189,10 +202,11 @@ router.post('/', requireAuth, companyScope(true), async (req, res) => {
     ...req.body,
     client_id: Number(req.body.client_id),
     value: Number(req.body.value),
-    billing_day: Number(req.body.billing_day)
+    billing_day: Number(req.body.billing_day),
+    billing_interval_months: req.body.billing_interval_months
   });
   if (!parse.success) return res.status(400).json({ error: parse.error.flatten() });
-  const { client_id, contract_type_id, description, value, start_date, end_date, billing_day, cancellation_date } = parse.data;
+  const { client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, cancellation_date } = parse.data;
   if (new Date(start_date) >= new Date(end_date)) return res.status(400).json({ error: 'Data de início deve ser anterior à data de fim' });
   if (cancellation_date) {
     const cancelDt = new Date(cancellation_date);
@@ -210,9 +224,9 @@ router.post('/', requireAuth, companyScope(true), async (req, res) => {
     await ensureUniqueContractDescription(req.companyId, client_id, description, null);
     await assertContractLimit(req.companyId);
     const r = await query(`
-      INSERT INTO contracts (company_id, client_id, contract_type_id, description, value, start_date, end_date, billing_day, cancellation_date)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *
-    `, [req.companyId, client_id, contract_type_id, description, value, start_date, end_date, billing_day, cancellation_date]);
+      INSERT INTO contracts (company_id, client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, cancellation_date)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *
+    `, [req.companyId, client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, cancellation_date]);
     res.status(201).json(r.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -224,10 +238,11 @@ router.put('/:id', requireAuth, companyScope(true), async (req, res) => {
     ...req.body,
     client_id: Number(req.body.client_id),
     value: Number(req.body.value),
-    billing_day: Number(req.body.billing_day)
+    billing_day: Number(req.body.billing_day),
+    billing_interval_months: req.body.billing_interval_months
   });
   if (!parse.success) return res.status(400).json({ error: parse.error.flatten() });
-  const { client_id, contract_type_id, description, value, start_date, end_date, billing_day, cancellation_date } = parse.data;
+  const { client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, cancellation_date } = parse.data;
   if (new Date(start_date) >= new Date(end_date)) return res.status(400).json({ error: 'Data de início deve ser anterior à data de fim' });
   if (cancellation_date) {
     const cancelDt = new Date(cancellation_date);
@@ -244,9 +259,9 @@ router.put('/:id', requireAuth, companyScope(true), async (req, res) => {
 
     const r = await query(`
       UPDATE contracts
-      SET client_id=$1, contract_type_id=$2, description=$3, value=$4, start_date=$5, end_date=$6, billing_day=$7, cancellation_date=$8
-      WHERE id=$9 AND company_id=$10 RETURNING *
-    `, [client_id, contract_type_id, description, value, start_date, end_date, billing_day, cancellation_date, req.params.id, req.companyId]);
+      SET client_id=$1, contract_type_id=$2, description=$3, value=$4, start_date=$5, end_date=$6, billing_day=$7, billing_interval_months=$8, cancellation_date=$9
+      WHERE id=$10 AND company_id=$11 RETURNING *
+    `, [client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, cancellation_date, req.params.id, req.companyId]);
     if (!r.rows[0]) return res.status(404).json({ error: 'Contrato não encontrado' });
     res.json({ ok: true });
   } catch (err) {

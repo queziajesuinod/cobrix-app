@@ -236,9 +236,6 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
     if (!['pre', 'due', 'late'].includes(typ)) return res.status(400).json({ error: 'type inválido' });
     if (!contract_id || !date) return res.status(400).json({ error: 'contract_id e date s├úo obrigatórios' });
     const gatewayReady = await isGatewayConfigured(req.companyId);
-    if (!gatewayReady) {
-      return res.status(400).json({ error: 'Gateway de pagamento n├úo configurado para esta empresa.' });
-    }
 
     const c = await query(`
       SELECT c.*, cl.name AS client_name, cl.phone AS client_phone, cl.responsavel AS client_responsavel, cl.email AS client_email,
@@ -325,7 +322,7 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
         cpf: row.client_document_cpf || null,
         cnpj: row.client_document_cnpj || null,
       };
-      const gatewayPayment = await ensureGatewayPaymentLink({
+      const gatewayPayment = gatewayReady ? await ensureGatewayPaymentLink({
         companyId: req.companyId,
         contractId: Number(contract_id),
         billingId,
@@ -334,7 +331,7 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
         contractDescription: row.description,
         clientName: recipientName,
         clientDocument,
-      });
+      }) : null;
       const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
       const text = await map[typ]({
         nome: recipientName,
