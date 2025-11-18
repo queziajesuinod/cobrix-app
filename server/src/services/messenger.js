@@ -1,4 +1,4 @@
-// server/src/services/messenger.js
+// server/src/services/messenger.js (texto apenas)
 const axios = require('axios');
 const { query } = require('../db');
 const { buildSendUrl, baseUrl } = require('./evo-api');
@@ -14,7 +14,6 @@ function normNumber(n, { forceCountry } = {}) {
 }
 
 async function getCompanyEvoConfig(companyId) {
-  // ⚠️ usa schema configurado
   const r = await query(
     `SELECT evo_api_url, evo_api_key, evo_instance FROM ${SCHEMA}.companies WHERE id=$1`,
     [Number(companyId)]
@@ -42,7 +41,6 @@ async function sendWhatsapp(companyId, payload, options = {}) {
   const number = normNumber(payload?.number, { forceCountry: options.forceCountry ?? '55' });
   const text = String(payload?.text ?? '');
 
-  // logs úteis (não logar texto completo em prod se for sensível)
   console.log('[messenger] companyId=%s url=%s instance=%s key?=%s number=%s textLen=%d',
     cid, url, cfg.instance || '-', cfg.key ? 'yes' : 'no', number, text.length
   );
@@ -60,13 +58,11 @@ async function sendWhatsapp(companyId, payload, options = {}) {
       { number, text },
       {
         headers: {
-          'APIKEY': cfg.key,            // alguns proxies quebram case; mandamos os dois
+          'APIKEY': cfg.key,
           'apikey': cfg.key,
           'Content-Type': 'application/json',
         },
         timeout: 20000,
-        // descomente se houver problema de TLS no ambiente de teste (NÃO usar em prod):
-        // httpsAgent: new (require('https').Agent)({ rejectUnauthorized: false }),
       }
     );
 
@@ -96,11 +92,6 @@ async function sendWhatsapp(companyId, payload, options = {}) {
   }
 }
 
-/**
- * Alias: aceita as DUAS assinaturas
- *   - sendTextMessage(companyId, { number, text })
- *   - sendTextMessage({ number, text, companyId })
- */
 async function sendTextMessage(a, b, options = {}) {
   let companyId, payload;
   if (typeof a === 'object' && a !== null && ('number' in a || 'text' in a)) {

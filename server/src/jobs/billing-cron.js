@@ -267,6 +267,7 @@ async function sendPreReminders(now = new Date()) {
       clientDocument,
     });
     const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
+    const copyPaste = gatewaySummary?.copyPaste || null;
     const text = await msgPre({
       nome: recipientName,
       responsavel: c.client_responsavel,
@@ -277,10 +278,10 @@ async function sendPreReminders(now = new Date()) {
       valor: c.value,
       companyId: c.company_id,
       gatewayPayment,
-      gatewayPaymentLink: Boolean(gatewaySummary?.paymentUrl || gatewaySummary?.copyPaste),
-      payment_link: gatewaySummary?.paymentUrl || null,
-      payment_code: gatewaySummary?.copyPaste || null,
-      payment_qrcode: gatewayPayment?.qrCodeImage || null,
+      gatewayPaymentLink: Boolean(copyPaste),
+      payment_link: null,
+      payment_code: copyPaste,
+      payment_qrcode: null,
       payment_expires_at_iso: gatewaySummary?.expiresAtIso || null,
     });
 
@@ -361,6 +362,7 @@ async function sendDueReminders(now = new Date()) {
       clientDocument,
     });
     const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
+    const copyPaste = gatewaySummary?.copyPaste || null;
     const text = await msgDue({
       nome: recipientName,
       responsavel: r.client_responsavel,
@@ -371,10 +373,10 @@ async function sendDueReminders(now = new Date()) {
       valor: r.amount,
       companyId: r.company_id,
       gatewayPayment,
-      gatewayPaymentLink: Boolean(gatewaySummary?.paymentUrl || gatewaySummary?.copyPaste),
-      payment_link: gatewaySummary?.paymentUrl || null,
-      payment_code: gatewaySummary?.copyPaste || null,
-      payment_qrcode: gatewayPayment?.qrCodeImage || null,
+      gatewayPaymentLink: Boolean(copyPaste),
+      payment_link: null,
+      payment_code: copyPaste,
+      payment_qrcode: null,
       payment_expires_at_iso: gatewaySummary?.expiresAtIso || null,
     });
 
@@ -450,6 +452,7 @@ async function sendLateReminders(now = new Date()) {
       clientDocument,
     });
     const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
+    const copyPaste = gatewaySummary?.copyPaste || null;
     const text = await msgLate({
       nome: recipientName,
       responsavel: r.client_responsavel,
@@ -460,10 +463,10 @@ async function sendLateReminders(now = new Date()) {
       valor: r.amount,
       companyId: r.company_id,
       gatewayPayment,
-      gatewayPaymentLink: Boolean(gatewaySummary?.paymentUrl || gatewaySummary?.copyPaste),
-      payment_link: gatewaySummary?.paymentUrl || null,
-      payment_code: gatewaySummary?.copyPaste || null,
-      payment_qrcode: gatewayPayment?.qrCodeImage || null,
+      gatewayPaymentLink: Boolean(copyPaste),
+      payment_link: null,
+      payment_code: copyPaste,
+      payment_qrcode: null,
       payment_expires_at_iso: gatewaySummary?.expiresAtIso || null,
     });
 

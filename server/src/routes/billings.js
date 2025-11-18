@@ -338,6 +338,7 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
         clientDocument,
       }) : null;
       const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
+      const copyPaste = gatewaySummary?.copyPaste || null;
       const text = await map[typ]({
         nome: recipientName,
         responsavel: row.client_responsavel,
@@ -348,10 +349,10 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
         valor: row.value,
         companyId: req.companyId,
         gatewayPayment,
-        gatewayPaymentLink: Boolean(gatewaySummary?.paymentUrl || gatewaySummary?.copyPaste),
-        payment_link: gatewaySummary?.paymentUrl || null,
-        payment_code: gatewaySummary?.copyPaste || null,
-        payment_qrcode: gatewayPayment?.qrCodeImage || null,
+        gatewayPaymentLink: Boolean(copyPaste),
+        payment_link: null,
+        payment_code: copyPaste,
+        payment_qrcode: null,
         payment_expires_at_iso: gatewaySummary?.expiresAtIso || null,
       });
 
