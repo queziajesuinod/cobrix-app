@@ -8,6 +8,7 @@ const { ensureGatewayPaymentLink } = require('../services/payment-gateway');
 const { notifyBillingPaid } = require('../services/payment-notifications');
 const { isGatewayConfigured } = require('../services/company-gateway');
 const { ensureDateOnly, formatISODate } = require('../utils/date-only');
+const { normalizeBillingIntervalMonths, isBillingMonthFor } = require('../jobs/billing-cron');
 
 const router = express.Router();
 const SCHEMA = process.env.DB_SCHEMA || 'public';
@@ -261,6 +262,10 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
     const due = new Date(year, month, day);
     if (!due) return res.status(400).json({ error: 'date inv├ílida' });
     const dueStr = isoDate(due);
+
+    if (!isBillingMonthFor(row, due)) {
+      return res.status(409).json({ error: 'Contrato fora da periodicidade de cobrança para este mês' });
+    }
 
     // se m├¬s j├í pago/cancelado, bloqueia
     const cms = await query(`

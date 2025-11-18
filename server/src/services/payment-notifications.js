@@ -5,6 +5,7 @@ const { ensureDateOnly, formatISODate } = require('../utils/date-only');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 const NOTIFICATION_TYPE = 'paid';
+const NOTIFICATION_KIND = 'auto';
 
 function encodeProviderResponse(value) {
   if (value == null) return null;
@@ -99,7 +100,7 @@ async function savePaidNotification({
       Number(billingId),
       Number(contractId),
       Number(clientId),
-      NOTIFICATION_TYPE,
+      NOTIFICATION_KIND,
       targetDate,
       status,
       String(toNumber || ''),
@@ -215,4 +216,3 @@ async function notifyBillingPaid({
 module.exports = {
   notifyBillingPaid,
 };
-

@@ -521,5 +521,7 @@ module.exports = {
   sendDueReminders,
   sendLateReminders,
   effectiveBillingDay,
-  dueDateForMonth
+  dueDateForMonth,
+  normalizeBillingIntervalMonths,
+  isBillingMonthFor,
 };
