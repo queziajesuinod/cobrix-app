@@ -22,11 +22,6 @@ function monthBounds(ym) {
   return { y, m, start: isoDate(start), end: isoDate(end) };
 }
 
-// NEW: parse "YYYY-MM-DD" as local date to avoid timezone shift
-function parseDateIsoLocal(value) {
-  return ensureDateOnly(value);
-}
-
 function summarizeGatewayPayment(gatewayPayment) {
   if (!gatewayPayment) return null;
   return {
@@ -724,10 +719,11 @@ router.get('/paid', requireAuth, companyScope(true), async (req, res) => {
 });
 
 // Rodar pipeline (manual)
-router.post('/check/run', requireAuth, async (req, res) => {
+router.post('/check/run', requireAuth, companyScope(true), async (req, res) => {
   try {
     let { date, generate = true, pre = true, due = true, late = true } = (req.body || {});
-    let base = new Date(date);
+    const base = ensureDateOnly(date);
+    if (!base) return res.status(400).json({ error: 'date (YYYY-MM-DD) obrigatório' });
     await runDaily(base, { generate, pre, due, late });
     res.json({ ok: true, ran_for: base.toISOString().slice(0, 10), steps: { generate, pre, due, late } });
   } catch (e) {

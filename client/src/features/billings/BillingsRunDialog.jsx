@@ -2,7 +2,8 @@ import React, { useState } from 'react'
 import { Dialog, DialogTitle, DialogContent, DialogActions, Button, Stack, TextField, FormGroup, FormControlLabel, Checkbox } from '@mui/material'
 
 export default function BillingsRunDialog({ open, onClose, onConfirm }) {
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0,10))
+  // Usa data local (YYYY-MM-DD) para evitar shift de timezone no default
+  const [date, setDate] = useState(() => new Date().toLocaleDateString('sv-SE'))
   const [flags, setFlags] = useState({ generate: true, pre: true, due: true, late: true })
   const toggle = (k) => setFlags((s) => ({ ...s, [k]: !s[k] }))
 
