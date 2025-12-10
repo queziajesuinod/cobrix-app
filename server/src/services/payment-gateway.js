@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const EfiPay = require('sdk-node-apis-efi');
 const { query } = require('../db');
 const { getCompanyGatewayCredentials } = require('./company-gateway');
+const { ensureDateOnly, addDays } = require('../utils/date-only');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 const DEFAULT_EXPIRATION = Number(process.env.EFI_PIX_EXPIRATION || 86400); // 24h
@@ -78,6 +79,17 @@ function formatAmount(value) {
   const num = Number(value || 0);
   if (!Number.isFinite(num) || num <= 0) return '0.01';
   return num.toFixed(2);
+}
+
+// Ensures the PIX expires two days after the billing due date.
+function calculateExpirationSeconds(dueDate) {
+  const due = ensureDateOnly(dueDate);
+  if (!due) return DEFAULT_EXPIRATION;
+  const target = addDays(due, 2);
+  if (!target) return DEFAULT_EXPIRATION;
+  const diffMs = target.getTime() - Date.now();
+  if (diffMs <= 0) return DEFAULT_EXPIRATION;
+  return Math.ceil(diffMs / 1000);
 }
 
 function formatGatewayRow(row) {
@@ -194,8 +206,9 @@ async function createGatewayLink({
 }) {
   const client = buildClient(credentials);
   const description = trimDescription(contractDescription, contractId);
+  const expirationSeconds = calculateExpirationSeconds(dueDate);
   const body = {
-    calendario: { expiracao: DEFAULT_EXPIRATION },
+    calendario: { expiracao: expirationSeconds },
     valor: { original: formatAmount(amount) },
     chave: credentials.pixKey,
     solicitacaoPagador: `Pagamento ${description} - venc ${dueDate}`,
@@ -222,7 +235,7 @@ async function createGatewayLink({
     throw new Error('Resposta do gateway sem location id');
   }
   const qrcode = await client.pixGenerateQRCode({ id: locId });
-  const expiresSeconds = Number(charge?.calendario?.expiracao || DEFAULT_EXPIRATION);
+  const expiresSeconds = Number(charge?.calendario?.expiracao || expirationSeconds || DEFAULT_EXPIRATION);
   const expiresAt = new Date(Date.now() + expiresSeconds * 1000);
 
   const stored = await storeGatewayLink({

@@ -531,7 +531,10 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
     return res.status(400).json({ error: 'dueDay inválido' });
   }
   try {
-    const monthStartIso = `${ym}-01`;
+    const monthStart = new Date(year, month - 1, 1);
+    const monthEnd = new Date(year, month, 1); // primeiro dia do mÇ¦s seguinte
+    const monthStartIso = isoDate(monthStart);
+    const monthEndIso = isoDate(monthEnd);
     const notif = await query(`
       SELECT bn.contract_id, bn.type, COUNT(*) AS cnt, MAX(bn.sent_at) AS last_sent_at,
              c.client_id, c.description AS contract_description, cl.name AS client_name,
@@ -547,12 +550,14 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
         AND ($5::int IS NULL OR c.id = $5)
         AND ($6::int IS NULL OR EXTRACT(DAY FROM bn.due_date) = $6)
         AND (c.cancellation_date IS NULL OR c.cancellation_date >= $7::date)
+        AND c.start_date <= $8::date
+        AND c.end_date >= $7::date
         AND NOT EXISTS (
           SELECT 1 FROM ${SCHEMA}.contract_month_status cms2
           WHERE cms2.contract_id = bn.contract_id AND cms2.year = $2 AND cms2.month = $3 AND cms2.status = 'paid'
         )
       GROUP BY bn.contract_id, bn.type, c.client_id, c.description, cl.name
-    `, [req.companyId, year, month, clientId, contractId, dueDay, monthStartIso]);
+    `, [req.companyId, year, month, clientId, contractId, dueDay, monthStartIso, monthEndIso]);
 
     const cms = await query(`
       SELECT cms.contract_id, cms.status, c.client_id, c.description AS contract_description,
@@ -565,7 +570,9 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
         AND ($4::int IS NULL OR c.client_id = $4)
         AND ($5::int IS NULL OR c.id = $5)
         AND (c.cancellation_date IS NULL OR c.cancellation_date >= $6::date)
-    `, [req.companyId, year, month, clientId, contractId, monthStartIso]);
+        AND c.start_date <= $7::date
+        AND c.end_date >= $6::date
+    `, [req.companyId, year, month, clientId, contractId, monthStartIso, monthEndIso]);
 
     const bills = await query(`
       SELECT b.*, c.description AS contract_description, c.client_id AS contract_client_id,
@@ -580,12 +587,14 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
         AND ($5::int IS NULL OR c.id = $5)
         AND ($6::int IS NULL OR EXTRACT(DAY FROM b.billing_date) = $6)
         AND (c.cancellation_date IS NULL OR c.cancellation_date >= $7::date)
+        AND c.start_date <= $8::date
+        AND c.end_date >= $7::date
         AND NOT EXISTS (
           SELECT 1 FROM ${SCHEMA}.contract_month_status cms2
           WHERE cms2.contract_id = c.id AND cms2.year = $2 AND cms2.month = $3 AND cms2.status = 'paid'
         )
       ORDER BY b.billing_date ASC, b.id ASC
-    `, [req.companyId, year, month, clientId, contractId, dueDay, monthStartIso]);
+    `, [req.companyId, year, month, clientId, contractId, dueDay, monthStartIso, monthEndIso]);
 
     const byContract = {};
     for (const r of bills.rows) {
@@ -668,6 +677,10 @@ router.get('/paid', requireAuth, companyScope(true), async (req, res) => {
   if (clientIdRaw && (clientId == null || Number.isNaN(clientId))) return res.status(400).json({ error: 'clientId inválido' });
   if (contractIdRaw && (contractId == null || Number.isNaN(contractId))) return res.status(400).json({ error: 'contractId inválido' });
   const offset = (page - 1) * pageSize;
+  const monthStart = new Date(year, month - 1, 1);
+  const monthEnd = new Date(year, month, 1);
+  const monthStartIso = isoDate(monthStart);
+  const monthEndIso = isoDate(monthEnd);
 
   try {
     const count = await query(`
@@ -681,7 +694,10 @@ router.get('/paid', requireAuth, companyScope(true), async (req, res) => {
         AND cms.month = $3
         AND ($4::int IS NULL OR cl.id = $4)
         AND ($5::int IS NULL OR c.id = $5)
-    `, [req.companyId, year, month, clientId, contractId]);
+        AND (c.cancellation_date IS NULL OR c.cancellation_date >= $6::date)
+        AND c.start_date <= $7::date
+        AND c.end_date >= $6::date
+    `, [req.companyId, year, month, clientId, contractId, monthStartIso, monthEndIso]);
 
     const rows = await query(`
       SELECT cms.contract_id,
@@ -703,9 +719,12 @@ router.get('/paid', requireAuth, companyScope(true), async (req, res) => {
         AND cms.month = $3
         AND ($4::int IS NULL OR cl.id = $4)
         AND ($5::int IS NULL OR c.id = $5)
+        AND (c.cancellation_date IS NULL OR c.cancellation_date >= $6::date)
+        AND c.start_date <= $7::date
+        AND c.end_date >= $6::date
       ORDER BY cms.updated_at DESC NULLS LAST, c.description ASC
-      LIMIT $6 OFFSET $7
-    `, [req.companyId, year, month, clientId, contractId, pageSize, offset]);
+      LIMIT $8 OFFSET $9
+    `, [req.companyId, year, month, clientId, contractId, monthStartIso, monthEndIso, pageSize, offset]);
 
     res.json({
       page,
