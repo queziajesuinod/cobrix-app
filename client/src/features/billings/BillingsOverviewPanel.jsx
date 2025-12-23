@@ -78,11 +78,18 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
                   </Stack>
                 </Grid>
                 <Grid item xs={12} md={5} sx={{ textAlign: { xs:'left', md:'right' } }}>
-                  <Tooltip title="Marcar o mês inteiro como PAGO">
-                    <span>
-                      <Button size="small" variant="contained" disabled={allPaid || isCanceled} onClick={() => bulk.mutateAsync({ contractId: it.contract_id, y, m, status: 'paid' })}>Marcar mês PAGO</Button>
-                    </span>
-                  </Tooltip>
+                  <Stack direction="row" spacing={1} justifyContent={{ xs: 'flex-start', md: 'flex-end' }}>
+                    <Tooltip title="Marcar o mês inteiro como PAGO">
+                      <span>
+                        <Button size="small" variant="contained" disabled={allPaid || isCanceled} onClick={() => bulk.mutateAsync({ contractId: it.contract_id, y, m, status: 'paid' })}>Marcar mês PAGO</Button>
+                      </span>
+                    </Tooltip>
+                    <Tooltip title="Cancelar cobrança do mês">
+                      <span>
+                        <Button size="small" variant="outlined" color="error" disabled={allPaid || isCanceled} onClick={() => bulk.mutateAsync({ contractId: it.contract_id, y, m, status: 'canceled' })}>Cancelar cobrança</Button>
+                      </span>
+                    </Tooltip>
+                  </Stack>
                 </Grid>
               </Grid>
 

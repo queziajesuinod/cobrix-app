@@ -17,7 +17,6 @@ import CategoryIcon from '@mui/icons-material/Category'
 import BusinessIcon from '@mui/icons-material/Business'
 import LogoutIcon from '@mui/icons-material/Logout'
 import AutorenewIcon from '@mui/icons-material/Autorenew'
-import SendIcon from '@mui/icons-material/Send'
 import NotificationsOutlinedIcon from '@mui/icons-material/NotificationsOutlined'
 import QrCodeIcon from '@mui/icons-material/QrCode'
 import EditNoteIcon from '@mui/icons-material/EditNote'
@@ -43,7 +42,6 @@ const navItems = (role, companyId) => [
     icon: <NotificationsOutlinedIcon />,
     children: [
       { to: '/notifications/auto', label: 'Automático', icon: <AutorenewIcon /> },
-      { to: '/notifications/manual', label: 'Manual', icon: <SendIcon /> },
       { to: '/notifications/templates', label: 'Modelos', icon: <EditNoteIcon /> },
       { to: '/billings/paid', label: 'Contratos pagos', icon: <CheckCircleIcon /> },
     ],

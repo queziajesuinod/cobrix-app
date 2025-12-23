@@ -38,6 +38,27 @@ function isBillingMonthFor(contract, dateValue) {
   return monthsDiff % interval === 0;
 }
 
+function isIntervalDayFor(contract, dateValue) {
+  const target = ensureDateOnly(dateValue);
+  const start = ensureDateOnly(contract?.start_date);
+  const interval = Number(contract?.billing_interval_days || 0);
+  if (!target || !start || interval <= 0) return false;
+  const diff = Math.floor((target - start) / (1000 * 60 * 60 * 24));
+  if (diff < 0) return false;
+  return diff % interval === 0;
+}
+
+function computeCustomAmount(entry, contractValue) {
+  const amount = entry?.amount != null ? Number(entry.amount) : null;
+  const perc = entry?.percentage != null ? Number(entry.percentage) : null;
+  if (amount != null && !Number.isNaN(amount) && amount > 0) return Number(amount);
+  if (perc != null && !Number.isNaN(perc) && perc > 0) {
+    const base = Number(contractValue || 0);
+    return Number(((base * perc) / 100).toFixed(2));
+  }
+  return null;
+}
+
 function summarizeGatewayPayment(gatewayPayment) {
   if (!gatewayPayment) return null;
   return {
@@ -73,6 +94,7 @@ async function upsertAutoNotification({
        $5,$6,
        $7,'evo',$8,$9,$10,$11,
        $12,NOW(),$13,$5,$14)
+    ON CONFLICT DO NOTHING
     RETURNING id
   `;
 
@@ -94,23 +116,54 @@ async function upsertAutoNotification({
   ];
 
   const r = await query(sql, params);
-  return r.rows[0]?.id;
+  if (r.rows[0]?.id) return r.rows[0].id;
+
+  const updateSql = `
+    UPDATE ${SCHEMA}.billing_notifications
+    SET billing_id = $2,
+        client_id = $4,
+        status = $7,
+        provider = 'evo',
+        to_number = $8,
+        message = $9,
+        provider_status = $10,
+        provider_response = $11,
+        error = $12,
+        sent_at = $13,
+        type = $5,
+        due_date = $14
+    WHERE company_id = $1
+      AND contract_id = $3
+      AND target_date = $6
+      AND kind = $5
+    RETURNING id
+  `;
+  const updated = await query(updateSql, params);
+  return updated.rows[0]?.id;
 }
 
-async function renewRecurringContracts(now = new Date()) {
+async function renewRecurringContracts(now = new Date(), companyId = null) {
   const todayStr = isoDate(now);
+  const params = [todayStr];
+  let companyFilter = '';
+  if (companyId) {
+    params.push(Number(companyId));
+    companyFilter = ` AND c.company_id = $${params.length}`;
+  }
   const rows = await query(`
     SELECT c.*, ct.adjustment_percent, ct.is_recurring
     FROM ${SCHEMA}.contracts c
     JOIN ${SCHEMA}.contract_types ct ON ct.id = c.contract_type_id
     WHERE ct.is_recurring = true
+      AND c.active = true
       AND c.cancellation_date IS NULL
       AND DATE(c.end_date) <= DATE($1)
+      ${companyFilter}
       AND NOT EXISTS (
         SELECT 1 FROM ${SCHEMA}.contracts c2
         WHERE c2.recurrence_of = c.id
       )
-  `, [todayStr]);
+  `, params);
 
   for (const c of rows.rows) {
     const baseEnd = ensureDateOnly(c.end_date || todayStr) || ensureDateOnly(todayStr);
@@ -140,94 +193,149 @@ async function renewRecurringContracts(now = new Date()) {
   }
 }
 
-// 1) Gera cobranças do dia (idempotente)
-async function generateBillingsForToday(now = new Date()) {
+// 1) Gera cobrancas do dia (idempotente)
+async function generateBillingsForToday(now = new Date(), companyId = null) {
   const todayStr = isoDate(now);
   const day = now.getDate();
+  const year = now.getFullYear();
+  const month = now.getMonth() + 1;
 
+  const params = [todayStr, year, month];
+  let companyFilter = '';
+  if (companyId) {
+    params.push(Number(companyId));
+    companyFilter = ` AND c.company_id = $${params.length}`;
+  }
   const contracts = await query(`
     SELECT c.*, cl.name AS client_name
     FROM ${SCHEMA}.contracts c
     JOIN ${SCHEMA}.clients  cl ON cl.id = c.client_id
+    LEFT JOIN ${SCHEMA}.contract_month_status cms
+      ON cms.contract_id = c.id AND cms.year = $2 AND cms.month = $3
     WHERE c.start_date <= $1 AND c.end_date >= $1
       AND (c.cancellation_date IS NULL OR c.cancellation_date >= $1)
-  `, [todayStr]);
+      AND c.active = true
+      AND LOWER(COALESCE(cms.status, 'pending')) NOT IN ('paid','canceled')
+      ${companyFilter}
+  `, params);
+
+  const customParams = [todayStr];
+  let customFilter = '';
+  if (companyId) {
+    customParams.push(Number(companyId));
+    customFilter = ` AND company_id = $${customParams.length}`;
+  }
+  const customForToday = await query(
+    `SELECT contract_id, amount, percentage FROM ${SCHEMA}.contract_custom_billings WHERE billing_date=$1${customFilter}`,
+    customParams
+  );
+  const customMap = new Map(customForToday.rows.map((r) => [Number(r.contract_id), r]));
 
   for (const c of contracts.rows) {
-    const interval = normalizeBillingIntervalMonths(c.billing_interval_months);
-    const inCycle = isBillingMonthFor(c, now);
-    if (!inCycle) {
-      console.log(`[BILL] Contract #${c.id}: Not a billing month for interval=${interval}. Skipping.`);
+    const mode = String(c.billing_mode || "monthly").toLowerCase();
+    let shouldGenerate = false;
+    let amount = Number(c.value || 0);
+
+    if (mode === "custom_dates") {
+      const entry = customMap.get(Number(c.id));
+      if (!entry) continue;
+      const computed = computeCustomAmount(entry, c.value);
+      if (!computed || computed <= 0) {
+        console.log(`[BILL] Contract #${c.id}: custom billing sem valor. Skipping.`);
+        continue;
+      }
+      amount = computed;
+      shouldGenerate = true;
+    } else if (mode === "interval_days") {
+      if (!isIntervalDayFor(c, now)) continue;
+      shouldGenerate = true;
+      amount = Number(c.value || 0);
+    } else {
+      const interval = normalizeBillingIntervalMonths(c.billing_interval_months);
+      const inCycle = isBillingMonthFor(c, now);
+      if (!inCycle) {
+        console.log(`[BILL] Contract #${c.id}: Not a billing month for interval=${interval}. Skipping.`);
+        continue;
+      }
+      const eff = effectiveBillingDay(now, Number(c.billing_day));
+      if (day !== eff) {
+        continue;
+      }
+      shouldGenerate = true;
+    }
+
+    if (!shouldGenerate) continue;
+    if (c.last_billed_date && String(c.last_billed_date) >= todayStr) {
+      console.log(`[BILL] Contract #${c.id}: Already billed for today. Skipping billing generation.`);
       continue;
     }
-    const eff = effectiveBillingDay(now, Number(c.billing_day));
-    console.log(`[BILL] Contract #${c.id}: day=${day}, effectiveBillingDay=${eff}, interval=${interval}`);
 
     await withClient(async (client) => {
-        await client.query("BEGIN");
+      await client.query("BEGIN");
       try {
-        // Ensure contract_month_status is set to \'pending\' for the current month
         const currentYear = now.getFullYear();
         const currentMonth = now.getMonth() + 1;
-        console.log(`[BILL] Attempting to insert/update contract_month_status for contract #${c.id}, year=${currentYear}, month=${currentMonth}`);
-        try {
-          const cmsInsertResult = await client.query(
-            `INSERT INTO ${SCHEMA}.contract_month_status (company_id, contract_id, year, month, status)
-     VALUES ($1, $2, $3, $4, \'pending\')
-      ON CONFLICT (contract_id, year, month)
-      DO UPDATE
-        SET status = CASE
-          WHEN ${SCHEMA}.contract_month_status.status IN (\'paid\',\'canceled\')
-            THEN ${SCHEMA}.contract_month_status.status
-          ELSE EXCLUDED.status
-        END`,
-            [c.company_id, c.id, currentYear, currentMonth]
-          );
-          console.log(`[BILL] contract_month_status inserted/updated for contract #${c.id}, year=${currentYear}, month=${currentMonth}. RowCount: ${cmsInsertResult.rowCount}`);
-        } catch (cmsError) {
-          console.error(`[BILL] Failed to insert/update contract_month_status for contract #${c.id}:`, cmsError.message);
-        }
+        await client.query(
+          `INSERT INTO ${SCHEMA}.contract_month_status (company_id, contract_id, year, month, status)
+           VALUES ($1, $2, $3, $4, 'pending')
+           ON CONFLICT (contract_id, year, month)
+           DO UPDATE
+             SET status = CASE
+               WHEN ${SCHEMA}.contract_month_status.status IN ('paid','canceled')
+                 THEN ${SCHEMA}.contract_month_status.status
+               ELSE EXCLUDED.status
+             END`,
+          [c.company_id, c.id, currentYear, currentMonth]
+        );
 
-        if (day !== eff) {
-          console.log(`[BILL] Contract #${c.id}: Not effective billing day. Skipping billing generation.`);
-        } else if (c.last_billed_date && String(c.last_billed_date) >= todayStr) {
-          console.log(`[BILL] Contract #${c.id}: Already billed for today. Skipping billing generation.`);
-        } else {
-          const billingInsertResult = await client.query(
-            `INSERT INTO ${SCHEMA}.billings (company_id, contract_id, billing_date, amount, status)
-     VALUES ($1,$2,$3,$4,\'pending\')
-      ON CONFLICT ( contract_id, billing_date) DO NOTHING`,
-            [c.company_id, c.id, todayStr, c.value]
-          );
-          console.log(`[BILL] Billing insert result for contract #${c.id}: rowCount=${billingInsertResult.rowCount}`);
+        await client.query(
+          `INSERT INTO ${SCHEMA}.billings (company_id, contract_id, billing_date, amount, status)
+           VALUES ($1,$2,$3,$4,'pending')
+           ON CONFLICT (contract_id, billing_date) DO NOTHING`,
+          [c.company_id, c.id, todayStr, amount]
+        );
 
-          await client.query(
-            `UPDATE ${SCHEMA}.contracts SET last_billed_date=$1 WHERE id=$2`,
-            [todayStr, c.id]
-          );
-          console.log(`✔ [BILL] c#${c.id} ${todayStr} valor=${c.value}. Billing generated.`);
-        }
+        await client.query(
+          `UPDATE ${SCHEMA}.contracts SET last_billed_date=$1 WHERE id=$2`,
+          [todayStr, c.id]
+        );
+
         await client.query("COMMIT");
-        console.log(`✔ [BILL] c#${c.id}. Transaction committed.`);
+        console.log(`[BILL] c#${c.id} ${todayStr} valor=${amount}. Billing generated.`);
       } catch (e) {
         await client.query("ROLLBACK");
         console.error("[BILL] falhou para c#" + c.id + ":", e.message);
-      } finally {
-        console.log(`[BILL] Finished processing contract #${c.id}.`);
       }
     });
   }
 }
 
 // 2) D-3 (PRE)
-async function sendPreReminders(now = new Date()) {
+async function sendPreReminders(now = new Date(), companyId = null) {
   const base = addDays(now, 3);
   const baseStr = isoDate(base);
   const year = base.getFullYear();
   const month = base.getMonth() + 1;
+  const customParams = [baseStr];
+  let customFilter = '';
+  if (companyId) {
+    customParams.push(Number(companyId));
+    customFilter = ` AND company_id = $${customParams.length}`;
+  }
+  const customForTarget = await query(
+    `SELECT contract_id, amount, percentage FROM ${SCHEMA}.contract_custom_billings WHERE billing_date=$1${customFilter}`,
+    customParams
+  );
+  const customMap = new Map(customForTarget.rows.map((r) => [Number(r.contract_id), r]));
 
+  const params = [baseStr, year, month];
+  let companyFilter = '';
+  if (companyId) {
+    params.push(Number(companyId));
+    companyFilter = ` AND c.company_id = $${params.length}`;
+  }
   const rows = await query(`
-    SELECT c.id, c.company_id, c.client_id, c.description, c.value, c.billing_day, c.start_date, c.billing_interval_months,
+    SELECT c.id, c.company_id, c.client_id, c.description, c.value, c.billing_day, c.start_date, c.billing_interval_months, c.billing_mode, c.billing_interval_days,
            cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone,
            cl.document_cpf AS client_document_cpf, cl.document_cnpj AS client_document_cnpj,
            cms.status AS month_status
@@ -237,17 +345,35 @@ async function sendPreReminders(now = new Date()) {
       ON cms.contract_id = c.id AND cms.year = $2 AND cms.month = $3
     WHERE c.start_date <= $1 AND c.end_date >= $1
       AND (c.cancellation_date IS NULL OR c.cancellation_date >= $1)
-      AND LOWER(COALESCE(cms.status, 'pending')) <> 'paid'
-  `, [baseStr, year, month]);
+      AND c.active = true
+      AND LOWER(COALESCE(cms.status, 'pending')) NOT IN ('paid','canceled')
+      ${companyFilter}
+  `, params);
 
   for (const c of rows.rows) {
-    if (!isBillingMonthFor(c, base)) {
-      console.log(`[PRE] Contract #${c.id}: Skipping because ${isoDate(base)} is not in the billing interval.`);
-      continue;
+    const mode = String(c.billing_mode || "monthly").toLowerCase();
+    let due = ensureDateOnly(base);
+    let amount = Number(c.value || 0);
+
+    if (mode === "custom_dates") {
+      const entry = customMap.get(Number(c.id));
+      if (!entry) continue;
+      const computed = computeCustomAmount(entry, c.value);
+      if (!computed || computed <= 0) continue;
+      amount = computed;
+    } else if (mode === "interval_days") {
+      if (!isIntervalDayFor(c, base)) continue;
+    } else {
+      if (!isBillingMonthFor(c, base)) {
+        console.log(`[PRE] Contract #${c.id}: Skipping because ${isoDate(base)} is not in the billing interval.`);
+        continue;
+      }
+      due = dueDateForMonth(base, c.billing_day);
+      const dueStr = isoDate(due);
+      if (dueStr !== baseStr) continue;
     }
-    const due = dueDateForMonth(base, c.billing_day);
+
     const dueStr = isoDate(due);
-    if (dueStr !== baseStr) continue;
     if (!c.client_phone) continue;
 
     const mesRefDate = new Date(due.getFullYear(), due.getMonth(), 1);
@@ -261,7 +387,7 @@ async function sendPreReminders(now = new Date()) {
       contractId: c.id,
       billingId: null,
       dueDate: dueStr,
-      amount: c.value,
+      amount,
       contractDescription: c.description,
       clientName: recipientName,
       clientDocument,
@@ -275,7 +401,7 @@ async function sendPreReminders(now = new Date()) {
       tipoContrato: c.description,
       mesRefDate,
       vencimentoDate: due,
-      valor: c.value,
+      valor: amount,
       companyId: c.company_id,
       gatewayPayment,
       gatewayPaymentLink: Boolean(copyPaste),
@@ -313,15 +439,21 @@ async function sendPreReminders(now = new Date()) {
 }
 
 // 3) D0 (DUE) — garante geração antes de notificar
-async function sendDueReminders(now = new Date()) {
+async function sendDueReminders(now = new Date(), companyId = null) {
   console.log(`[DUE] Input 'now' date: ${now}`);
   const todayStr = isoDate(now);
   const year = now.getFullYear();
   const month = now.getMonth() + 1;
 
-  try { await generateBillingsForToday(now); }
+  try { await generateBillingsForToday(now, companyId); }
   catch (e) { console.error("[DUE] generateBillingsForToday falhou:", e.message); }
 
+  const params = [todayStr, year, month];
+  let companyFilter = '';
+  if (companyId) {
+    params.push(Number(companyId));
+    companyFilter = ` AND b.company_id = $${params.length}`;
+  }
   const rows = await query(`
     SELECT b.id AS billing_id, b.contract_id, b.amount, b.status,
            c.company_id, c.client_id, c.description,
@@ -335,8 +467,10 @@ async function sendDueReminders(now = new Date()) {
       ON cms.contract_id = c.id AND cms.year = $2 AND cms.month = $3
     WHERE b.billing_date = $1
       AND (c.cancellation_date IS NULL OR c.cancellation_date >= $1)
-      AND LOWER(COALESCE(cms.status, 'pending')) <> 'paid'
-  `, [todayStr, year, month]);
+      AND c.active = true
+      AND LOWER(COALESCE(cms.status, 'pending')) NOT IN ('paid','canceled')
+      ${companyFilter}
+  `, params);
 
   console.log(`[DUE] todayStr: ${todayStr}, encontrados ${rows.rowCount} billings para ${todayStr}`);
 
@@ -408,12 +542,18 @@ async function sendDueReminders(now = new Date()) {
 }
 
 // 4) D+4 (LATE)
-async function sendLateReminders(now = new Date()) {
+async function sendLateReminders(now = new Date(), companyId = null) {
   const target = addDays(now, -4);
   const targetStr = isoDate(target);
   const year = target.getFullYear();
   const month = target.getMonth() + 1;
 
+  const params = [targetStr, year, month];
+  let companyFilter = '';
+  if (companyId) {
+    params.push(Number(companyId));
+    companyFilter = ` AND b.company_id = $${params.length}`;
+  }
   const rows = await query(`
     SELECT b.id AS billing_id, b.contract_id, b.amount, b.status, b.billing_date,
            c.company_id, c.client_id, c.description,
@@ -427,8 +567,10 @@ async function sendLateReminders(now = new Date()) {
       ON cms.contract_id = c.id AND cms.year = $2 AND cms.month = $3
     WHERE b.billing_date = $1
       AND (c.cancellation_date IS NULL OR c.cancellation_date >= $1)
-      AND LOWER(COALESCE(cms.status, 'pending')) <> 'paid'
-  `, [targetStr, year, month]);
+      AND c.active = true
+      AND LOWER(COALESCE(cms.status, 'pending')) NOT IN ('paid','canceled')
+      ${companyFilter}
+  `, params);
 
   for (const r of rows.rows) {
     const s = String(r.status || "").toLowerCase();
@@ -499,19 +641,19 @@ async function sendLateReminders(now = new Date()) {
 
 // Orquestração
 async function runDaily(now = new Date(), opts = {}) {
-  const { generate = true, pre = true, due = true, late = true } = opts;
-  await renewRecurringContracts(now);
-  if (generate) await generateBillingsForToday(now);
-  if (pre) await sendPreReminders(now);
-  if (due) await sendDueReminders(now);
-  if (late) await sendLateReminders(now);
+  const { generate = true, pre = true, due = true, late = true, companyId = null } = opts;
+  await renewRecurringContracts(now, companyId);
+  if (generate) await generateBillingsForToday(now, companyId);
+  if (pre) await sendPreReminders(now, companyId);
+  if (due) await sendDueReminders(now, companyId);
+  if (late) await sendLateReminders(now, companyId);
 }
 
 // Wrappers (para cron com horários distintos)
-async function runPreOnly(now = new Date()) { await sendPreReminders(now); }
-async function runDueOnly(now = new Date()) { await sendDueReminders(now); }
-async function runLateOnly(now = new Date()) { await sendLateReminders(now); }
-async function runRenewOnly(now = new Date()) { await renewRecurringContracts(now); }
+async function runPreOnly(now = new Date(), companyId = null) { await sendPreReminders(now, companyId); }
+async function runDueOnly(now = new Date(), companyId = null) { await sendDueReminders(now, companyId); }
+async function runLateOnly(now = new Date(), companyId = null) { await sendLateReminders(now, companyId); }
+async function runRenewOnly(now = new Date(), companyId = null) { await renewRecurringContracts(now, companyId); }
 
 module.exports = {
   runDaily,

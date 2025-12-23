@@ -71,6 +71,27 @@ async function ensureContractMonthStatusPending(contractId, companyId, billingDa
   ).catch(() => {});
 }
 
+function computeCustomAmount(entry, contractValue) {
+  const amount = entry?.amount != null ? Number(entry.amount) : null;
+  const perc = entry?.percentage != null ? Number(entry.percentage) : null;
+  if (amount != null && !Number.isNaN(amount) && amount > 0) return Number(amount);
+  if (perc != null && !Number.isNaN(perc) && perc > 0) {
+    const base = Number(contractValue || 0);
+    return Number(((base * perc) / 100).toFixed(2));
+  }
+  return null;
+}
+
+function isIntervalDayFor(contract, dateValue) {
+  const target = ensureDateOnly(dateValue);
+  const start = ensureDateOnly(contract?.start_date);
+  const interval = Number(contract?.billing_interval_days || 0);
+  if (!target || !start || interval <= 0) return false;
+  const diff = Math.floor((target - start) / (1000 * 60 * 60 * 24));
+  if (diff < 0) return false;
+  return diff % interval === 0;
+}
+
 // helper para inserir na billing_notifications (todas colunas)
 async function insertBillingNotification({
   companyId,
@@ -162,7 +183,7 @@ router.get('/kpis', requireAuth, companyScope(true), async (req, res) => {
     if (!ym || !/^\d{4}-\d{2}$/.test(ym)) return res.status(400).json({ error: 'ym (YYYY-MM) obrigatório' });
     const { y, m, start, end } = monthBounds(ym);
 
-    let condC = ['c.company_id = $1', 'c.start_date <= $2', 'c.end_date >= $3', '(c.cancellation_date IS NULL OR c.cancellation_date >= $3)'];
+    let condC = ['c.company_id = $1', 'c.active = true', 'c.start_date <= $2', 'c.end_date >= $3', '(c.cancellation_date IS NULL OR c.cancellation_date >= $3)'];
     let pC = [req.companyId, end, start];
     if (clientId) { pC.push(Number(clientId)); condC.push(`cl.id = $${pC.length}`); }
     if (contractId) { pC.push(Number(contractId)); condC.push(`c.id = $${pC.length}`); }
@@ -183,16 +204,22 @@ router.get('/kpis', requireAuth, companyScope(true), async (req, res) => {
       FROM ${SCHEMA}.billings b
       JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
       WHERE c.company_id = $1
+        AND c.active = true
         AND b.billing_date >= $2 AND b.billing_date < $3
         ${idsSql}
       GROUP BY LOWER(b.status)
     `, pB);
 
     const cms = await query(`
-      SELECT LOWER(status) AS status, COUNT(*)::int AS cnt
-      FROM ${SCHEMA}.contract_month_status
-      WHERE company_id = $1 AND year = $2 AND month = $3
-      GROUP BY LOWER(status)
+      SELECT LOWER(cms.status) AS status, COUNT(*)::int AS cnt
+      FROM ${SCHEMA}.contract_month_status cms
+      JOIN ${SCHEMA}.contracts c ON c.id = cms.contract_id
+      WHERE cms.company_id = $1
+        AND c.company_id = $1
+        AND c.active = true
+        AND cms.year = $2
+        AND cms.month = $3
+      GROUP BY LOWER(cms.status)
     `, [req.companyId, y, m]);
 
     const k = {
@@ -243,24 +270,34 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
     const row = c.rows[0];
     if (!row) return res.status(404).json({ error: 'Contrato n├úo encontrado' });
 
-    // parse de date como local para evitar shift de timezone
-    const baseDate = new Date(); // m├¬s atual
-    const dueDay = row.billing_day || 1; // default 1 se n├úo tiver
-    const year = baseDate.getFullYear();
-    const month = baseDate.getMonth(); // m├¬s atual (0-11)
-
-    // evita erro se o m├¬s tiver menos dias (ex: dia 30 em fevereiro)
-    const lastDay = new Date(year, month + 1, 0).getDate();
-    const day = Math.min(dueDay, lastDay);
-
-    // ­ƒö╣ Cria a data final de vencimento
-    const due = new Date(year, month, day);
-    if (!due) return res.status(400).json({ error: 'date inv├ílida' });
+    const mode = String(row.billing_mode || 'monthly').toLowerCase();
+    let due = ensureDateOnly(date);
+    if (!due && mode === 'monthly') {
+      const baseDate = new Date();
+      due = dueDateForMonth(baseDate, row.billing_day || 1);
+    }
+    if (!due) return res.status(400).json({ error: 'date inv?lida' });
     const dueStr = isoDate(due);
 
-    if (!isBillingMonthFor(row, due)) {
-      return res.status(409).json({ error: 'Contrato fora da periodicidade de cobrança para este mês' });
+    let amount = Number(row.value || 0);
+    if (mode === 'custom_dates') {
+      const cb = await query(
+        `SELECT amount, percentage FROM ${SCHEMA}.contract_custom_billings WHERE contract_id=$1 AND billing_date=$2`,
+        [contract_id, dueStr]
+      );
+      const entry = cb.rows[0];
+      if (!entry) return res.status(400).json({ error: 'Data n?o cadastrada nas parcelas customizadas' });
+      const computed = computeCustomAmount(entry, row.value);
+      if (!computed || computed <= 0) return res.status(400).json({ error: 'Parcela customizada sem valor calculado' });
+      amount = computed;
+    } else if (mode === 'interval_days') {
+      if (!isIntervalDayFor(row, due)) {
+        return res.status(409).json({ error: 'Data fora do intervalo de dias do contrato' });
+      }
+    } else if (!isBillingMonthFor(row, due)) {
+      return res.status(409).json({ error: 'Contrato fora da periodicidade de cobran?a para este m?s' });
     }
+    
 
     // se m├¬s j├í pago/cancelado, bloqueia
     const cms = await query(`
@@ -309,7 +346,7 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
           ON CONFLICT (contract_id, billing_date)
           DO UPDATE SET amount = EXCLUDED.amount
           RETURNING id
-        `, [req.companyId, Number(contract_id), dueStr, row.value]);
+        `, [req.companyId, Number(contract_id), dueStr, amount]);
         billingId = inserted.rows[0]?.id || billingId;
         createdBilling = Boolean(billingId);
       }
@@ -327,7 +364,7 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
         contractId: Number(contract_id),
         billingId,
         dueDate: dueStr,
-        amount: row.value,
+        amount,
         contractDescription: row.description,
         clientName: recipientName,
         clientDocument,
@@ -341,7 +378,7 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
         tipoContrato: row.description,
         mesRefDate,
         vencimentoDate: due,
-        valor: row.value,
+        valor: amount,
         companyId: req.companyId,
         gatewayPayment,
         gatewayPaymentLink: Boolean(copyPaste),
@@ -544,6 +581,7 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
       JOIN ${SCHEMA}.contracts c ON c.id = bn.contract_id
       JOIN ${SCHEMA}.clients cl ON cl.id = c.client_id
       WHERE c.company_id = $1
+        AND c.active = true
         AND EXTRACT(YEAR FROM bn.due_date) = $2
         AND EXTRACT(MONTH FROM bn.due_date) = $3
         AND ($4::int IS NULL OR c.client_id = $4)
@@ -567,6 +605,7 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
       JOIN ${SCHEMA}.clients cl ON cl.id = c.client_id
       WHERE cms.company_id = $1 AND cms.year = $2 AND cms.month = $3
         AND cms.status <> 'paid'
+        AND c.active = true
         AND ($4::int IS NULL OR c.client_id = $4)
         AND ($5::int IS NULL OR c.id = $5)
         AND (c.cancellation_date IS NULL OR c.cancellation_date >= $6::date)
@@ -581,6 +620,7 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
       JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
       JOIN ${SCHEMA}.clients   cl ON cl.id = c.client_id
       WHERE c.company_id = $1
+        AND c.active = true
         AND EXTRACT(YEAR FROM b.billing_date) = $2
         AND EXTRACT(MONTH FROM b.billing_date) = $3
         AND ($4::int IS NULL OR cl.id = $4)
@@ -743,7 +783,7 @@ router.post('/check/run', requireAuth, companyScope(true), async (req, res) => {
     let { date, generate = true, pre = true, due = true, late = true } = (req.body || {});
     const base = ensureDateOnly(date);
     if (!base) return res.status(400).json({ error: 'date (YYYY-MM-DD) obrigatório' });
-    await runDaily(base, { generate, pre, due, late });
+    await runDaily(base, { generate, pre, due, late, companyId: req.companyId });
     res.json({ ok: true, ran_for: base.toISOString().slice(0, 10), steps: { generate, pre, due, late } });
   } catch (e) {
     res.status(500).json({ error: e.message });

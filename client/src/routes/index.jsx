@@ -3,7 +3,6 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import ProtectedRoute from './ProtectedRoute'
 import AppShell from '@/layouts/AppShell'
 import AutoNotificationsPage from '@/features/notifications/AutoNotificationsPage'
-import ManualNotificationsPage from '@/features/notifications/ManualNotificationsPage'
 import MessageTemplatesPage from '@/features/notifications/MessageTemplatesPage'
 import EvoConnectionPage from '@/features/integration/EvoConnectionPage'
 
@@ -32,7 +31,6 @@ export default function AppRouter() {
         <Route path="/contracts" element={<ProtectedRoute><AppShell><ContractsPage /></AppShell></ProtectedRoute>} />
         <Route path="/contracts/types" element={<ProtectedRoute><AppShell><ContractTypesPage /></AppShell></ProtectedRoute>} />
         <Route path="/notifications/auto" element={<ProtectedRoute><AppShell><AutoNotificationsPage /></AppShell></ProtectedRoute>} />
-        <Route path="/notifications/manual" element={<ProtectedRoute><AppShell><ManualNotificationsPage /></AppShell></ProtectedRoute>} />
         <Route path="/notifications/templates" element={<ProtectedRoute><AppShell><MessageTemplatesPage /></AppShell></ProtectedRoute>} />
         <Route path="/billings/paid" element={<ProtectedRoute><AppShell><PaidContractsPage /></AppShell></ProtectedRoute>} />
         <Route path="/integration/evo" element={<ProtectedRoute><AppShell><EvoConnectionPage /></AppShell></ProtectedRoute>} />

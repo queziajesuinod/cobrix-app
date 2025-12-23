@@ -24,6 +24,7 @@ router.get('/summary', requireAuth, companyScope(true), async (req, res) => {
            COUNT(DISTINCT client_id)::int AS clients_active
          FROM ${SCHEMA}.contracts
          WHERE company_id = $1
+           AND active = true
            AND start_date <= $2
            AND end_date >= $2
            AND (cancellation_date IS NULL OR cancellation_date >= $2)`,
@@ -34,6 +35,7 @@ router.get('/summary', requireAuth, companyScope(true), async (req, res) => {
            SELECT id, COALESCE(value, 0) AS value
            FROM ${SCHEMA}.contracts
            WHERE company_id = $1
+             AND active = true
              AND start_date <= $2
              AND end_date >= $2
              AND (cancellation_date IS NULL OR cancellation_date >= $2)
@@ -45,8 +47,8 @@ router.get('/summary', requireAuth, companyScope(true), async (req, res) => {
          )
          SELECT
            COALESCE(SUM(CASE WHEN LOWER(COALESCE(cms.status, 'pending')) = 'paid' THEN active.value ELSE 0 END), 0) AS paid_value,
-           COALESCE(SUM(CASE WHEN LOWER(COALESCE(cms.status, 'pending')) = 'paid' THEN 0 ELSE active.value END), 0) AS pending_value,
-           COALESCE(SUM(active.value), 0) AS total_value
+           COALESCE(SUM(CASE WHEN LOWER(COALESCE(cms.status, 'pending')) IN ('paid','canceled') THEN 0 ELSE active.value END), 0) AS pending_value,
+           COALESCE(SUM(CASE WHEN LOWER(COALESCE(cms.status, 'pending')) = 'canceled' THEN 0 ELSE active.value END), 0) AS total_value
          FROM active
          LEFT JOIN cms ON cms.contract_id = active.id`,
         [companyId, todayIso, year, month]
@@ -54,16 +56,21 @@ router.get('/summary', requireAuth, companyScope(true), async (req, res) => {
       query(
         `SELECT
            COUNT(*)::int AS due_count,
-           COALESCE(SUM(amount), 0) AS due_amount
-         FROM ${SCHEMA}.billings
-         WHERE company_id = $1
-           AND billing_date = $2`,
+           COALESCE(SUM(b.amount), 0) AS due_amount
+         FROM ${SCHEMA}.billings b
+         JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
+         WHERE b.company_id = $1
+           AND c.company_id = $1
+           AND c.active = true
+           AND (c.cancellation_date IS NULL OR c.cancellation_date >= $2)
+           AND b.billing_date = $2`,
         [companyId, todayIso]
       ),
       query(
         `SELECT id, value, billing_day, start_date, end_date, cancellation_date
          FROM ${SCHEMA}.contracts
          WHERE company_id = $1
+           AND active = true
            AND start_date <= $2
            AND end_date >= $3
            AND (cancellation_date IS NULL OR cancellation_date >= $3)`,

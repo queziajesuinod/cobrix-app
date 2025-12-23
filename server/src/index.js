@@ -118,6 +118,8 @@ async function initDb() {
       end_date DATE NOT NULL,
       billing_day INTEGER NOT NULL,
       billing_interval_months INTEGER NOT NULL DEFAULT 1,
+      billing_mode TEXT NOT NULL DEFAULT 'monthly',
+      billing_interval_days INTEGER,
       cancellation_date DATE,
       recurrence_of INTEGER REFERENCES ${schema}.contracts(id),
       last_billed_date DATE,
@@ -130,6 +132,9 @@ async function initDb() {
     await c.query(`ALTER TABLE ${schema}.contracts ADD COLUMN IF NOT EXISTS recurrence_of INTEGER REFERENCES ${schema}.contracts(id);`);
     await c.query(`ALTER TABLE ${schema}.contracts ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT true;`);
     await c.query(`ALTER TABLE ${schema}.contracts ADD COLUMN IF NOT EXISTS billing_interval_months INTEGER;`);
+    await c.query(`ALTER TABLE ${schema}.contracts ADD COLUMN IF NOT EXISTS billing_mode TEXT NOT NULL DEFAULT 'monthly';`);
+    await c.query(`ALTER TABLE ${schema}.contracts ADD COLUMN IF NOT EXISTS billing_interval_days INTEGER;`);
+    await c.query(`UPDATE ${schema}.contracts SET billing_mode = 'monthly' WHERE billing_mode IS NULL;`);
     await c.query(`UPDATE ${schema}.contracts SET billing_interval_months = 1 WHERE billing_interval_months IS NULL;`);
     await c.query(`ALTER TABLE ${schema}.contracts ALTER COLUMN billing_interval_months SET DEFAULT 1;`);
     await c.query(`ALTER TABLE ${schema}.contracts ALTER COLUMN billing_interval_months SET NOT NULL;`);
@@ -235,6 +240,22 @@ async function initDb() {
       WHERE kind = 'auto';
     `);
     await c.query(`
+      DO $$
+      DECLARE
+        r RECORD;
+      BEGIN
+        FOR r IN
+          SELECT conname
+          FROM pg_constraint
+          WHERE conrelid = '${schema}.billing_notifications'::regclass
+            AND contype IN ('u','x')
+            AND condeferrable = true
+        LOOP
+          EXECUTE format('ALTER TABLE ${schema}.billing_notifications ALTER CONSTRAINT %I NOT DEFERRABLE', r.conname);
+        END LOOP;
+      END$$;
+    `);
+    await c.query(`
       CREATE TABLE IF NOT EXISTS message_templates (
         id SERIAL PRIMARY KEY,
         company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -268,6 +289,20 @@ async function initDb() {
     `);
     await c.query(`ALTER TABLE ${schema}.billing_gateway_links ADD COLUMN IF NOT EXISTS billing_id INTEGER REFERENCES ${schema}.billings(id) ON DELETE SET NULL;`);
     await c.query(`ALTER TABLE ${schema}.billing_gateway_links ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ;`);
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.contract_custom_billings (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
+        contract_id INTEGER NOT NULL REFERENCES ${schema}.contracts(id) ON DELETE CASCADE,
+        billing_date DATE NOT NULL,
+        amount NUMERIC(14,2),
+        percentage NUMERIC(6,2),
+        created_at TIMESTAMPTZ DEFAULT now(),
+        UNIQUE (contract_id, billing_date)
+      );
+    `);
+    await c.query(`ALTER TABLE ${schema}.contract_custom_billings ALTER COLUMN amount DROP NOT NULL;`);
+    await c.query(`ALTER TABLE ${schema}.contract_custom_billings ADD COLUMN IF NOT EXISTS percentage NUMERIC(6,2);`);
   });
 }
 
