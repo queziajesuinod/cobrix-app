@@ -7,6 +7,7 @@ const {
   getTemplatesForCompany,
   upsertTemplate,
 } = require('../services/message-templates');
+const { isGatewayConfigured } = require('../services/company-gateway');
 
 const router = express.Router();
 const SCHEMA = process.env.DB_SCHEMA || 'public';
@@ -25,10 +26,12 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
       `, [companyId]);
       customTypes = rows.rows.map(r => r.type);
     }
+    const gatewayReady = await isGatewayConfigured(companyId);
     res.json({
       templates,
       defaults: DEFAULT_TEMPLATES,
       customTypes,
+      gatewayReady,
       placeholders: PLACEHOLDERS.map(p => ({
         ...p,
         token: `{{${p.key}}}`,

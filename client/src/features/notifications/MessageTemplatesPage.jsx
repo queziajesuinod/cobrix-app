@@ -27,11 +27,22 @@ const TEMPLATE_TYPES = [
   { key: 'due_gateway', title: 'Dia do vencimento (com gateway)', description: 'Mensagem com link Pix enviada no D0.' },
   { key: 'late', title: 'Em atraso (sem gateway)', description: 'Cobrança enviada quatro dias após o vencimento.' },
   { key: 'late_gateway', title: 'Em atraso (com gateway)', description: 'Cobrança com link Pix para empresas integradas ao gateway.' },
+  { key: 'due_weekly', title: 'Semanal - dia do vencimento (sem gateway)', description: 'Mensagem enviada no dia do vencimento para cobrancas semanais.' },
+  { key: 'due_weekly_gateway', title: 'Semanal - dia do vencimento (com gateway)', description: 'Mensagem enviada no dia do vencimento com link Pix.' },
+  { key: 'late_weekly', title: 'Semanal - em atraso (sem gateway)', description: 'Cobranca enviada dois dias apos o vencimento.' },
+  { key: 'late_weekly_gateway', title: 'Semanal - em atraso (com gateway)', description: 'Cobranca enviada dois dias apos o vencimento com link Pix.' },
+  { key: 'due_custom', title: 'Data personalizada - dia do vencimento (sem gateway)', description: 'Mensagem enviada no dia da data personalizada.' },
+  { key: 'due_custom_gateway', title: 'Data personalizada - dia do vencimento (com gateway)', description: 'Mensagem enviada no dia da data personalizada com link Pix.' },
+  { key: 'late_custom', title: 'Data personalizada - em atraso (sem gateway)', description: 'Cobranca enviada quatro dias apos o vencimento.' },
+  { key: 'late_custom_gateway', title: 'Data personalizada - em atraso (com gateway)', description: 'Cobranca enviada quatro dias apos o vencimento com link Pix.' },
+  { key: 'paid', title: 'Pagamento confirmado', description: 'Mensagem enviada quando o pagamento e confirmado.' },
 ];
 
 const TEMPLATE_KEYS = TEMPLATE_TYPES.map((item) => item.key);
 const INITIAL_VALUES = TEMPLATE_KEYS.reduce((acc, key) => ({ ...acc, [key]: '' }), {});
 const tokenFromKey = (key) => `{{${key}}}`
+const isGatewayKey = (key) => key.endsWith('_gateway')
+const alwaysVisibleKeys = new Set(['paid'])
 
 export default function MessageTemplatesPage() {
   const queryClient = useQueryClient()
@@ -41,8 +52,23 @@ export default function MessageTemplatesPage() {
   })
 
   const [values, setValues] = useState({ ...INITIAL_VALUES })
-  const [activeType, setActiveType] = useState('pre')
+  const [activeType, setActiveType] = useState(TEMPLATE_TYPES[0]?.key || 'pre')
   const [snack, setSnack] = useState(null)
+
+  const visibleTypes = useMemo(() => {
+    if (!data) return TEMPLATE_TYPES
+    if (data.gatewayReady) {
+      return TEMPLATE_TYPES.filter(({ key }) => isGatewayKey(key) || alwaysVisibleKeys.has(key))
+    }
+    return TEMPLATE_TYPES.filter(({ key }) => !isGatewayKey(key))
+  }, [data])
+
+  useEffect(() => {
+    if (!visibleTypes.length) return
+    if (!visibleTypes.some(({ key }) => key === activeType)) {
+      setActiveType(visibleTypes[0].key)
+    }
+  }, [activeType, visibleTypes])
 
   const fieldRefs = useMemo(() => {
     return TEMPLATE_KEYS.reduce((acc, key) => {
@@ -185,7 +211,7 @@ export default function MessageTemplatesPage() {
       </Card>
 
       <Grid container spacing={2}>
-        {TEMPLATE_TYPES.map(({ key, title, description }) => {
+        {visibleTypes.map(({ key, title, description }) => {
           const defaultValue = data?.defaults?.[key] ?? ''
           const currentValue = values[key] ?? ''
           const isCustom = currentValue.trim() !== defaultValue.trim()

@@ -4,7 +4,14 @@ import { Dialog, DialogTitle, DialogContent, DialogActions, Button, Stack, TextF
 export default function BillingsRunDialog({ open, onClose, onConfirm }) {
   // Usa data local (YYYY-MM-DD) para evitar shift de timezone no default
   const [date, setDate] = useState(() => new Date().toLocaleDateString('sv-SE'))
-  const [flags, setFlags] = useState({ generate: true, pre: true, due: true, late: true })
+  const [flags, setFlags] = useState({
+    generate: true,
+    pre: true,
+    due: true,
+    late: true,
+    includeWeekly: true,
+    includeCustom: true,
+  })
   const toggle = (k) => setFlags((s) => ({ ...s, [k]: !s[k] }))
 
   const submit = () => { onConfirm({ date, ...flags }) }
@@ -23,6 +30,8 @@ export default function BillingsRunDialog({ open, onClose, onConfirm }) {
           />
           <FormGroup>
             <FormControlLabel control={<Checkbox checked={flags.generate} onChange={() => toggle('generate')} />} label="Gerar cobranças do dia" />
+            <FormControlLabel control={<Checkbox checked={flags.includeWeekly} onChange={() => toggle('includeWeekly')} />} label="Incluir semanais" />
+            <FormControlLabel control={<Checkbox checked={flags.includeCustom} onChange={() => toggle('includeCustom')} />} label="Incluir datas personalizadas" />
             <FormControlLabel control={<Checkbox checked={flags.pre} onChange={() => toggle('pre')} />} label="Enviar D−3 (pré-vencimento)" />
             <FormControlLabel control={<Checkbox checked={flags.due} onChange={() => toggle('due')} />} label="Enviar D0 (vence hoje)" />
             <FormControlLabel control={<Checkbox checked={flags.late} onChange={() => toggle('late')} />} label="Enviar D+4 (atraso)" />

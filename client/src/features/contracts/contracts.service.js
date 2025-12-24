@@ -17,6 +17,8 @@ export const contractsService = {
   update: async (id, payload) => (await api.put(`/contracts/${id}`, payload)).data,
   remove: async (id) => (await api.delete(`/contracts/${id}`)).data,
   setStatus: async (id, payload) => (await api.patch(`/contracts/${id}/status`, payload)).data,
+  getCustomBillings: async (id) => (await api.get(`/contracts/${id}/custom-billings`)).data,
+  setCustomBillings: async (id, items = []) => (await api.put(`/contracts/${id}/custom-billings`, items)).data,
 }
 export const clientsPicker = async (params = {}) => {
   const { page, pageSize, ...rest } = params;

@@ -124,6 +124,15 @@ Equipe Financeira
 {{company_name}}`,
 };
 
+DEFAULT_TEMPLATES.due_weekly = DEFAULT_TEMPLATES.due;
+DEFAULT_TEMPLATES.due_weekly_gateway = DEFAULT_TEMPLATES.due_gateway;
+DEFAULT_TEMPLATES.late_weekly = DEFAULT_TEMPLATES.late;
+DEFAULT_TEMPLATES.late_weekly_gateway = DEFAULT_TEMPLATES.late_gateway;
+DEFAULT_TEMPLATES.due_custom = DEFAULT_TEMPLATES.due;
+DEFAULT_TEMPLATES.due_custom_gateway = DEFAULT_TEMPLATES.due_gateway;
+DEFAULT_TEMPLATES.late_custom = DEFAULT_TEMPLATES.late;
+DEFAULT_TEMPLATES.late_custom_gateway = DEFAULT_TEMPLATES.late_gateway;
+
 const PLACEHOLDERS = [
   { key: 'client_name', label: 'Nome do destinatário', example: 'Maria Souza' },
   { key: 'client_responsible', label: 'Responsável pelo cliente', example: 'JoÃ£o Pereira' },
@@ -355,16 +364,34 @@ function hasGatewayContext(ctx = {}) {
   );
 }
 
+function normalizeBillingMode(value) {
+  const mode = String(value || '').toLowerCase();
+  if (mode === 'interval_days') return 'interval_days';
+  if (mode === 'custom_dates') return 'custom_dates';
+  return 'monthly';
+}
+
+function resolveTemplateType(kind, ctx = {}) {
+  const mode = normalizeBillingMode(ctx.billing_mode || ctx.billingMode || ctx.mode);
+  const hasGateway = hasGatewayContext(ctx);
+  let suffix = '';
+  if (kind !== 'pre') {
+    if (mode === 'interval_days') suffix = '_weekly';
+    else if (mode === 'custom_dates') suffix = '_custom';
+  }
+  return `${kind}${suffix}${hasGateway ? '_gateway' : ''}`;
+}
+
 async function msgPre(ctx) {
-  const type = hasGatewayContext(ctx) ? 'pre_gateway' : 'pre';
+  const type = resolveTemplateType('pre', ctx);
   return renderMessage(type, ctx);
 }
 async function msgDue(ctx) {
-  const type = hasGatewayContext(ctx) ? 'due_gateway' : 'due';
+  const type = resolveTemplateType('due', ctx);
   return renderMessage(type, ctx);
 }
 async function msgLate(ctx) {
-  const type = hasGatewayContext(ctx) ? 'late_gateway' : 'late';
+  const type = resolveTemplateType('late', ctx);
   return renderMessage(type, ctx);
 }
 async function msgPaid(ctx) {

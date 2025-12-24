@@ -376,6 +376,7 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
         responsavel: row.client_responsavel,
         client_name: row.client_name,
         tipoContrato: row.description,
+        billing_mode: row.billing_mode,
         mesRefDate,
         vencimentoDate: due,
         valor: amount,
@@ -780,10 +781,26 @@ router.get('/paid', requireAuth, companyScope(true), async (req, res) => {
 // Rodar pipeline (manual)
 router.post('/check/run', requireAuth, companyScope(true), async (req, res) => {
   try {
-    let { date, generate = true, pre = true, due = true, late = true } = (req.body || {});
+    let {
+      date,
+      generate = true,
+      pre = true,
+      due = true,
+      late = true,
+      includeWeekly = true,
+      includeCustom = true,
+    } = (req.body || {});
     const base = ensureDateOnly(date);
     if (!base) return res.status(400).json({ error: 'date (YYYY-MM-DD) obrigatório' });
-    await runDaily(base, { generate, pre, due, late, companyId: req.companyId });
+    await runDaily(base, {
+      generate,
+      pre,
+      due,
+      late,
+      includeWeekly,
+      includeCustom,
+      companyId: req.companyId,
+    });
     res.json({ ok: true, ran_for: base.toISOString().slice(0, 10), steps: { generate, pre, due, late } });
   } catch (e) {
     res.status(500).json({ error: e.message });

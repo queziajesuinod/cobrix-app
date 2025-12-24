@@ -194,7 +194,8 @@ async function renewRecurringContracts(now = new Date(), companyId = null) {
 }
 
 // 1) Gera cobrancas do dia (idempotente)
-async function generateBillingsForToday(now = new Date(), companyId = null) {
+async function generateBillingsForToday(now = new Date(), companyId = null, opts = {}) {
+  const { includeWeekly = true, includeCustom = true } = opts;
   const todayStr = isoDate(now);
   const day = now.getDate();
   const year = now.getFullYear();
@@ -237,6 +238,7 @@ async function generateBillingsForToday(now = new Date(), companyId = null) {
     let amount = Number(c.value || 0);
 
     if (mode === "custom_dates") {
+      if (!includeCustom) continue;
       const entry = customMap.get(Number(c.id));
       if (!entry) continue;
       const computed = computeCustomAmount(entry, c.value);
@@ -247,6 +249,7 @@ async function generateBillingsForToday(now = new Date(), companyId = null) {
       amount = computed;
       shouldGenerate = true;
     } else if (mode === "interval_days") {
+      if (!includeWeekly) continue;
       if (!isIntervalDayFor(c, now)) continue;
       shouldGenerate = true;
       amount = Number(c.value || 0);
@@ -316,17 +319,6 @@ async function sendPreReminders(now = new Date(), companyId = null) {
   const baseStr = isoDate(base);
   const year = base.getFullYear();
   const month = base.getMonth() + 1;
-  const customParams = [baseStr];
-  let customFilter = '';
-  if (companyId) {
-    customParams.push(Number(companyId));
-    customFilter = ` AND company_id = $${customParams.length}`;
-  }
-  const customForTarget = await query(
-    `SELECT contract_id, amount, percentage FROM ${SCHEMA}.contract_custom_billings WHERE billing_date=$1${customFilter}`,
-    customParams
-  );
-  const customMap = new Map(customForTarget.rows.map((r) => [Number(r.contract_id), r]));
 
   const params = [baseStr, year, month];
   let companyFilter = '';
@@ -355,14 +347,8 @@ async function sendPreReminders(now = new Date(), companyId = null) {
     let due = ensureDateOnly(base);
     let amount = Number(c.value || 0);
 
-    if (mode === "custom_dates") {
-      const entry = customMap.get(Number(c.id));
-      if (!entry) continue;
-      const computed = computeCustomAmount(entry, c.value);
-      if (!computed || computed <= 0) continue;
-      amount = computed;
-    } else if (mode === "interval_days") {
-      if (!isIntervalDayFor(c, base)) continue;
+    if (mode === "interval_days" || mode === "custom_dates") {
+      continue;
     } else {
       if (!isBillingMonthFor(c, base)) {
         console.log(`[PRE] Contract #${c.id}: Skipping because ${isoDate(base)} is not in the billing interval.`);
@@ -439,13 +425,14 @@ async function sendPreReminders(now = new Date(), companyId = null) {
 }
 
 // 3) D0 (DUE) — garante geração antes de notificar
-async function sendDueReminders(now = new Date(), companyId = null) {
+async function sendDueReminders(now = new Date(), companyId = null, opts = {}) {
+  const { includeWeekly = true, includeCustom = true } = opts;
   console.log(`[DUE] Input 'now' date: ${now}`);
   const todayStr = isoDate(now);
   const year = now.getFullYear();
   const month = now.getMonth() + 1;
 
-  try { await generateBillingsForToday(now, companyId); }
+  try { await generateBillingsForToday(now, companyId, { includeWeekly, includeCustom }); }
   catch (e) { console.error("[DUE] generateBillingsForToday falhou:", e.message); }
 
   const params = [todayStr, year, month];
@@ -456,7 +443,7 @@ async function sendDueReminders(now = new Date(), companyId = null) {
   }
   const rows = await query(`
     SELECT b.id AS billing_id, b.contract_id, b.amount, b.status,
-           c.company_id, c.client_id, c.description,
+           c.company_id, c.client_id, c.description, c.billing_mode,
            cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone,
            cl.document_cpf AS client_document_cpf, cl.document_cnpj AS client_document_cnpj,
            cms.status AS month_status
@@ -477,6 +464,9 @@ async function sendDueReminders(now = new Date(), companyId = null) {
   for (const r of rows.rows) {
     const s = String(r.status || "").toLowerCase();
     if (s === "paid" || s === "canceled") continue;
+    const mode = String(r.billing_mode || "monthly").toLowerCase();
+    if (mode === "interval_days" && !includeWeekly) continue;
+    if (mode === "custom_dates" && !includeCustom) continue;
     if (!r.client_phone) continue;
 
     const mesRefDate = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -502,6 +492,7 @@ async function sendDueReminders(now = new Date(), companyId = null) {
       responsavel: r.client_responsavel,
       client_name: r.client_name,
       tipoContrato: r.description,
+      billing_mode: r.billing_mode,
       mesRefDate,
       vencimentoDate: ensureDateOnly(todayStr),
       valor: r.amount,
@@ -541,9 +532,9 @@ async function sendDueReminders(now = new Date(), companyId = null) {
   }
 }
 
-// 4) D+4 (LATE)
-async function sendLateReminders(now = new Date(), companyId = null) {
-  const target = addDays(now, -4);
+// 4) D+4 (LATE) + semanal D+2
+async function sendLateRemindersForTarget(now, target, companyId, modeFilter, opts = {}) {
+  const { includeWeekly = true, includeCustom = true } = opts;
   const targetStr = isoDate(target);
   const year = target.getFullYear();
   const month = target.getMonth() + 1;
@@ -554,9 +545,16 @@ async function sendLateReminders(now = new Date(), companyId = null) {
     params.push(Number(companyId));
     companyFilter = ` AND b.company_id = $${params.length}`;
   }
+  let modeFilterSql = '';
+  if (modeFilter === 'interval_days') {
+    modeFilterSql = " AND LOWER(COALESCE(c.billing_mode, 'monthly')) = 'interval_days'";
+  } else if (modeFilter === 'non_interval') {
+    modeFilterSql = " AND LOWER(COALESCE(c.billing_mode, 'monthly')) <> 'interval_days'";
+  }
+
   const rows = await query(`
     SELECT b.id AS billing_id, b.contract_id, b.amount, b.status, b.billing_date,
-           c.company_id, c.client_id, c.description,
+           c.company_id, c.client_id, c.description, c.billing_mode,
            cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone,
            cl.document_cpf AS client_document_cpf, cl.document_cnpj AS client_document_cnpj,
            cms.status AS month_status
@@ -569,12 +567,16 @@ async function sendLateReminders(now = new Date(), companyId = null) {
       AND (c.cancellation_date IS NULL OR c.cancellation_date >= $1)
       AND c.active = true
       AND LOWER(COALESCE(cms.status, 'pending')) NOT IN ('paid','canceled')
+      ${modeFilterSql}
       ${companyFilter}
   `, params);
 
   for (const r of rows.rows) {
     const s = String(r.status || "").toLowerCase();
     if (s === "paid" || s === "canceled") continue;
+    const mode = String(r.billing_mode || "monthly").toLowerCase();
+    if (mode === "interval_days" && !includeWeekly) continue;
+    if (mode === "custom_dates" && !includeCustom) continue;
     if (!r.client_phone) continue;
 
     const mesRefDate = new Date(target.getFullYear(), target.getMonth(), 1);
@@ -600,6 +602,7 @@ async function sendLateReminders(now = new Date(), companyId = null) {
       responsavel: r.client_responsavel,
       client_name: r.client_name,
       tipoContrato: r.description,
+      billing_mode: r.billing_mode,
       mesRefDate,
       vencimentoDate: ensureDateOnly(targetStr),
       valor: r.amount,
@@ -635,18 +638,34 @@ async function sendLateReminders(now = new Date(), companyId = null) {
       providerResponse,
     });
 
-    console.log(`↘ [LATE] c#${r.contract_id} ${targetStr} -> ${evo.ok ? "sent" : "failed"}`);
+    console.log(`[LATE] c#${r.contract_id} ${targetStr} -> ${evo.ok ? "sent" : "failed"}`);
+  }
+}
+
+async function sendLateReminders(now = new Date(), companyId = null, opts = {}) {
+  const { includeWeekly = true, includeCustom = true } = opts;
+  await sendLateRemindersForTarget(now, addDays(now, -4), companyId, 'non_interval', { includeWeekly, includeCustom });
+  if (includeWeekly) {
+    await sendLateRemindersForTarget(now, addDays(now, -2), companyId, 'interval_days', { includeWeekly, includeCustom });
   }
 }
 
 // Orquestração
 async function runDaily(now = new Date(), opts = {}) {
-  const { generate = true, pre = true, due = true, late = true, companyId = null } = opts;
+  const {
+    generate = true,
+    pre = true,
+    due = true,
+    late = true,
+    includeWeekly = true,
+    includeCustom = true,
+    companyId = null,
+  } = opts;
   await renewRecurringContracts(now, companyId);
-  if (generate) await generateBillingsForToday(now, companyId);
+  if (generate) await generateBillingsForToday(now, companyId, { includeWeekly, includeCustom });
   if (pre) await sendPreReminders(now, companyId);
-  if (due) await sendDueReminders(now, companyId);
-  if (late) await sendLateReminders(now, companyId);
+  if (due) await sendDueReminders(now, companyId, { includeWeekly, includeCustom });
+  if (late) await sendLateReminders(now, companyId, { includeWeekly, includeCustom });
 }
 
 // Wrappers (para cron com horários distintos)
