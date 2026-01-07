@@ -688,8 +688,9 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
       'c.start_date <= $2::date',
       'c.end_date >= $3::date',
       '(c.cancellation_date IS NULL OR c.cancellation_date >= $3::date)',
+      '(cms2.status IS NULL OR LOWER(cms2.status) <> \'paid\')',
     ];
-    const contractParams = [req.companyId, monthEndIso, monthStartIso];
+    const contractParams = [req.companyId, monthEndIso, monthStartIso, year, month];
     if (clientId != null) {
       contractFilters.push(`c.client_id = $${contractParams.length + 1}`);
       contractParams.push(clientId);
@@ -705,6 +706,8 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
     const baseContracts = await query(`
       SELECT c.id, c.client_id, c.description, c.billing_day, c.cancellation_date, cl.name AS client_name
       FROM ${SCHEMA}.contracts c
+      LEFT JOIN ${SCHEMA}.contract_month_status cms2
+        ON cms2.contract_id = c.id AND cms2.year = $4 AND cms2.month = $5
       JOIN ${SCHEMA}.clients cl ON cl.id = c.client_id
       WHERE ${contractFilters.join(' AND ')}
     `, contractParams);
