@@ -94,7 +94,7 @@ async function upsertAutoNotification({
        $5,$6,
        $7,'evo',$8,$9,$10,$11,
        $12,NOW(),$13,$5,$14)
-    ON CONFLICT DO NOTHING
+    ON CONFLICT (company_id, contract_id, target_date, kind) DO NOTHING
     RETURNING id
   `;
 

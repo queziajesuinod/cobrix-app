@@ -2,14 +2,28 @@ import { api } from '@/lib/api-client'
 
 const unwrap = (r) => r.data?.data ?? r.data
 
+const sanitizeListParams = (params = {}) => {
+  const {
+    page,
+    pageSize,
+    queryKey,
+    signal,
+    client,
+    meta,
+    pageParam,
+    ...filters
+  } = params || {};
+
+  return {
+    page: page ?? 1,
+    pageSize: pageSize ?? 500,
+    ...filters,
+  };
+};
+
 export const contractsService = {
   list: async (params = {}) => {
-    const { page, pageSize, ...rest } = params;
-    const requestParams = {
-      page: page ?? 1,
-      pageSize: pageSize ?? 500,
-      ...rest,
-    };
+    const requestParams = sanitizeListParams(params);
     return unwrap(await api.get('/contracts', { params: requestParams }));
   }, // deve retornar client_name
   paginate: async (params = {}) => (await api.get('/contracts', { params })).data,

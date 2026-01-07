@@ -682,6 +682,55 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
       if (s.billing_day != null) entry.billing_day ??= Number(s.billing_day);
       byContract[key] = entry;
     }
+    const contractFilters = [
+      'c.company_id = $1',
+      'c.active = true',
+      'c.start_date <= $2::date',
+      'c.end_date >= $3::date',
+      '(c.cancellation_date IS NULL OR c.cancellation_date >= $3::date)',
+    ];
+    const contractParams = [req.companyId, monthEndIso, monthStartIso];
+    if (clientId != null) {
+      contractFilters.push(`c.client_id = $${contractParams.length + 1}`);
+      contractParams.push(clientId);
+    }
+    if (contractId != null) {
+      contractFilters.push(`c.id = $${contractParams.length + 1}`);
+      contractParams.push(contractId);
+    }
+    if (dueDay != null) {
+      contractFilters.push(`c.billing_day = $${contractParams.length + 1}`);
+      contractParams.push(dueDay);
+    }
+    const baseContracts = await query(`
+      SELECT c.id, c.client_id, c.description, c.billing_day, c.cancellation_date, cl.name AS client_name
+      FROM ${SCHEMA}.contracts c
+      JOIN ${SCHEMA}.clients cl ON cl.id = c.client_id
+      WHERE ${contractFilters.join(' AND ')}
+    `, contractParams);
+    for (const c of baseContracts.rows) {
+      const key = c.id;
+      const entry = byContract[key] ?? {
+        contract_id: key,
+        contract_description: null,
+        client_name: null,
+        client_id: null,
+        month_status: 'pending',
+        notifications: {},
+        billings: [],
+        cancellation_date: null,
+        billing_day: null,
+      };
+      entry.contract_description ??= c.description;
+      entry.client_name ??= c.client_name;
+      entry.client_id ??= c.client_id != null ? Number(c.client_id) : entry.client_id;
+      entry.cancellation_date ??= c.cancellation_date ?? entry.cancellation_date;
+      entry.billing_day ??= Number.isFinite(Number(c.billing_day)) ? Number(c.billing_day) : entry.billing_day;
+      entry.month_status ??= 'pending';
+      entry.notifications ??= {};
+      entry.billings ??= [];
+      byContract[key] = entry;
+    }
     const result = Object.values(byContract).map(item => {
       if (item.cancellation_date) {
         const cancel = new Date(item.cancellation_date);
