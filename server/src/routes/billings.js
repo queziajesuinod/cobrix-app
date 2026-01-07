@@ -731,17 +731,20 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
       entry.billings ??= [];
       byContract[key] = entry;
     }
-    const result = Object.values(byContract).map(item => {
-      if (item.cancellation_date) {
-        const cancel = new Date(item.cancellation_date);
-        const cancelKey = cancel.getFullYear() * 100 + (cancel.getMonth() + 1);
-        const currentKey = year * 100 + month;
-        if (currentKey > cancelKey) {
-          item.month_status = 'canceled';
+    const result = Object.values(byContract)
+      .map(item => {
+        if (item.cancellation_date) {
+          const cancel = new Date(item.cancellation_date);
+          const cancelKey = cancel.getFullYear() * 100 + (cancel.getMonth() + 1);
+          const currentKey = year * 100 + month;
+          if (currentKey > cancelKey) {
+            item.month_status = 'canceled';
+          }
         }
-      }
-      return item;
-    }).sort((a, b) => {
+        return item;
+      })
+      .filter(item => String(item.month_status || 'pending').toLowerCase() !== 'paid')
+      .sort((a, b) => {
       const dayA = Number.isFinite(a.billing_day) ? a.billing_day : 999;
       const dayB = Number.isFinite(b.billing_day) ? b.billing_day : 999;
       if (dayA !== dayB) return dayA - dayB;
