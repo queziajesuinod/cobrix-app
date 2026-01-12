@@ -34,36 +34,31 @@ const app = require('./app');
 const { runDueOnly, runPreOnly, runLateOnly, runRenewOnly } = require('./jobs/billing-cron');
 const { runGatewayReconcile } = require('./jobs/gateway-reconcile');
 
-// D0 - Due
-if (process.env.CRON_DUE) {
-  cron.schedule(process.env.CRON_DUE, () => {
-    console.log(`[CRON] Executando DUE em ${new Date().toISOString()}`);
-    runDueOnly().catch(err => console.error('CRON_DUE erro:', err));
-  });
+function scheduleCronJob(label, expression, job) {
+  if (!expression) return;
+  const options = process.env.CRON_TZ ? { timezone: process.env.CRON_TZ } : undefined;
+  const tzLabel = options?.timezone ? ` tz=${options.timezone}` : '';
+  console.log(`[CRON] Agendando ${label} (${expression}${tzLabel})`);
+  cron.schedule(expression, async () => {
+    console.log(`[CRON] Executando ${label} em ${new Date().toISOString()}`);
+    try {
+      await job();
+    } catch (err) {
+      console.error(`[CRON_${label}] erro:`, err);
+    }
+  }, options);
 }
+
+// D0 - Due
+scheduleCronJob('DUE', process.env.CRON_DUE, runDueOnly);
 
 // D-3 - Pre
-if (process.env.CRON_PRE) {
-  cron.schedule(process.env.CRON_PRE, () => {
-    console.log(`[CRON] Executando PRE em ${new Date().toISOString()}`);
-    runPreOnly().catch(err => console.error('CRON_PRE erro:', err));
-  });
-}
+scheduleCronJob('PRE', process.env.CRON_PRE, runPreOnly);
 
 // D+4 - Late
-if (process.env.CRON_LATE) {
-  cron.schedule(process.env.CRON_LATE, () => {
-    console.log(`[CRON] Executando LATE em ${new Date().toISOString()}`);
-    runLateOnly().catch(err => console.error('CRON_LATE erro:', err));
-  });
-}
+scheduleCronJob('LATE', process.env.CRON_LATE, runLateOnly);
 
-if (process.env.CRON_RENEW) {
-  cron.schedule(process.env.CRON_RENEW, () => {
-    console.log(`[CRON] Executando RENEW em ${new Date().toISOString()}`);
-    runRenewOnly().catch(err => console.error('CRON_RENEW erro:', err));
-  });
-}
+scheduleCronJob('RENEW', process.env.CRON_RENEW, runRenewOnly);
 
 const gatewayPollMs = Number(process.env.GATEWAY_POLL_MS || 20000);
 if (!Number.isNaN(gatewayPollMs) && gatewayPollMs > 0) {
