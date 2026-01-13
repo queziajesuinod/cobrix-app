@@ -142,7 +142,11 @@ async function insertBillingNotification({
     String(dueDate),
   ];
   const r = await query(sql, params);
-  return r.rows[0].id;
+  const insertedId = r.rows[0]?.id ?? null;
+  console.log(
+    `[billing-notification][manual] company=${companyId} contract=${contractId} type=${type} status=${status} targetDate=${targetDate} dueDate=${dueDate} insertedId=${insertedId}`
+  );
+  return insertedId;
 }
 
 // LIST com filtros
@@ -834,32 +838,38 @@ router.get('/paid', requireAuth, companyScope(true), async (req, res) => {
 });
 
 // Rodar pipeline (manual)
-router.post('/check/run', requireAuth, companyScope(true), async (req, res) => {
-  try {
-    let {
-      date,
-      generate = true,
-      pre = true,
-      due = true,
-      late = true,
-      includeWeekly = true,
-      includeCustom = true,
-    } = (req.body || {});
-    const base = ensureDateOnly(date);
-    if (!base) return res.status(400).json({ error: 'date (YYYY-MM-DD) obrigatório' });
-    await runDaily(base, {
-      generate,
-      pre,
-      due,
-      late,
-      includeWeekly,
-      includeCustom,
-      companyId: req.companyId,
-    });
-    res.json({ ok: true, ran_for: base.toISOString().slice(0, 10), steps: { generate, pre, due, late } });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+  router.post('/check/run', requireAuth, companyScope(true), async (req, res) => {
+    try {
+      let {
+        date,
+        generate = true,
+        pre = true,
+        due = true,
+        late = true,
+        includeWeekly = true,
+        includeCustom = true,
+      } = (req.body || {});
+      const base = ensureDateOnly(date);
+      if (!base) return res.status(400).json({ error: 'date (YYYY-MM-DD) obrigatório' });
+      const payload = {
+        generate,
+        pre,
+        due,
+        late,
+        includeWeekly,
+        includeCustom,
+        companyId: req.companyId,
+      };
+      console.log(
+        `[billing-run] company=${req.companyId} date=${isoDate(base)} payload=${JSON.stringify(payload)}`
+      );
+      await runDaily(base, payload);
+      console.log(`[billing-run] completed company=${req.companyId} date=${isoDate(base)}`);
+      res.json({ ok: true, ran_for: base.toISOString().slice(0, 10), steps: { generate, pre, due, late } });
+    } catch (e) {
+      console.error(`[billing-run] failed company=${req.companyId} date=${req.body?.date || ''}`, e);
+      res.status(500).json({ error: e.message });
+    }
+  });
 
 module.exports = router;

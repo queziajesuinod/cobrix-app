@@ -40,6 +40,20 @@ const formatDocumentValue = (value) => {
   if (digits.length <= 11) return formatCpf(digits)
   return formatCnpj(digits)
 }
+const formatPhoneValue = (value = '') => {
+  const digits = digitsOnly(value).slice(0, 11)
+  if (!digits) return ''
+  if (digits.length <= 10) {
+    return digits.replace(/(\d{2})(\d{4})(\d{0,4})/, (_, a, b, c) => {
+      const partC = c ? `-${c}` : ''
+      return `(${a}) ${b}${partC}`
+    })
+  }
+  return digits.replace(/(\d{2})(\d{5})(\d{0,4})/, (_, a, b, c) => {
+    const partC = c ? `-${c}` : ''
+    return `(${a}) ${b}${partC}`
+  })
+}
 const schema = z.object({
   name: z.string().trim().min(2, 'Nome obrigatório'),
   email: z.string().trim().email('Email inválido').optional().nullable(),
@@ -62,7 +76,7 @@ function ClientDialog({ open, onClose, onSubmit, defaultValues }) {
   const formDefaults = React.useMemo(() => ({
     name: defaultValues?.name ?? '',
     email: defaultValues?.email ?? '',
-    phone: defaultValues?.phone ?? '',
+    phone: formatPhoneValue(defaultValues?.phone ?? ''),
     responsavel: defaultValues?.responsavel ?? '',
     document: formatDocumentValue(defaultValues?.document ?? defaultValues?.document_cpf ?? defaultValues?.document_cnpj ?? ''),
   }), [defaultValues])
@@ -75,7 +89,20 @@ function ClientDialog({ open, onClose, onSubmit, defaultValues }) {
         <Stack spacing={2} sx={{ mt: 1 }}>
           <TextField label="Nome" required {...register('name')} error={!!errors.name} helperText={errors.name?.message} />
           <TextField label="Email" {...register('email')} error={!!errors.email} helperText={errors.email?.message} />
-          <TextField label="Telefone" {...register('phone')} error={!!errors.phone} helperText={errors.phone?.message} />
+          <Controller
+            name="phone"
+            control={control}
+            render={({ field }) => (
+              <TextField
+                label="Telefone"
+                value={field.value ?? ''}
+                onChange={(event) => field.onChange(formatPhoneValue(event.target.value))}
+                error={!!errors.phone}
+                helperText={errors.phone?.message}
+                inputProps={{ inputMode: 'tel' }}
+              />
+            )}
+          />
           <Controller
             name="document"
             control={control}
@@ -183,6 +210,10 @@ export default function ClientsPage() {
         const digits = digitsOnly(form.document || '').slice(0, 14)
         return digits || null
       })(),
+      phone: (() => {
+        const digits = digitsOnly(form.phone || '').slice(0, 11)
+        return digits || null
+      })(),
     }
     if (editing?.id) await update.mutateAsync({ id: editing.id, payload })
     else await create.mutateAsync(payload)
@@ -221,7 +252,7 @@ export default function ClientsPage() {
         </CardContent>
       </Card>
       <Card><CardContent>
-        {list.isLoading ? 'Carregandoï¿½?ï¿½' : list.error ? <Alert severity="error">Erro ao carregar</Alert> : rows.length === 0 ? (
+        {list.isLoading ? 'Carregando...' : list.error ? <Alert severity="error">Erro ao carregar</Alert> : rows.length === 0 ? (
           <Alert severity="info">Nenhum cliente encontrado.</Alert>
         ) : (
           <Table size="small">
@@ -229,12 +260,12 @@ export default function ClientsPage() {
               <TableRow>
                 <TableCell>ID</TableCell>
                 <TableCell>Nome</TableCell>
-                <TableCell>ResponsÃ¡vel</TableCell>
+                <TableCell>Responsável</TableCell>
                 <TableCell>Email</TableCell>
                 <TableCell>Telefone</TableCell>
                 <TableCell>Documento</TableCell>
                 <TableCell>Status</TableCell>
-                <TableCell align="right">AÃ§Ãµes</TableCell>
+                <TableCell align="right">Ações</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -282,10 +313,6 @@ export default function ClientsPage() {
     </Stack>
   )
 }
-
-
-
-
 
 
 

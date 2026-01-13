@@ -1,5 +1,5 @@
-import React, { useMemo } from 'react'
-import { Card, CardContent, Chip, Grid, Stack, Typography, Table, TableHead, TableRow, TableCell, TableBody, Button, Tooltip } from '@mui/material'
+import React, { useMemo, useState } from 'react'
+import { Card, CardContent, Chip, Grid, Stack, Typography, Table, TableHead, TableRow, TableCell, TableBody, Button, Tooltip, Snackbar } from '@mui/material'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import { billingsService } from './billings.service'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -7,6 +7,41 @@ import { formatDateOnly } from '@/utils/date'
 
 const label = (t) => t === 'pre' ? 'Avisado (D-3)' : t === 'due' ? 'Vence hoje (D0)' : 'Atrasado (D+4)'
 const color = (t) => t === 'pre' ? 'info' : t === 'due' ? 'warning' : 'error'
+const STATUS_LABELS = {
+  pending: 'Pendente',
+  paid: 'Pago',
+  canceled: 'Cancelado',
+}
+const typeDescription = { pre: 'D-3', due: 'D0', late: 'D+4' }
+const MS_PER_DAY = 1000 * 60 * 60 * 24
+
+function dueDateForMonth(year, month, billingDay) {
+  const dayNumber = Number.isFinite(Number(billingDay)) ? Number(billingDay) : null
+  if (!dayNumber) return null
+  const lastDay = new Date(year, month + 1, 0).getDate()
+  const normalized = Math.min(Math.max(dayNumber, 1), lastDay)
+  const d = new Date(year, month, normalized)
+  d.setHours(0, 0, 0, 0)
+  return d
+}
+
+function toIsoDate(date) {
+  if (!date) return null
+  const d = new Date(date.getTime())
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function getForceType(today, dueDate) {
+  if (!today || !dueDate) return null
+  const diff = Math.round((today.getTime() - dueDate.getTime()) / MS_PER_DAY)
+  if (diff === -3) return 'pre'
+  if (diff === 0) return 'due'
+  if (diff === 4) return 'late'
+  return null
+}
 
 export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay }) {
   const qc = useQueryClient()
@@ -25,6 +60,20 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
       qc.invalidateQueries({ queryKey: ['billings_overview'] })
       qc.invalidateQueries({ queryKey: ['billings'] })
     }
+  })
+  const [snack, setSnack] = useState(null)
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const forceMutation = useMutation({
+    mutationFn: ({ contractId, date, type }) => billingsService.notifyManual({ contract_id: contractId, date, type }),
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ['billings_overview'] })
+      qc.invalidateQueries({ queryKey: ['billings'] })
+      setSnack(`Mensagem ${typeDescription[vars.type]} enviada para o contrato #${vars.contractId}`)
+    },
+    onError: (err) => {
+      setSnack(err?.response?.data?.error || 'Falha ao enviar mensagem')
+    },
   })
   const [y, m] = ym ? ym.split('-').map(Number) : []
 
@@ -52,16 +101,20 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
     return <Typography variant="body2" color="error">Falha ao carregar visão do mês.</Typography>
   }
   return (
-    <Stack spacing={1}>
+    <>
+      <Stack spacing={1}>
       {items.length === 0 ? (
         <Typography variant="body2">Sem dados para {ym}.</Typography>
       ) : items.map(it => {
         const allPaid = it.month_status === 'paid'
         const isCanceled = it.month_status === 'canceled'
-        return (
-          <Card key={it.contract_id} variant="outlined">
-            <CardContent>
-              <Grid container alignItems="center">
+          const contractDueDate = dueDateForMonth(today.getFullYear(), today.getMonth(), it.billing_day)
+          const forceType = getForceType(today, contractDueDate)
+          const dueIso = toIsoDate(contractDueDate)
+          return (
+            <Card key={it.contract_id} variant="outlined">
+              <CardContent>
+                <Grid container alignItems="center">
                 <Grid item xs={12} md={7}>
                   <Stack spacing={0.5}>
                     <Stack direction="row" spacing={1} alignItems="center">
@@ -78,27 +131,48 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
                   </Stack>
                 </Grid>
                 <Grid item xs={12} md={5} sx={{ textAlign: { xs:'left', md:'right' } }}>
-                  <Stack direction="row" spacing={1} justifyContent={{ xs: 'flex-start', md: 'flex-end' }}>
-                    <Tooltip title="Marcar o mês inteiro como PAGO">
-                      <span>
-                        <Button size="small" variant="contained" disabled={allPaid || isCanceled} onClick={() => bulk.mutateAsync({ contractId: it.contract_id, y, m, status: 'paid' })}>Marcar mês PAGO</Button>
-                      </span>
-                    </Tooltip>
-                    <Tooltip title="Cancelar cobrança do mês">
-                      <span>
-                        <Button size="small" variant="outlined" color="error" disabled={allPaid || isCanceled} onClick={() => bulk.mutateAsync({ contractId: it.contract_id, y, m, status: 'canceled' })}>Cancelar cobrança</Button>
-                      </span>
-                    </Tooltip>
-                  </Stack>
+                    <Stack direction="row" spacing={1} justifyContent={{ xs: 'flex-start', md: 'flex-end' }}>
+                      <Tooltip title="Marcar o mês inteiro como PAGO">
+                        <span>
+                          <Button size="small" variant="contained" disabled={allPaid || isCanceled} onClick={() => bulk.mutateAsync({ contractId: it.contract_id, y, m, status: 'paid' })}>Marcar mês PAGO</Button>
+                        </span>
+                      </Tooltip>
+                      <Tooltip title="Cancelar cobrança do mês">
+                        <span>
+                          <Button size="small" variant="outlined" color="error" disabled={allPaid || isCanceled} onClick={() => bulk.mutateAsync({ contractId: it.contract_id, y, m, status: 'canceled' })}>Cancelar cobrança</Button>
+                        </span>
+                      </Tooltip>
+                      {forceType && dueIso && (
+                        <Tooltip title={`Forçar ${typeDescription[forceType]} mesmo sem disparo automático`}>
+                          <span>
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              color="info"
+                              disabled={forceMutation.isLoading}
+                              onClick={() =>
+                                forceMutation.mutate({
+                                  contractId: it.contract_id,
+                                  date: dueIso,
+                                  type: forceType,
+                                })
+                              }
+                            >
+                              Forçar message do dia -{typeDescription[forceType]}
+                            </Button>
+                          </span>
+                        </Tooltip>
+                      )}
+                    </Stack>
+                  </Grid>
                 </Grid>
-              </Grid>
 
               <Stack direction="row" spacing={1} sx={{ mt: 1, flexWrap: 'wrap' }}>
                 <Chip size="small" label={`Mês: ${ym}`} />
                 <Chip
                   size="small"
                   color={allPaid ? 'success' : isCanceled ? 'default' : 'warning'}
-                  label={`Status: ${String(it.month_status || 'pending').toUpperCase()}`}
+                  label={`Status: ${STATUS_LABELS[String(it.month_status || 'pending').toLowerCase()]}`}
                 />
                 {Number.isInteger(it.billing_day) && (
                   <Chip
@@ -129,8 +203,7 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
                   )
                 })}
               </Stack>
-
-
+              {(() => null)()}
               <Table size="small" sx={{ mt: 1 }}>
                 <TableHead>
                   <TableRow>
@@ -160,6 +233,13 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
           </Card>
         )
       })}
-    </Stack>
+      </Stack>
+      <Snackbar
+        open={!!snack}
+        autoHideDuration={2500}
+        onClose={() => setSnack(null)}
+        message={snack || ''}
+      />
+    </>
   )
 }

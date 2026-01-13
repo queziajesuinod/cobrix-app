@@ -235,6 +235,20 @@ async function initDb() {
       );
     `);
     await c.query(`
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1
+          FROM pg_constraint
+          WHERE conrelid = '${schema}.billing_notifications'::regclass
+            AND conname = 'uq_bn_auto_one_per_kind_month'
+            AND contype = 'u'
+        ) THEN
+          ALTER TABLE ${schema}.billing_notifications DROP CONSTRAINT uq_bn_auto_one_per_kind_month;
+        END IF;
+      END$$;
+    `);
+    await c.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS uq_bn_auto_one_per_kind_month
       ON ${schema}.billing_notifications (company_id, contract_id, type, due_month)
       WHERE kind = 'auto';

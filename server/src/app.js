@@ -10,14 +10,24 @@ const app = express()
 
 
 app.use(helmet())
-const allowlist = [
+const baseAllowlist = [
   'http://localhost:5173',      // Frontend local
-  'http://localhost:3006',      // API local
-  'http://62.72.63.137:3002',     // IP público (opcional)
+  'http://localhost:3002',      // API local
+  'http://62.72.63.137:3002',   // IP público (opcional)
   'https://cobrix.aleftec.com.br' // Domínio em produção (HTTPS)
 ]
+const envOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((val) => val.trim())
+  .filter(Boolean)
+const allowlist = [...new Set([...baseAllowlist, ...envOrigins])]
 app.use(cors({
-  origin: (origin, cb) => { if (!origin || allowlist.includes(origin)) return cb(null, true); return cb(new Error('Not allowed by CORS')) },
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true)
+    if (allowlist.includes(origin)) return cb(null, true)
+    console.warn('[cors] rejection origin', origin)
+    return cb(new Error('Not allowed by CORS'))
+  },
   credentials: true
 }))
 app.use(express.json())
