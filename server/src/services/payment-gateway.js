@@ -92,6 +92,44 @@ function calculateExpirationSeconds(dueDate) {
   return Math.ceil(diffMs / 1000);
 }
 
+function normalizeCopyPaste(value) {
+  if (!value && value !== 0) return null;
+  try {
+    const normalized = String(value).trim();
+    return normalized.length ? normalized : null;
+  } catch {
+    return null;
+  }
+}
+
+function readGatewayPayload(payload) {
+  if (!payload) return null;
+  if (typeof payload === 'string') {
+    try {
+      return JSON.parse(payload);
+    } catch {
+      return null;
+    }
+  }
+  return payload;
+}
+
+function selectCopyPaste(row) {
+  const explicit = normalizeCopyPaste(row?.copy_paste);
+  const payload = readGatewayPayload(row?.gateway_payload);
+  const payloadCopy = normalizeCopyPaste(payload?.qrcode?.qrcode);
+
+  if (!explicit) return payloadCopy;
+  if (payloadCopy) {
+    const explicitLooksShort = explicit.length < 30 || /^[0-9]+$/.test(explicit);
+    const payloadLooksLonger = payloadCopy.length > Math.max(explicit.length, 30);
+    if (explicitLooksShort && payloadLooksLonger) {
+      return payloadCopy;
+    }
+  }
+  return explicit;
+}
+
 function formatGatewayRow(row) {
   if (!row) return null;
   const expiresAt = row.expires_at ? new Date(row.expires_at) : null;
@@ -100,7 +138,7 @@ function formatGatewayRow(row) {
     txid: row.txid,
     locId: row.loc_id,
     paymentUrl: row.payment_link || null,
-    copyPaste: row.copy_paste || null,
+    copyPaste: selectCopyPaste(row),
     qrCodeImage: row.qr_code || null,
     amount: Number(row.amount || 0),
     expiresAt,
