@@ -5,15 +5,51 @@ import { billingsService } from './billings.service'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { formatDateOnly } from '@/utils/date'
 
-const label = (t) => t === 'pre' ? 'Avisado (D-3)' : t === 'due' ? 'Vence hoje (D0)' : 'Atrasado (D+4)'
+const label = (t) => t === 'pre' ? 'Avisado (D-4)' : t === 'due' ? 'Vence hoje (D0)' : 'Atrasado (D+3)'
 const color = (t) => t === 'pre' ? 'info' : t === 'due' ? 'warning' : 'error'
 const STATUS_LABELS = {
   pending: 'Pendente',
   paid: 'Pago',
   canceled: 'Cancelado',
 }
-const typeDescription = { pre: 'D-3', due: 'D0', late: 'D+4' }
+const typeDescription = { pre: 'D-4', due: 'D0', late: 'D+3' }
 const MS_PER_DAY = 1000 * 60 * 60 * 24
+const FORCE_DIFF_CANDIDATES = [
+  { diff: 0, type: 'due' },
+  { diff: -4, type: 'pre' },
+  { diff: 3, type: 'late' },
+]
+
+function parseIsoDateOnly(value) {
+  if (!value) return null
+  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (!match) return null
+  const year = Number(match[1])
+  const month = Number(match[2]) - 1
+  const day = Number(match[3])
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null
+  return new Date(year, month, day)
+}
+
+function findForceBillingCandidate(billings, today) {
+  if (!billings?.length) return null
+  const normalizedToday = new Date(today.getTime())
+  normalizedToday.setHours(0, 0, 0, 0)
+  for (const candidate of FORCE_DIFF_CANDIDATES) {
+    const matched = billings.find((billing) => {
+      const status = String(billing.status || '').toLowerCase()
+      if (status === 'paid' || status === 'canceled') return false
+      const due = parseIsoDateOnly(billing.billing_date)
+      if (!due) return false
+      const diff = Math.round((normalizedToday - due) / MS_PER_DAY)
+      return diff === candidate.diff
+    })
+    if (matched) {
+      return { type: candidate.type, dueDate: matched.billing_date }
+    }
+  }
+  return null
+}
 
 function dueDateForMonth(year, month, billingDay) {
   const dayNumber = Number.isFinite(Number(billingDay)) ? Number(billingDay) : null
@@ -37,9 +73,9 @@ function toIsoDate(date) {
 function getForceType(today, dueDate) {
   if (!today || !dueDate) return null
   const diff = Math.round((today.getTime() - dueDate.getTime()) / MS_PER_DAY)
-  if (diff === -3) return 'pre'
+  if (diff === -4) return 'pre'
   if (diff === 0) return 'due'
-  if (diff === 4) return 'late'
+  if (diff === 3) return 'late'
   return null
 }
 
@@ -109,8 +145,11 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
         const allPaid = it.month_status === 'paid'
         const isCanceled = it.month_status === 'canceled'
           const contractDueDate = dueDateForMonth(today.getFullYear(), today.getMonth(), it.billing_day)
-          const forceType = getForceType(today, contractDueDate)
-          const dueIso = toIsoDate(contractDueDate)
+          const fallbackForceType = getForceType(today, contractDueDate)
+          const fallbackDueIso = toIsoDate(contractDueDate)
+          const forceCandidate = findForceBillingCandidate(it.billings, today)
+          const forceType = forceCandidate?.type ?? fallbackForceType
+          const forceDate = forceCandidate?.dueDate ?? fallbackDueIso
           return (
             <Card key={it.contract_id} variant="outlined">
               <CardContent>
@@ -142,7 +181,7 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
                           <Button size="small" variant="outlined" color="error" disabled={allPaid || isCanceled} onClick={() => bulk.mutateAsync({ contractId: it.contract_id, y, m, status: 'canceled' })}>Cancelar cobrança</Button>
                         </span>
                       </Tooltip>
-                      {forceType && dueIso && (
+                      {forceType && forceDate && (
                         <Tooltip title={`Forçar ${typeDescription[forceType]} mesmo sem disparo automático`}>
                           <span>
                             <Button
@@ -153,7 +192,7 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
                               onClick={() =>
                                 forceMutation.mutate({
                                   contractId: it.contract_id,
-                                  date: dueIso,
+                                  date: forceDate,
                                   type: forceType,
                                 })
                               }

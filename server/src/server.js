@@ -52,10 +52,10 @@ function scheduleCronJob(label, expression, job) {
 // D0 - Due
 scheduleCronJob('DUE', process.env.CRON_DUE, runDueOnly);
 
-// D-3 - Pre
+// D-4 - Pre
 scheduleCronJob('PRE', process.env.CRON_PRE, runPreOnly);
 
-// D+4 - Late
+// D+3 - Late
 scheduleCronJob('LATE', process.env.CRON_LATE, runLateOnly);
 
 scheduleCronJob('RENEW', process.env.CRON_RENEW, runRenewOnly);

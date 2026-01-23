@@ -52,7 +52,7 @@ export default function AutoNotificationsPage(){
     <Stack spacing={2}>
       <PageHeader
         title="Notificações automáticas"
-        subtitle="Controle de D−3, D0 e D+4. Marque o mês PAGO para bloquear os próximos lembretes."
+        subtitle="Controle de D−4, D0 e D+3. Marque o mês PAGO para bloquear os próximos lembretes."
         actions={<Button variant="outlined" startIcon={<AutorenewIcon/>} onClick={()=>setRunOpen(true)}>Executar por data</Button>}
       />
 

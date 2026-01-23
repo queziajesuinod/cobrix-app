@@ -32,9 +32,9 @@ export default function BillingsRunDialog({ open, onClose, onConfirm }) {
             <FormControlLabel control={<Checkbox checked={flags.generate} onChange={() => toggle('generate')} />} label="Gerar cobranças do dia" />
             <FormControlLabel control={<Checkbox checked={flags.includeWeekly} onChange={() => toggle('includeWeekly')} />} label="Incluir semanais" />
             <FormControlLabel control={<Checkbox checked={flags.includeCustom} onChange={() => toggle('includeCustom')} />} label="Incluir datas personalizadas" />
-            <FormControlLabel control={<Checkbox checked={flags.pre} onChange={() => toggle('pre')} />} label="Enviar D−3 (pré-vencimento)" />
+            <FormControlLabel control={<Checkbox checked={flags.pre} onChange={() => toggle('pre')} />} label="Enviar D−4 (pré-vencimento)" />
             <FormControlLabel control={<Checkbox checked={flags.due} onChange={() => toggle('due')} />} label="Enviar D0 (vence hoje)" />
-            <FormControlLabel control={<Checkbox checked={flags.late} onChange={() => toggle('late')} />} label="Enviar D+4 (atraso)" />
+            <FormControlLabel control={<Checkbox checked={flags.late} onChange={() => toggle('late')} />} label="Enviar D+3 (atraso)" />
           </FormGroup>
         </Stack>
       </DialogContent>

@@ -313,9 +313,9 @@ async function generateBillingsForToday(now = new Date(), companyId = null, opts
   }
 }
 
-// 2) D-3 (PRE)
+// 2) D-4 (PRE)
 async function sendPreReminders(now = new Date(), companyId = null) {
-  const base = addDays(now, 3);
+  const base = addDays(now, 4);
   const baseStr = isoDate(base);
   const year = base.getFullYear();
   const month = base.getMonth() + 1;
@@ -532,7 +532,7 @@ async function sendDueReminders(now = new Date(), companyId = null, opts = {}) {
   }
 }
 
-// 4) D+4 (LATE) + semanal D+2
+// 4) D+3 (LATE) + semanal D+2
 async function sendLateRemindersForTarget(now, target, companyId, modeFilter, opts = {}) {
   const { includeWeekly = true, includeCustom = true } = opts;
   const targetStr = isoDate(target);
@@ -644,7 +644,7 @@ async function sendLateRemindersForTarget(now, target, companyId, modeFilter, op
 
 async function sendLateReminders(now = new Date(), companyId = null, opts = {}) {
   const { includeWeekly = true, includeCustom = true } = opts;
-  await sendLateRemindersForTarget(now, addDays(now, -4), companyId, 'non_interval', { includeWeekly, includeCustom });
+  await sendLateRemindersForTarget(now, addDays(now, -3), companyId, 'non_interval', { includeWeekly, includeCustom });
   if (includeWeekly) {
     await sendLateRemindersForTarget(now, addDays(now, -2), companyId, 'interval_days', { includeWeekly, includeCustom });
   }
