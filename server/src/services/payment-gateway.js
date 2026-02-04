@@ -9,7 +9,8 @@ const { ensureDateOnly, addDays } = require('../utils/date-only');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 const DEFAULT_EXPIRATION = Number(process.env.EFI_PIX_EXPIRATION || 86400); // 24h
-const EFI_SANDBOX = String(process.env.EFI_PIX_SANDBOX || 'true').toLowerCase() === 'true';
+const DEFAULT_PIX_SANDBOX = process.env.NODE_ENV === 'production' ? 'false' : 'true';
+const EFI_SANDBOX = String(process.env.EFI_PIX_SANDBOX ?? DEFAULT_PIX_SANDBOX).toLowerCase() === 'true';
 
 let cachedInlineCertPath = null;
 const companyCertCache = new Map();
