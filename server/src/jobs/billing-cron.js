@@ -94,7 +94,7 @@ async function upsertAutoNotification({
        $5,$6,
        $7,'evo',$8,$9,$10,$11,
        $12,NOW(),$13,$5,$14)
-    ON CONFLICT (company_id, contract_id, target_date, kind) DO NOTHING
+    ON CONFLICT DO NOTHING
     RETURNING id
   `;
 
@@ -139,7 +139,32 @@ async function upsertAutoNotification({
     RETURNING id
   `;
   const updated = await query(updateSql, params);
-  return updated.rows[0]?.id;
+  if (updated.rows[0]?.id) return updated.rows[0].id;
+
+  const updateByDueSql = `
+    UPDATE ${SCHEMA}.billing_notifications
+    SET billing_id = $2,
+        client_id = $4,
+        status = $7,
+        provider = 'evo',
+        to_number = $8,
+        message = $9,
+        provider_status = $10,
+        provider_response = $11,
+        error = $12,
+        sent_at = $13,
+        target_date = $6,
+        kind = $5,
+        type = $5,
+        due_date = $14
+    WHERE company_id = $1
+      AND contract_id = $3
+      AND due_date = $14
+      AND type = $5
+    RETURNING id
+  `;
+  const updatedByDue = await query(updateByDueSql, params);
+  return updatedByDue.rows[0]?.id;
 }
 
 async function renewRecurringContracts(now = new Date(), companyId = null) {
@@ -362,69 +387,73 @@ async function sendPreReminders(now = new Date(), companyId = null) {
     const dueStr = isoDate(due);
     if (!c.client_phone) continue;
 
-    const mesRefDate = new Date(due.getFullYear(), due.getMonth(), 1);
-    const recipientName = c.client_responsavel || c.client_name;
-    const clientDocument = {
-      cpf: c.client_document_cpf || null,
-      cnpj: c.client_document_cnpj || null,
-    };
-    const gatewayPayment = await ensureGatewayPaymentLink({
-      companyId: c.company_id,
-      contractId: c.id,
-      billingId: null,
-      dueDate: dueStr,
-      amount,
-      contractDescription: c.description,
-      clientName: recipientName,
-      clientDocument,
-    });
-    const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
-    const copyPaste = gatewaySummary?.copyPaste || null;
-    const text = await msgPre({
-      nome: recipientName,
-      responsavel: c.client_responsavel,
-      client_name: c.client_name,
-      tipoContrato: c.description,
-      mesRefDate,
-      vencimentoDate: due,
-      valor: amount,
-      companyId: c.company_id,
-      gatewayPayment,
-      gatewayPaymentLink: Boolean(copyPaste),
-      payment_link: null,
-      payment_code: copyPaste,
-      payment_qrcode: null,
-      payment_expires_at_iso: gatewaySummary?.expiresAtIso || null,
-    });
+    try {
+      const mesRefDate = new Date(due.getFullYear(), due.getMonth(), 1);
+      const recipientName = c.client_responsavel || c.client_name;
+      const clientDocument = {
+        cpf: c.client_document_cpf || null,
+        cnpj: c.client_document_cnpj || null,
+      };
+      const gatewayPayment = await ensureGatewayPaymentLink({
+        companyId: c.company_id,
+        contractId: c.id,
+        billingId: null,
+        dueDate: dueStr,
+        amount,
+        contractDescription: c.description,
+        clientName: recipientName,
+        clientDocument,
+      });
+      const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
+      const copyPaste = gatewaySummary?.copyPaste || null;
+      const text = await msgPre({
+        nome: recipientName,
+        responsavel: c.client_responsavel,
+        client_name: c.client_name,
+        tipoContrato: c.description,
+        mesRefDate,
+        vencimentoDate: due,
+        valor: amount,
+        companyId: c.company_id,
+        gatewayPayment,
+        gatewayPaymentLink: Boolean(copyPaste),
+        payment_link: null,
+        payment_code: copyPaste,
+        payment_qrcode: null,
+        payment_expires_at_iso: gatewaySummary?.expiresAtIso || null,
+      });
 
-    let evo = { ok: false, error: "no-phone" };
-    try { evo = await sendWhatsapp(c.company_id, { number: c.client_phone, text }); }
-    catch (e) { evo = { ok: false, error: e.message }; }
-    const providerResponse = {
-      messenger: evo.data ?? null,
-      messengerStatus: evo.status ?? null,
-      gateway: gatewaySummary,
-    };
+      let evo = { ok: false, error: "no-phone" };
+      try { evo = await sendWhatsapp(c.company_id, { number: c.client_phone, text }); }
+      catch (e) { evo = { ok: false, error: e.message }; }
+      const providerResponse = {
+        messenger: evo.data ?? null,
+        messengerStatus: evo.status ?? null,
+        gateway: gatewaySummary,
+      };
 
-    await upsertAutoNotification({
-      companyId: c.company_id,
-      billingId: null,
-      contractId: c.id,
-      clientId: c.client_id,
-      targetDate: baseStr,
-      toNumber: c.client_phone,
-      message: text,
-      type: "pre",
-      dueDate: dueStr,
-      evoResult: evo,
-      providerResponse,
-    });
+      await upsertAutoNotification({
+        companyId: c.company_id,
+        billingId: null,
+        contractId: c.id,
+        clientId: c.client_id,
+        targetDate: baseStr,
+        toNumber: c.client_phone,
+        message: text,
+        type: "pre",
+        dueDate: dueStr,
+        evoResult: evo,
+        providerResponse,
+      });
 
-    console.log(`↗ [PRE] c#${c.id} due=${dueStr} -> ${evo.ok ? "sent" : "failed"}`);
+      console.log(`[PRE] c#${c.id} due=${dueStr} -> ${evo.ok ? "sent" : "failed"}`);
+    } catch (err) {
+      console.error(`[PRE] c#${c.id} due=${dueStr} erro: ${err.message}`);
+    }
   }
 }
 
-// 3) D0 (DUE) — garante geração antes de notificar
+// 3) D0 (DUE) - garante geracao antes de notificar
 async function sendDueReminders(now = new Date(), companyId = null, opts = {}) {
   const { includeWeekly = true, includeCustom = true } = opts;
   console.log(`[DUE] Input 'now' date: ${now}`);
@@ -469,66 +498,70 @@ async function sendDueReminders(now = new Date(), companyId = null, opts = {}) {
     if (mode === "custom_dates" && !includeCustom) continue;
     if (!r.client_phone) continue;
 
-    const mesRefDate = new Date(now.getFullYear(), now.getMonth(), 1);
-    const recipientName = r.client_responsavel || r.client_name;
-    const clientDocument = {
-      cpf: r.client_document_cpf || null,
-      cnpj: r.client_document_cnpj || null,
-    };
-    const gatewayPayment = await ensureGatewayPaymentLink({
-      companyId: r.company_id,
-      contractId: r.contract_id,
-      billingId: r.billing_id || null,
-      dueDate: todayStr,
-      amount: r.amount,
-      contractDescription: r.description,
-      clientName: recipientName,
-      clientDocument,
-    });
-    const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
-    const copyPaste = gatewaySummary?.copyPaste || null;
-    const text = await msgDue({
-      nome: recipientName,
-      responsavel: r.client_responsavel,
-      client_name: r.client_name,
-      tipoContrato: r.description,
-      billing_mode: r.billing_mode,
-      mesRefDate,
-      vencimentoDate: ensureDateOnly(todayStr),
-      valor: r.amount,
-      companyId: r.company_id,
-      gatewayPayment,
-      gatewayPaymentLink: Boolean(copyPaste),
-      payment_link: null,
-      payment_code: copyPaste,
-      payment_qrcode: null,
-      payment_expires_at_iso: gatewaySummary?.expiresAtIso || null,
-    });
+    try {
+      const mesRefDate = new Date(now.getFullYear(), now.getMonth(), 1);
+      const recipientName = r.client_responsavel || r.client_name;
+      const clientDocument = {
+        cpf: r.client_document_cpf || null,
+        cnpj: r.client_document_cnpj || null,
+      };
+      const gatewayPayment = await ensureGatewayPaymentLink({
+        companyId: r.company_id,
+        contractId: r.contract_id,
+        billingId: r.billing_id || null,
+        dueDate: todayStr,
+        amount: r.amount,
+        contractDescription: r.description,
+        clientName: recipientName,
+        clientDocument,
+      });
+      const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
+      const copyPaste = gatewaySummary?.copyPaste || null;
+      const text = await msgDue({
+        nome: recipientName,
+        responsavel: r.client_responsavel,
+        client_name: r.client_name,
+        tipoContrato: r.description,
+        billing_mode: r.billing_mode,
+        mesRefDate,
+        vencimentoDate: ensureDateOnly(todayStr),
+        valor: r.amount,
+        companyId: r.company_id,
+        gatewayPayment,
+        gatewayPaymentLink: Boolean(copyPaste),
+        payment_link: null,
+        payment_code: copyPaste,
+        payment_qrcode: null,
+        payment_expires_at_iso: gatewaySummary?.expiresAtIso || null,
+      });
 
-    let evo = { ok: false, error: "no-phone" };
-    try { evo = await sendWhatsapp(r.company_id, { number: r.client_phone, text }); }
-    catch (e) { evo = { ok: false, error: e.message }; }
-    const providerResponse = {
-      messenger: evo.data ?? null,
-      messengerStatus: evo.status ?? null,
-      gateway: gatewaySummary,
-    };
+      let evo = { ok: false, error: "no-phone" };
+      try { evo = await sendWhatsapp(r.company_id, { number: r.client_phone, text }); }
+      catch (e) { evo = { ok: false, error: e.message }; }
+      const providerResponse = {
+        messenger: evo.data ?? null,
+        messengerStatus: evo.status ?? null,
+        gateway: gatewaySummary,
+      };
 
-    await upsertAutoNotification({
-      companyId: r.company_id,
-      billingId: r.billing_id,
-      contractId: r.contract_id,
-      clientId: r.client_id,
-      targetDate: todayStr,
-      toNumber: r.client_phone,
-      message: text,
-      type: "due",
-      dueDate: todayStr,
-      evoResult: evo,
-      providerResponse,
-    });
+      await upsertAutoNotification({
+        companyId: r.company_id,
+        billingId: r.billing_id,
+        contractId: r.contract_id,
+        clientId: r.client_id,
+        targetDate: todayStr,
+        toNumber: r.client_phone,
+        message: text,
+        type: "due",
+        dueDate: todayStr,
+        evoResult: evo,
+        providerResponse,
+      });
 
-    console.log(`→ [DUE] c#${r.contract_id} ${todayStr} -> ${evo.ok ? "sent" : `failed (${evo.error || evo.status})`}`);
+      console.log(`[DUE] c#${r.contract_id} ${todayStr} -> ${evo.ok ? "sent" : `failed (${evo.error || evo.status})`}`);
+    } catch (err) {
+      console.error(`[DUE] c#${r.contract_id} ${todayStr} erro: ${err.message}`);
+    }
   }
 }
 
@@ -579,66 +612,70 @@ async function sendLateRemindersForTarget(now, target, companyId, modeFilter, op
     if (mode === "custom_dates" && !includeCustom) continue;
     if (!r.client_phone) continue;
 
-    const mesRefDate = new Date(target.getFullYear(), target.getMonth(), 1);
-    const recipientName = r.client_responsavel || r.client_name;
-    const clientDocument = {
-      cpf: r.client_document_cpf || null,
-      cnpj: r.client_document_cnpj || null,
-    };
-    const gatewayPayment = await ensureGatewayPaymentLink({
-      companyId: r.company_id,
-      contractId: r.contract_id,
-      billingId: r.billing_id || null,
-      dueDate: targetStr,
-      amount: r.amount,
-      contractDescription: r.description,
-      clientName: recipientName,
-      clientDocument,
-    });
-    const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
-    const copyPaste = gatewaySummary?.copyPaste || null;
-    const text = await msgLate({
-      nome: recipientName,
-      responsavel: r.client_responsavel,
-      client_name: r.client_name,
-      tipoContrato: r.description,
-      billing_mode: r.billing_mode,
-      mesRefDate,
-      vencimentoDate: ensureDateOnly(targetStr),
-      valor: r.amount,
-      companyId: r.company_id,
-      gatewayPayment,
-      gatewayPaymentLink: Boolean(copyPaste),
-      payment_link: null,
-      payment_code: copyPaste,
-      payment_qrcode: null,
-      payment_expires_at_iso: gatewaySummary?.expiresAtIso || null,
-    });
+    try {
+      const mesRefDate = new Date(target.getFullYear(), target.getMonth(), 1);
+      const recipientName = r.client_responsavel || r.client_name;
+      const clientDocument = {
+        cpf: r.client_document_cpf || null,
+        cnpj: r.client_document_cnpj || null,
+      };
+      const gatewayPayment = await ensureGatewayPaymentLink({
+        companyId: r.company_id,
+        contractId: r.contract_id,
+        billingId: r.billing_id || null,
+        dueDate: targetStr,
+        amount: r.amount,
+        contractDescription: r.description,
+        clientName: recipientName,
+        clientDocument,
+      });
+      const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
+      const copyPaste = gatewaySummary?.copyPaste || null;
+      const text = await msgLate({
+        nome: recipientName,
+        responsavel: r.client_responsavel,
+        client_name: r.client_name,
+        tipoContrato: r.description,
+        billing_mode: r.billing_mode,
+        mesRefDate,
+        vencimentoDate: ensureDateOnly(targetStr),
+        valor: r.amount,
+        companyId: r.company_id,
+        gatewayPayment,
+        gatewayPaymentLink: Boolean(copyPaste),
+        payment_link: null,
+        payment_code: copyPaste,
+        payment_qrcode: null,
+        payment_expires_at_iso: gatewaySummary?.expiresAtIso || null,
+      });
 
-    let evo = { ok: false, error: "no-phone" };
-    try { evo = await sendWhatsapp(r.company_id, { number: r.client_phone, text }); }
-    catch (e) { evo = { ok: false, error: e.message }; }
-    const providerResponse = {
-      messenger: evo.data ?? null,
-      messengerStatus: evo.status ?? null,
-      gateway: gatewaySummary,
-    };
+      let evo = { ok: false, error: "no-phone" };
+      try { evo = await sendWhatsapp(r.company_id, { number: r.client_phone, text }); }
+      catch (e) { evo = { ok: false, error: e.message }; }
+      const providerResponse = {
+        messenger: evo.data ?? null,
+        messengerStatus: evo.status ?? null,
+        gateway: gatewaySummary,
+      };
 
-    await upsertAutoNotification({
-      companyId: r.company_id,
-      billingId: r.billing_id,
-      contractId: r.contract_id,
-      clientId: r.client_id,
-      targetDate: isoDate(now),
-      toNumber: r.client_phone,
-      message: text,
-      type: "late",
-      dueDate: targetStr,
-      evoResult: evo,
-      providerResponse,
-    });
+      await upsertAutoNotification({
+        companyId: r.company_id,
+        billingId: r.billing_id,
+        contractId: r.contract_id,
+        clientId: r.client_id,
+        targetDate: isoDate(now),
+        toNumber: r.client_phone,
+        message: text,
+        type: "late",
+        dueDate: targetStr,
+        evoResult: evo,
+        providerResponse,
+      });
 
-    console.log(`[LATE] c#${r.contract_id} ${targetStr} -> ${evo.ok ? "sent" : "failed"}`);
+      console.log(`[LATE] c#${r.contract_id} ${targetStr} -> ${evo.ok ? "sent" : "failed"}`);
+    } catch (err) {
+      console.error(`[LATE] c#${r.contract_id} due=${targetStr} erro: ${err.message}`);
+    }
   }
 }
 
