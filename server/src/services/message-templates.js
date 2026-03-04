@@ -3,7 +3,7 @@ const { ensureDateOnly, formatISODate } = require('../utils/date-only');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 
-const meses = ['janeiro','fevereiro','marÃ§o','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
+const meses = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
 
 function dd(n) { return String(n).padStart(2, '0'); }
 function formatPtDate(value) {
@@ -29,48 +29,51 @@ function formatPtDateTime(value) {
 }
 
 const DEFAULT_TEMPLATES = {
-  pre: `Ol� {{client_name}}, tudo bem?
+  pre: `Olá {{client_name}}, tudo bem?
 
-Gostar�amos de lembrar que o vencimento referente ao {{contract_type}} do m�s de {{reference_month}} est� programado para o dia {{due_date}}, no valor de {{amount}}.
+Gostaríamos de lembrar que o vencimento referente ao {{contract_type}} do mês de {{reference_month}} está programado para o dia {{due_date}}, no valor de {{amount}}.
 
 Para sua comodidade, seguem os dados para o pagamento:
 
 PIX: {{pix_key}}
 
-Caso precise de alguma informa��o adicional, n�o hesite em nos procurar. Estamos � disposi��o para ajud�-lo.
+Caso precise de alguma informação adicional, não hesite em nos procurar. Estamos à disposição para ajudá-lo.
 
-Agradecemos pela confian�a em nossos servi�os e seguimos � disposi��o para o que for necess�rio.
+Agradecemos pela confiança em nossos serviços e seguimos à disposição para o que for necessário.
 
 Atenciosamente,
 Equipe Financeira
 {{company_name}}`,
-  pre_gateway: `Ol� {{client_name}}, tudo bem?
 
-Seu {{contract_type}} referente ao m�s de {{reference_month}} vencer� em {{due_date}}, no valor de {{amount}}.
+  pre_gateway: `Olá {{client_name}}, tudo bem?
 
-Voc� pode pagar acessando o link seguro abaixo:
+Seu {{contract_type}} referente ao mês de {{reference_month}} vencerá em {{due_date}}, no valor de {{amount}}.
+
+Você pode pagar acessando o link seguro abaixo:
 {{payment_link}}
 
 Se preferir Pix copia e cola:
 {{payment_code}}
 
-Ficamos � disposi��o caso precise de algo.
+Ficamos à disposição caso precise de algo.
 
 Atenciosamente,
 Equipe Financeira
 {{company_name}}`,
-  due: `Ol� {{client_name}}, tudo bem?
 
-Lembrete: o pagamento referente ao {{contract_type}} do m�s de {{reference_month}} vence HOJE ({{due_date}}), no valor de {{amount}}.
+  due: `Olá {{client_name}}, tudo bem?
+
+Lembrete: o pagamento referente ao {{contract_type}} do mês de {{reference_month}} vence HOJE ({{due_date}}), no valor de {{amount}}.
 
 PIX: {{pix_key}}
 
-Qualquer d�vida, fale com a gente.
+Qualquer dúvida, fale com a gente.
 
 Atenciosamente,
 Equipe Financeira
 {{company_name}}`,
-  due_gateway: `Ol� {{client_name}}, tudo bem?
+
+  due_gateway: `Olá {{client_name}}, tudo bem?
 
 Seu pagamento do {{contract_type}} ({{reference_month}}) vence HOJE, {{due_date}}, no valor de {{amount}}.
 
@@ -80,37 +83,40 @@ Pague agora pelo link:
 Ou use o Pix copia e cola:
 {{payment_code}}
 
-Qualquer d�vida, fale com a gente.
+Qualquer dúvida, fale com a gente.
 
 Atenciosamente,
 Equipe Financeira
 {{company_name}}`,
-  late: `Ol� {{client_name}}, tudo bem?
 
-Identificamos que o pagamento referente ao {{contract_type}} do m�s de {{reference_month}} est� em ATRASO desde {{due_date}}. Valor: {{amount}}.
+  late: `Olá {{client_name}}, tudo bem?
+
+Identificamos que o pagamento referente ao {{contract_type}} do mês de {{reference_month}} está em ATRASO desde {{due_date}}. Valor: {{amount}}.
 
 PIX: {{pix_key}}
 
-Se j� realizou o pagamento, por favor desconsidere esta mensagem. Caso contr�rio, estamos � disposi��o para ajudar.
+Se já realizou o pagamento, por favor desconsidere esta mensagem. Caso contrário, estamos à disposição para ajudar.
 
 Atenciosamente,
 Equipe Financeira
 {{company_name}}`,
-  late_gateway: `Ol� {{client_name}}, tudo bem?
 
-Percebemos que o pagamento do {{contract_type}} ({{reference_month}}) est� em atraso desde {{due_date}}. Valor: {{amount}}.
+  late_gateway: `Olá {{client_name}}, tudo bem?
 
-Voc� pode regularizar acessando este link:
+Percebemos que o pagamento do {{contract_type}} ({{reference_month}}) está em atraso desde {{due_date}}. Valor: {{amount}}.
+
+Você pode regularizar acessando este link:
 {{payment_link}}
 
 Ou utilize o Pix copia e cola:
 {{payment_code}}
 
-Se j� pagou, desconsidere esta mensagem. Qualquer d�vida, fale conosco.
+Se já pagou, desconsidere esta mensagem. Qualquer dúvida, fale conosco.
 
 Atenciosamente,
 Equipe Financeira
 {{company_name}}`,
+
   paid: `Olá {{client_name}}, tudo bem?
 
 Recebemos o pagamento referente ao {{contract_type}} de {{reference_month}} (vencimento em {{due_date}}) no valor de {{amount}}.
