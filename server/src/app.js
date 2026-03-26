@@ -1,6 +1,9 @@
 // server/src/app.js
 require('dotenv').config()
-process.env.TZ = 'America/Sao_Paulo'
+// TZ deve coincidir com CRON_TZ para que new Date() dentro dos cron jobs
+// retorne a hora local correta. Hardcode anterior 'America/Sao_Paulo' (UTC-3)
+// conflitava com CRON_TZ=America/Campo_Grande (UTC-4) causando datas erradas.
+process.env.TZ = process.env.CRON_TZ || 'America/Campo_Grande'
 const express = require('express')
 const cors = require('cors')
 const helmet = require('helmet')
@@ -56,6 +59,8 @@ app.use('/api/companies', require('./routes/companies'))
 app.use('/api/companies', require('./routes/company-integration'))
 app.use('/api/companies', require('./routes/company-users'))
 app.use('/api/companies', require('./routes/company-users-management'))
+// webhook PIX EFI (sem autenticação JWT — chamado pela EFI externamente)
+app.use('/api/webhooks', require('./routes/webhooks'))
 // health
 app.get('/api/status', (_req, res) => res.json({ status: 'OK', schema: process.env.DB_SCHEMA || 'public', time: new Date().toISOString() }))
 app.get('/healthz', (_req, res) => res.json({ ok: true }))

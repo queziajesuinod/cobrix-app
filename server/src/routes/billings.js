@@ -865,7 +865,7 @@ router.get('/paid', requireAuth, companyScope(true), async (req, res) => {
       );
       await runDaily(base, payload);
       console.log(`[billing-run] completed company=${req.companyId} date=${isoDate(base)}`);
-      res.json({ ok: true, ran_for: base.toISOString().slice(0, 10), steps: { generate, pre, due, late } });
+      res.json({ ok: true, ran_for: isoDate(base), steps: { generate, pre, due, late } });
     } catch (e) {
       console.error(`[billing-run] failed company=${req.companyId} date=${req.body?.date || ''}`, e);
       res.status(500).json({ error: e.message });

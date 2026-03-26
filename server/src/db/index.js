@@ -1,5 +1,11 @@
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
 const { AsyncLocalStorage } = require('async_hooks');
+
+// Por padrão o pg converte colunas DATE (OID 1082) para Date objects JavaScript
+// definidos como midnight UTC. Com qualquer timezone brasileiro (UTC-3 / UTC-4)
+// isso causa um off-by-one: '2024-03-01T00:00:00Z' vira 29/02 no horário local.
+// Solução: receber DATE como string 'YYYY-MM-DD' — ensureDateOnly() já trata isso.
+types.setTypeParser(1082, (val) => val);
 
 const pool = new Pool({
   user: process.env.DB_USER,
@@ -125,6 +131,77 @@ async function initDb() {
     `);
     await c.query(`ALTER TABLE ${schema}.contract_custom_billings ALTER COLUMN amount DROP NOT NULL;`);
     await c.query(`ALTER TABLE ${schema}.contract_custom_billings ADD COLUMN IF NOT EXISTS percentage NUMERIC(6,2);`);
+
+    // Tabela de notificações (criada aqui caso não exista ainda)
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.billing_notifications (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
+        billing_id INTEGER REFERENCES ${schema}.billings(id) ON DELETE SET NULL,
+        contract_id INTEGER NOT NULL REFERENCES ${schema}.contracts(id) ON DELETE CASCADE,
+        client_id INTEGER REFERENCES ${schema}.clients(id) ON DELETE SET NULL,
+        kind TEXT NOT NULL,
+        target_date DATE,
+        status TEXT NOT NULL DEFAULT 'pending',
+        provider TEXT,
+        to_number TEXT,
+        message TEXT,
+        provider_status INTEGER,
+        provider_response TEXT,
+        error TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        sent_at TIMESTAMPTZ,
+        type TEXT,
+        due_date DATE,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        next_retry_at TIMESTAMPTZ
+      );
+    `);
+    // Colunas de retry em tabelas já existentes (idempotente — precisa vir antes do índice)
+    await c.query(`ALTER TABLE ${schema}.billing_notifications ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0;`);
+    await c.query(`ALTER TABLE ${schema}.billing_notifications ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ;`);
+
+    // Backfill: preenche type=NULL com o valor de kind quando kind é 'pre','due','late'.
+    // Isso acontece quando a coluna 'type' foi adicionada depois dos registros existirem.
+    // Sem esse fix, o overview agrupa por type=NULL e os chips nunca pintam.
+    await c.query(`
+      UPDATE ${schema}.billing_notifications
+         SET type = kind
+       WHERE type IS NULL
+         AND kind IN ('pre','due','late');
+    `);
+
+    // Antes de criar o índice único, remove duplicatas mantendo o registro mais recente
+    // de cada grupo (company_id, contract_id, kind, due_date).
+    // Isso é necessário porque registros anteriores podem ter sido inseridos sem constraint.
+    await c.query(`
+      DELETE FROM ${schema}.billing_notifications
+      WHERE id IN (
+        SELECT id FROM (
+          SELECT id,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY company_id, contract_id, kind, due_date
+                   ORDER BY id DESC
+                 ) AS rn
+          FROM ${schema}.billing_notifications
+          WHERE due_date IS NOT NULL
+        ) sub
+        WHERE rn > 1
+      );
+    `);
+
+    // Índice único: uma notificação por (empresa, contrato, tipo, data_vencimento)
+    await c.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_bn_company_contract_kind_due
+        ON ${schema}.billing_notifications (company_id, contract_id, kind, due_date)
+        WHERE due_date IS NOT NULL;
+    `);
+    // Índice para queries de retry
+    await c.query(`
+      CREATE INDEX IF NOT EXISTS idx_bn_retry
+        ON ${schema}.billing_notifications (status, retry_count, created_at)
+        WHERE status = 'failed';
+    `);
   });
 }
 
@@ -146,9 +223,8 @@ async function withClient(fn) {
 async function query(text, params) {
   const c = getStoreClient();
   if (c) return c.query(text, params);
-  // Fallback to set search_path then run query
-  await pool.query(`SET search_path TO ${schema}`);
-  return pool.query(text, params);
+  // withClient garante que SET search_path e a query usam a mesma conexão
+  return withClient((client) => client.query(text, params));
 }
 
 // Middleware: attach request-scoped client + set app.company_id

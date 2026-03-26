@@ -1,6 +1,8 @@
 const { query } = require('../db');
 const { getChargeStatus } = require('../services/payment-gateway');
 const { notifyBillingPaid } = require('../services/payment-notifications');
+const { ensureDateOnly } = require('../utils/date-only');
+const logger = require('../utils/logger');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 const SUCCESS_STATUSES = new Set(['CONCLUIDA']);
@@ -24,8 +26,11 @@ async function fetchPending(limit) {
 
 async function updateContractMonthStatus(contractId, billingDate) {
   if (!contractId || !billingDate) return;
-  const d = new Date(billingDate);
-  if (Number.isNaN(d.getTime())) return;
+  // new Date('YYYY-MM-DD') interpreta como UTC midnight → em UTC-3/UTC-4 vira
+  // o dia anterior, marcando o mês errado como pago. ensureDateOnly() parseia
+  // a string via regex e cria Date no horário local, sem shift de timezone.
+  const d = ensureDateOnly(billingDate);
+  if (!d) return;
   const year = d.getFullYear();
   const month = d.getMonth() + 1;
   await query(
@@ -99,42 +104,67 @@ async function markLinkAsPaid(link, detail) {
   return { link: mergedLink, billing: billingResult };
 }
 
+async function handleConfirmedPayment(link, detail) {
+  const result = await markLinkAsPaid(link, detail);
+  if (!result) return;
+  const billingId = result.billing?.id || result.link?.billing_id;
+  if (!billingId) return;
+  const notification = await notifyBillingPaid({
+    billingId,
+    companyId: result.link?.company_id || link.company_id,
+    detail,
+  });
+  logger.info(
+    { billingId, companyId: result.link?.company_id, notified: Boolean(notification?.sent), source: detail?._source || 'polling' },
+    '[gateway] pagamento confirmado'
+  );
+}
+
 async function reconcileLink(link) {
   try {
     const detail = await getChargeStatus({ companyId: link.company_id, txid: link.txid });
     const status = (detail?.status || '').toUpperCase();
     if (SUCCESS_STATUSES.has(status)) {
-      const result = await markLinkAsPaid(link, detail);
-      if (result && (result.billing?.id || result.link?.billing_id)) {
-        const billingId = result.billing?.id || result.link?.billing_id;
-        const notification = await notifyBillingPaid({
-          billingId,
-          companyId: result.link?.company_id || link.company_id,
-          detail,
-        });
-        if (notification?.sent) {
-          console.log(
-            '[gateway-reconcile] pagamento confirmado -> notify billing=%s status=sent',
-            billingId
-          );
-        }
-      }
+      await handleConfirmedPayment(link, { ...detail, _source: 'polling' });
     }
   } catch (err) {
-    let rawDetail =
-      err?.response?.data ??
-      err?.data ??
-      err?.message ??
-      err;
-    if (rawDetail && typeof rawDetail !== 'string') {
-      try {
-        rawDetail = JSON.stringify(rawDetail);
-      } catch {
-        rawDetail = String(rawDetail);
-      }
-    }
-    console.error('[gateway-reconcile] company=%s txid=%s erro=%s', link.company_id, link.txid, rawDetail || 'unknown-error');
+    logger.error(
+      { err, companyId: link.company_id, txid: link.txid },
+      '[gateway-reconcile] erro ao reconciliar link'
+    );
   }
+}
+
+// Processa um pagamento PIX recebido via webhook (sem consultar EFI novamente)
+async function processWebhookPayment({ txid, valor, horario, endToEndId }) {
+  if (!txid) return { skipped: true, reason: 'no-txid' };
+
+  const r = await query(
+    `SELECT id, company_id, contract_id, billing_id, due_date, txid, status
+       FROM ${SCHEMA}.billing_gateway_links
+      WHERE txid = $1
+        AND status IN ('generated','processing')
+        AND paid_at IS NULL
+      LIMIT 1`,
+    [txid]
+  );
+  const link = r.rows[0];
+  if (!link) {
+    logger.warn({ txid }, '[webhook] txid não encontrado ou já processado');
+    return { skipped: true, reason: 'not-found-or-paid' };
+  }
+
+  const detail = {
+    txid,
+    status: 'CONCLUIDA',
+    valor,
+    horario,
+    endToEndId,
+    _source: 'webhook',
+  };
+
+  await handleConfirmedPayment(link, detail);
+  return { processed: true, txid };
 }
 
 async function runGatewayReconcile(limit = DEFAULT_BATCH) {
@@ -142,6 +172,9 @@ async function runGatewayReconcile(limit = DEFAULT_BATCH) {
   running = true;
   try {
     const pending = await fetchPending(limit);
+    if (pending.length > 0) {
+      logger.info({ count: pending.length }, '[gateway-reconcile] verificando pagamentos pendentes');
+    }
     for (const link of pending) {
       if (!link.txid) continue;
       await reconcileLink(link);
@@ -153,4 +186,5 @@ async function runGatewayReconcile(limit = DEFAULT_BATCH) {
 
 module.exports = {
   runGatewayReconcile,
+  processWebhookPayment,
 };

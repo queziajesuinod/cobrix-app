@@ -33,38 +33,50 @@ const app = require('./app');
 // 3) CRON JOBS
 const { runDueOnly, runPreOnly, runLateOnly, runRenewOnly } = require('./jobs/billing-cron');
 const { runGatewayReconcile } = require('./jobs/gateway-reconcile');
+const { runNotificationRetry } = require('./jobs/notification-retry');
+const { withCronLock } = require('./utils/cron-lock');
+const logger = require('./utils/logger');
 
 function scheduleCronJob(label, expression, job) {
   if (!expression) return;
   const options = process.env.CRON_TZ ? { timezone: process.env.CRON_TZ } : undefined;
   const tzLabel = options?.timezone ? ` tz=${options.timezone}` : '';
-  console.log(`[CRON] Agendando ${label} (${expression}${tzLabel})`);
+  logger.info({ job: label, expression, tz: options?.timezone }, `[CRON] agendando ${label} (${expression}${tzLabel})`);
+
   cron.schedule(expression, async () => {
-    console.log(`[CRON] Executando ${label} em ${new Date().toISOString()}`);
+    const start = Date.now();
+    logger.info({ job: label }, `[CRON] iniciando ${label}`);
     try {
-      await job();
+      // withCronLock garante que apenas 1 instância executa o job por vez
+      await withCronLock(label, job);
+      logger.info({ job: label, ms: Date.now() - start }, `[CRON] concluído ${label}`);
     } catch (err) {
-      console.error(`[CRON_${label}] erro:`, err);
+      logger.error({ err, job: label, ms: Date.now() - start }, `[CRON] erro em ${label}`);
     }
   }, options);
 }
 
 // D0 - Due
-scheduleCronJob('DUE', process.env.CRON_DUE, runDueOnly);
-
+scheduleCronJob('DUE',   process.env.CRON_DUE,               runDueOnly);
 // D-4 - Pre
-scheduleCronJob('PRE', process.env.CRON_PRE, runPreOnly);
-
+scheduleCronJob('PRE',   process.env.CRON_PRE,               runPreOnly);
 // D+3 - Late
-scheduleCronJob('LATE', process.env.CRON_LATE, runLateOnly);
+scheduleCronJob('LATE',  process.env.CRON_LATE,              runLateOnly);
+// Renovação de contratos recorrentes
+scheduleCronJob('RENEW', process.env.CRON_RENEW,             runRenewOnly);
+// Retry de notificações falhas (padrão: a cada 30 min)
+scheduleCronJob('RETRY', process.env.CRON_RETRY || '*/30 * * * *', runNotificationRetry);
 
-scheduleCronJob('RENEW', process.env.CRON_RENEW, runRenewOnly);
-
-const gatewayPollMs = Number(process.env.GATEWAY_POLL_MS || 20000);
+// Polling de pagamentos como fallback do webhook.
+// Com webhook ativo, este intervalo pode ser maior (padrão: 5 min).
+// Sem webhook, mantenha em 20-60s para reconciliação rápida.
+const gatewayPollMs = Number(process.env.GATEWAY_POLL_MS || 300000); // padrão 5 min
 if (!Number.isNaN(gatewayPollMs) && gatewayPollMs > 0) {
-  console.log('[gateway-reconcile] Poll ativo a cada %d ms', gatewayPollMs);
+  logger.info({ intervalMs: gatewayPollMs }, '[gateway-reconcile] poll de fallback ativo');
   setInterval(() => {
-    runGatewayReconcile().catch(err => console.error('[gateway-reconcile] erro:', err));
+    runGatewayReconcile().catch(err =>
+      logger.error({ err }, '[gateway-reconcile] erro no poll de fallback')
+    );
   }, gatewayPollMs);
 }
 
@@ -95,7 +107,11 @@ if (staticDir) {
 // 5) Start do servidor
 const PORT = process.env.PORT || 3002;
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor rodando na porta ${PORT}`);
-  console.log(`📊 Schema do banco: ${process.env.DB_SCHEMA || 'public'}`);
-  console.log(`🌍 Ambiente: ${process.env.NODE_ENV || 'production'}`);
+  logger.info({
+    port: PORT,
+    schema: process.env.DB_SCHEMA || 'public',
+    env: process.env.NODE_ENV || 'production',
+    tz: process.env.TZ,
+    webhook: process.env.EFI_WEBHOOK_SECRET ? 'configurado' : 'sem secret (inseguro)',
+  }, `Servidor rodando na porta ${PORT}`);
 });

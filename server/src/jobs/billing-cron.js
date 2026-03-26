@@ -84,87 +84,49 @@ async function upsertAutoNotification({
   companyId, billingId = null, contractId, clientId,
   targetDate, toNumber, message, type, dueDate, evoResult, providerResponse = null
 }) {
-  const sql = `
-    INSERT INTO ${SCHEMA}.billing_notifications
-      (company_id, billing_id, contract_id, client_id, kind, target_date,
-       status, provider, to_number, message, provider_status, provider_response,
-       error, created_at, sent_at, type, due_date)
-    VALUES
-      ($1,$2,$3,$4,
-       $5,$6,
-       $7,'evo',$8,$9,$10,$11,
-       $12,NOW(),$13,$5,$14)
-    ON CONFLICT DO NOTHING
-    RETURNING id
-  `;
-
   const params = [
     Number(companyId),        // $1
     billingId,                // $2
     Number(contractId),       // $3
     Number(clientId),         // $4
-    String(type),             // $5 - usado para kind e type
+    String(type),             // $5 - kind e type
     String(targetDate),       // $6
     (evoResult?.ok ? 'sent' : 'failed'), // $7
     String(toNumber || ''),   // $8
     String(message || ''),    // $9
     evoResult?.status ?? null, // $10
-    encodeProviderResponse(providerResponse ?? (evoResult?.data ?? null)),  // $11
+    encodeProviderResponse(providerResponse ?? (evoResult?.data ?? null)), // $11
     evoResult?.ok ? null : (evoResult?.error || null), // $12
     evoResult?.ok ? new Date() : null, // $13
-    String(dueDate)           // $14
+    String(dueDate),          // $14
   ];
 
+  // Upsert via o índice parcial único (company_id, contract_id, kind, due_date) WHERE due_date IS NOT NULL
+  const sql = `
+    INSERT INTO ${SCHEMA}.billing_notifications
+      (company_id, billing_id, contract_id, client_id, kind, target_date,
+       status, provider, to_number, message, provider_status, provider_response,
+       error, created_at, sent_at, type, due_date)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,'evo',$8,$9,$10,$11,$12,NOW(),$13,$5,$14)
+    ON CONFLICT (company_id, contract_id, kind, due_date)
+    WHERE due_date IS NOT NULL
+    DO UPDATE SET
+      billing_id        = EXCLUDED.billing_id,
+      client_id         = EXCLUDED.client_id,
+      status            = EXCLUDED.status,
+      to_number         = EXCLUDED.to_number,
+      message           = EXCLUDED.message,
+      provider_status   = EXCLUDED.provider_status,
+      provider_response = EXCLUDED.provider_response,
+      error             = EXCLUDED.error,
+      sent_at           = EXCLUDED.sent_at,
+      target_date       = EXCLUDED.target_date,
+      type              = EXCLUDED.type
+    RETURNING id
+  `;
+
   const r = await query(sql, params);
-  if (r.rows[0]?.id) return r.rows[0].id;
-
-  const updateSql = `
-    UPDATE ${SCHEMA}.billing_notifications
-    SET billing_id = $2,
-        client_id = $4,
-        status = $7,
-        provider = 'evo',
-        to_number = $8,
-        message = $9,
-        provider_status = $10,
-        provider_response = $11,
-        error = $12,
-        sent_at = $13,
-        type = $5,
-        due_date = $14
-    WHERE company_id = $1
-      AND contract_id = $3
-      AND target_date = $6
-      AND kind = $5
-    RETURNING id
-  `;
-  const updated = await query(updateSql, params);
-  if (updated.rows[0]?.id) return updated.rows[0].id;
-
-  const updateByDueSql = `
-    UPDATE ${SCHEMA}.billing_notifications
-    SET billing_id = $2,
-        client_id = $4,
-        status = $7,
-        provider = 'evo',
-        to_number = $8,
-        message = $9,
-        provider_status = $10,
-        provider_response = $11,
-        error = $12,
-        sent_at = $13,
-        target_date = $6,
-        kind = $5,
-        type = $5,
-        due_date = $14
-    WHERE company_id = $1
-      AND contract_id = $3
-      AND due_date = $14
-      AND type = $5
-    RETURNING id
-  `;
-  const updatedByDue = await query(updateByDueSql, params);
-  return updatedByDue.rows[0]?.id;
+  return r.rows[0]?.id;
 }
 
 async function renewRecurringContracts(now = new Date(), companyId = null) {

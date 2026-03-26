@@ -359,8 +359,46 @@ async function getChargeStatus({ companyId, txid }) {
   return client.pixDetailCharge({ txid });
 }
 
+// Limpa arquivos .p12 temporários do /tmp ao encerrar o processo.
+// Sem isso, cada restart acumula arquivos órfãos em disco.
+function cleanupTempCerts() {
+  if (cachedInlineCertPath) {
+    try { fs.unlinkSync(cachedInlineCertPath); } catch {}
+    cachedInlineCertPath = null;
+  }
+  for (const { path: p } of companyCertCache.values()) {
+    try { fs.unlinkSync(p); } catch {}
+  }
+  companyCertCache.clear();
+}
+
+// Registra handlers para os sinais de encerramento mais comuns
+for (const sig of ['exit', 'SIGINT', 'SIGTERM', 'SIGUSR2']) {
+  process.once(sig, () => {
+    cleanupTempCerts();
+    if (sig !== 'exit') process.exit(0);
+  });
+}
+
+async function registerCompanyWebhook({ companyId, webhookUrl }) {
+  const credentials = await getCompanyGatewayCredentials(companyId);
+  if (!credentials?.clientId || !credentials?.clientSecret || !credentials?.pixKey) {
+    throw new Error('Credenciais do gateway incompletas para registro de webhook');
+  }
+  if (!credentials.certBase64 && !process.env.EFI_CERT_PATH && !process.env.EFI_CERT_BASE64) {
+    throw new Error('Certificado do gateway não configurado');
+  }
+  const client = buildClient(credentials);
+  const result = await client.pixConfigWebhook(
+    { chave: credentials.pixKey },
+    { webhookUrl }
+  );
+  return result;
+}
+
 module.exports = {
   ensureGatewayPaymentLink,
   getChargeStatus,
   formatGatewayRow,
+  registerCompanyWebhook,
 };
