@@ -4,7 +4,13 @@ const { query } = require("../db");
 const { z } = require("zod");
 
 const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET || "devsecret";
+const JWT_SECRET = process.env.JWT_SECRET || (() => {
+  if (process.env.NODE_ENV === 'production') {
+    console.error('[FATAL] JWT_SECRET não está definido. Configure no .env antes de iniciar em produção.');
+    process.exit(1);
+  }
+  return 'devsecret-apenas-desenvolvimento';
+})();
 
 // Assinatura padronizada do token
 async function sign(user) {
@@ -82,7 +88,7 @@ async function requireAuth(req, res, next) {
   }
 }
 
-// Opcional: aceita token se vier, mas nao bloqueia
+// Opcional: aceita token se vier, mas não bloqueia
 async function maybeAuth(req, _res, next) {
   const auth = req.headers.authorization || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
@@ -123,7 +129,7 @@ async function maybeAuth(req, _res, next) {
 // Helper multi-tenant
 function companyScope(required = true) {
   return (req, res, next) => {
-    if (!req.user) return res.status(401).json({ error: "Nao autenticado" });
+    if (!req.user) return res.status(401).json({ error: "Não autenticado" });
 
     let companyId = null;
     if (req.user.role === "master") {
@@ -174,7 +180,7 @@ router.post("/login", async (req, res) => {
     );
 
     if (r.rows.length === 0) {
-      return res.status(401).json({ error: "Credenciais invalidas" });
+      return res.status(401).json({ error: "Credenciais inválidas" });
     }
 
     // Reconstruir o objeto user com todas as company_ids

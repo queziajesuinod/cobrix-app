@@ -45,13 +45,14 @@ async function withCronLock(name, fn) {
 
     if (!acquired) {
       logger.warn({ job: name, lockId }, '[cron-lock] job já em execução em outra instância, pulando');
-      return;
+      return false;
     }
 
     logger.debug({ job: name, lockId }, '[cron-lock] lock adquirido');
 
     try {
       await fn();
+      return true;
     } finally {
       await client.query('SELECT pg_advisory_unlock($1::bigint)', [lockId]).catch(() => {});
       logger.debug({ job: name }, '[cron-lock] lock liberado');

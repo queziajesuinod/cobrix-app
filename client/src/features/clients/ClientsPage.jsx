@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { clientsService } from './clients.service'
 import PageHeader from '@/components/PageHeader'
@@ -170,7 +170,7 @@ export default function ClientsPage() {
   }
 
   const showError = (error) => {
-    const message = error?.response?.data?.error || error?.message || 'Falha na operaÃ§Ã£o'
+    const message = error?.response?.data?.error || error?.message || 'Falha na operação'
     setErrorToast(message)
   }
 
@@ -230,7 +230,7 @@ export default function ClientsPage() {
               <TextField
                 fullWidth
                 label="Buscar clientes"
-                placeholder="Nome ou ResponsÃ¡vel"
+                placeholder="Nome ou Responsável"
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
               />
@@ -313,7 +313,6 @@ export default function ClientsPage() {
     </Stack>
   )
 }
-
 
 
 

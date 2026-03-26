@@ -13,6 +13,8 @@ const ClientsPage = lazy(() => import('@/features/clients/ClientsPage'))
 const ContractsPage = lazy(() => import('@/features/contracts/ContractsPage'))
 const ContractTypesPage = lazy(() => import('@/features/contracts/ContractTypesPage'))
 const PaidContractsPage = lazy(() => import('@/features/billings/PaidContractsPage'))
+const OverdueClientsPage = lazy(() => import('@/features/reports/OverdueClientsPage'))
+const SystemHealthPage = lazy(() => import('@/features/system/SystemHealthPage'))
 const CompanyListPage = lazy(() => import('@/features/companies/CompanyListPage'))
 const CompanyFormPage = lazy(() => import('@/features/companies/CompanyFormPage'))
 const CompanySettingsPage = lazy(() => import('@/features/companies/CompanySettingsPage'))
@@ -33,6 +35,8 @@ export default function AppRouter() {
         <Route path="/notifications/auto" element={<ProtectedRoute><AppShell><AutoNotificationsPage /></AppShell></ProtectedRoute>} />
         <Route path="/notifications/templates" element={<ProtectedRoute><AppShell><MessageTemplatesPage /></AppShell></ProtectedRoute>} />
         <Route path="/billings/paid" element={<ProtectedRoute><AppShell><PaidContractsPage /></AppShell></ProtectedRoute>} />
+        <Route path="/reports/overdue-clients" element={<ProtectedRoute><AppShell><OverdueClientsPage /></AppShell></ProtectedRoute>} />
+        <Route path="/system/health" element={<ProtectedRoute><AppShell><SystemHealthPage /></AppShell></ProtectedRoute>} />
         <Route path="/integration/evo" element={<ProtectedRoute><AppShell><EvoConnectionPage /></AppShell></ProtectedRoute>} />
 
         <Route path="*" element={<Navigate to="/dashboard" replace />} />

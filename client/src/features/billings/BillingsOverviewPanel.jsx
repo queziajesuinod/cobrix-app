@@ -27,7 +27,7 @@ function parseIsoDateOnly(value) {
   const year = Number(match[1])
   const month = Number(match[2]) - 1
   const day = Number(match[3])
-  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null
+  if (!Number.isFinite(year) || month < 0 || month > 11 || day < 1 || day > 31) return null
   return new Date(year, month, day)
 }
 
@@ -144,7 +144,9 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
       ) : items.map(it => {
         const allPaid = it.month_status === 'paid'
         const isCanceled = it.month_status === 'canceled'
-          const contractDueDate = dueDateForMonth(today.getFullYear(), today.getMonth(), it.billing_day)
+          // Usa o ano/mês selecionado (ym) — não hoje — para calcular o vencimento correto
+          // quando o usuário visualiza meses anteriores ou futuros.
+          const contractDueDate = dueDateForMonth(y, m - 1, it.billing_day)
           const fallbackForceType = getForceType(today, contractDueDate)
           const fallbackDueIso = toIsoDate(contractDueDate)
           const forceCandidate = findForceBillingCandidate(it.billings, today)
@@ -242,7 +244,6 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
                   )
                 })}
               </Stack>
-              {(() => null)()}
               <Table size="small" sx={{ mt: 1 }}>
                 <TableHead>
                   <TableRow>

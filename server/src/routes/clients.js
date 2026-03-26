@@ -106,7 +106,7 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
 router.get('/:id', requireAuth, companyScope(true), async (req, res) => {
   try {
     const r = await query(`SELECT * FROM clients WHERE id=$1 AND company_id=$2`, [req.params.id, req.companyId]);
-    if (!r.rows[0]) return res.status(404).json({ error: 'Cliente nao encontrado' });
+    if (!r.rows[0]) return res.status(404).json({ error: 'Cliente não encontrado' });
     res.json(attachDocument(r.rows[0]));
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -187,7 +187,7 @@ router.put('/:id', requireAuth, companyScope(true), async (req, res) => {
         req.companyId,
       ]
     );
-    if (!r.rows[0]) return res.status(404).json({ error: 'Cliente nao encontrado' });
+    if (!r.rows[0]) return res.status(404).json({ error: 'Cliente não encontrado' });
     res.json(attachDocument(r.rows[0]));
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -196,7 +196,7 @@ router.put('/:id', requireAuth, companyScope(true), async (req, res) => {
 
 router.patch('/:id/status', requireAuth, companyScope(true), async (req, res) => {
   const { active } = req.body || {};
-  if (typeof active !== 'boolean') return res.status(400).json({ error: 'Campo active obrigatorio' });
+  if (typeof active !== 'boolean') return res.status(400).json({ error: 'Campo active obrigatório' });
   try {
     if (active) await assertClientLimit(req.companyId);
     const r = await query('UPDATE clients SET active=$1 WHERE id=$2 AND company_id=$3 RETURNING *', [
@@ -204,7 +204,7 @@ router.patch('/:id/status', requireAuth, companyScope(true), async (req, res) =>
       req.params.id,
       req.companyId,
     ]);
-    if (!r.rows[0]) return res.status(404).json({ error: 'Cliente nao encontrado' });
+    if (!r.rows[0]) return res.status(404).json({ error: 'Cliente não encontrado' });
     res.json(attachDocument(r.rows[0]));
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
@@ -217,7 +217,7 @@ router.delete('/:id', requireAuth, companyScope(true), async (req, res) => {
       req.params.id,
       req.companyId,
     ]);
-    if (!r.rows[0]) return res.status(404).json({ error: 'Cliente nao encontrado' });
+    if (!r.rows[0]) return res.status(404).json({ error: 'Cliente não encontrado' });
     res.json({ ok: true, active: false });
   } catch (err) {
     res.status(500).json({ error: err.message });

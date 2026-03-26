@@ -1,5 +1,5 @@
 ﻿const express = require('express');
-const { query } = require('../db');
+const { query, withClient } = require('../db');
 const { requireAuth, companyScope } = require('./auth');
 const { runDaily } = require('../jobs/billing-cron');
 const { sendWhatsapp } = require('../services/messenger');
@@ -322,115 +322,116 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
     }
 
     // usa advisory lock por contrato para evitar race conditions
-    await query('SELECT pg_advisory_lock($1)', [Number(contract_id)]);
-    try {
-      // checa exist├¬ncia novamente dentro da lock
-      const exists2 = await query(`
-        SELECT 1 FROM ${SCHEMA}.billing_notifications
-        WHERE contract_id=$1 AND due_date=$2 AND type=$3 LIMIT 1
-      `, [contract_id, dueStr, typ]);
-      if (exists2.rowCount) {
-        return res.status(409).json({ error: 'Notificação já enviada para esse tipo/data' });
-      }
-
-      if (!row.client_phone) return res.status(400).json({ error: 'Contrato sem telefone do cliente' });
-
-      const mesRefDate = new Date(due.getFullYear(), due.getMonth(), 1);
-      const billingLookup = await query(`
-        SELECT id FROM ${SCHEMA}.billings
-        WHERE company_id=$1 AND contract_id=$2 AND billing_date=$3
-        LIMIT 1
-      `, [req.companyId, Number(contract_id), dueStr]);
-      let billingId = billingLookup.rows[0]?.id || null;
-      let createdBilling = false;
-      if (!billingId) {
-        const inserted = await query(`
-          INSERT INTO ${SCHEMA}.billings (company_id, contract_id, billing_date, amount, status)
-          VALUES ($1,$2,$3,$4,'pending')
-          ON CONFLICT (contract_id, billing_date)
-          DO UPDATE SET amount = EXCLUDED.amount
-          RETURNING id
-        `, [req.companyId, Number(contract_id), dueStr, amount]);
-        billingId = inserted.rows[0]?.id || billingId;
-        createdBilling = Boolean(billingId);
-      }
-      if (createdBilling) {
-        await ensureContractMonthStatusPending(contract_id, req.companyId, dueStr);
-      }
-      const map = { pre: msgPre, due: msgDue, late: msgLate };
-      const recipientName = row.client_responsavel || row.client_name;
-      const clientDocument = {
-        cpf: row.client_document_cpf || null,
-        cnpj: row.client_document_cnpj || null,
-      };
-      const gatewayPayment = gatewayReady ? await ensureGatewayPaymentLink({
-        companyId: req.companyId,
-        contractId: Number(contract_id),
-        billingId,
-        dueDate: dueStr,
-        amount,
-        contractDescription: row.description,
-        clientName: recipientName,
-        clientDocument,
-      }) : null;
-      const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
-      const copyPaste = gatewaySummary?.copyPaste || null;
-      const text = await map[typ]({
-        nome: recipientName,
-        responsavel: row.client_responsavel,
-        client_name: row.client_name,
-        tipoContrato: row.description,
-        billing_mode: row.billing_mode,
-        mesRefDate,
-        vencimentoDate: due,
-        valor: amount,
-        companyId: req.companyId,
-        gatewayPayment,
-        gatewayPaymentLink: Boolean(copyPaste),
-        payment_link: null,
-        payment_code: copyPaste,
-        payment_qrcode: null,
-        payment_expires_at_iso: gatewaySummary?.expiresAtIso || null,
-      });
-
-      // envia via EVO com config da empresa
-      const evo = await sendWhatsapp(req.companyId, { number: row.client_phone, text });
-
-      // registra completo
-      const providerResponse = {
-        messenger: evo.data ?? null,
-        messengerStatus: evo.status ?? null,
-        gateway: gatewaySummary,
-      };
-
-      await insertBillingNotification({
-        companyId: req.companyId,
-        billingId,
-        contractId: Number(contract_id),
-        clientId: Number(row.client_id),
-        kind: 'manual',
-        targetDate: isoDate(new Date()),
-        status: evo.ok ? 'sent' : 'failed',
-        provider: 'evo',
-        toNumber: row.client_phone,
-        message: text,
-        providerStatus: evo.status != null ? String(evo.status) : null,
-        providerResponse,
-        error: evo.ok ? null : (evo.error || null),
-        sentAt: evo.ok ? new Date() : null,
-        type: typ,
-        dueDate: dueStr,
-      });
-
-      res.json({ ok: true, provider: { ok: evo.ok, status: evo.status, data: evo.data } });
-    } finally {
-      // libera sempre o advisory lock
+    // withClient garante que lock e unlock ocorrem na MESMA conexão do pool
+    await withClient(async (lockClient) => {
+      await lockClient.query('SELECT pg_advisory_lock($1)', [Number(contract_id)]);
       try {
-        await query('SELECT pg_advisory_unlock($1)', [Number(contract_id)]);
-      } catch (unlockErr) {
-        console.warn('unlock failed', unlockErr);
+        // checa existência novamente dentro da lock
+        const exists2 = await query(`
+          SELECT 1 FROM ${SCHEMA}.billing_notifications
+          WHERE contract_id=$1 AND due_date=$2 AND type=$3 LIMIT 1
+        `, [contract_id, dueStr, typ]);
+        if (exists2.rowCount) {
+          return res.status(409).json({ error: 'Notificação já enviada para esse tipo/data' });
+        }
+
+        if (!row.client_phone) return res.status(400).json({ error: 'Contrato sem telefone do cliente' });
+
+        const mesRefDate = new Date(due.getFullYear(), due.getMonth(), 1);
+        const billingLookup = await query(`
+          SELECT id FROM ${SCHEMA}.billings
+          WHERE company_id=$1 AND contract_id=$2 AND billing_date=$3
+          LIMIT 1
+        `, [req.companyId, Number(contract_id), dueStr]);
+        let billingId = billingLookup.rows[0]?.id || null;
+        let createdBilling = false;
+        if (!billingId) {
+          const inserted = await query(`
+            INSERT INTO ${SCHEMA}.billings (company_id, contract_id, billing_date, amount, status)
+            VALUES ($1,$2,$3,$4,'pending')
+            ON CONFLICT (contract_id, billing_date)
+            DO UPDATE SET amount = EXCLUDED.amount
+            RETURNING id
+          `, [req.companyId, Number(contract_id), dueStr, amount]);
+          billingId = inserted.rows[0]?.id || billingId;
+          createdBilling = Boolean(billingId);
+        }
+        if (createdBilling) {
+          await ensureContractMonthStatusPending(contract_id, req.companyId, dueStr);
+        }
+        const map = { pre: msgPre, due: msgDue, late: msgLate };
+        const recipientName = row.client_responsavel || row.client_name;
+        const clientDocument = {
+          cpf: row.client_document_cpf || null,
+          cnpj: row.client_document_cnpj || null,
+        };
+        const gatewayPayment = gatewayReady ? await ensureGatewayPaymentLink({
+          companyId: req.companyId,
+          contractId: Number(contract_id),
+          billingId,
+          dueDate: dueStr,
+          amount,
+          contractDescription: row.description,
+          clientName: recipientName,
+          clientDocument,
+        }) : null;
+        const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
+        const copyPaste = gatewaySummary?.copyPaste || null;
+        const text = await map[typ]({
+          nome: recipientName,
+          responsavel: row.client_responsavel,
+          client_name: row.client_name,
+          tipoContrato: row.description,
+          billing_mode: row.billing_mode,
+          mesRefDate,
+          vencimentoDate: due,
+          valor: amount,
+          companyId: req.companyId,
+          gatewayPayment,
+          gatewayPaymentLink: Boolean(copyPaste),
+          payment_link: null,
+          payment_code: copyPaste,
+          payment_qrcode: null,
+          payment_expires_at_iso: gatewaySummary?.expiresAtIso || null,
+        });
+
+        // envia via EVO com config da empresa
+        const evo = await sendWhatsapp(req.companyId, { number: row.client_phone, text });
+
+        // registra completo
+        const providerResponse = {
+          messenger: evo.data ?? null,
+          messengerStatus: evo.status ?? null,
+          gateway: gatewaySummary,
+        };
+
+        await insertBillingNotification({
+          companyId: req.companyId,
+          billingId,
+          contractId: Number(contract_id),
+          clientId: Number(row.client_id),
+          kind: 'manual',
+          targetDate: isoDate(new Date()),
+          status: evo.ok ? 'sent' : 'failed',
+          provider: 'evo',
+          toNumber: row.client_phone,
+          message: text,
+          providerStatus: evo.status != null ? String(evo.status) : null,
+          providerResponse,
+          error: evo.ok ? null : (evo.error || null),
+          sentAt: evo.ok ? new Date() : null,
+          type: typ,
+          dueDate: dueStr,
+        });
+
+        res.json({ ok: true, provider: { ok: evo.ok, status: evo.status, data: evo.data } });
+      } finally {
+        // libera sempre o advisory lock na mesma conexão
+        await lockClient.query('SELECT pg_advisory_unlock($1)', [Number(contract_id)]).catch((unlockErr) => {
+          console.warn('[notify] advisory unlock falhou:', unlockErr.message);
+        });
       }
-    }
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

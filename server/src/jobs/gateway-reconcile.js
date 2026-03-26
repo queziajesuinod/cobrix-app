@@ -137,7 +137,15 @@ async function reconcileLink(link) {
 
 // Processa um pagamento PIX recebido via webhook (sem consultar EFI novamente)
 async function processWebhookPayment({ txid, valor, horario, endToEndId }) {
-  if (!txid) return { skipped: true, reason: 'no-txid' };
+  // Valida campos obrigatórios e tipos básicos para evitar dados corrompidos no banco
+  if (!txid || typeof txid !== 'string' || txid.trim().length === 0 || txid.length > 200) {
+    logger.warn({ txid }, '[webhook] txid inválido ou ausente');
+    return { skipped: true, reason: 'invalid-txid' };
+  }
+  if (valor !== undefined && valor !== null && (typeof valor !== 'string' || !/^\d+(\.\d{1,2})?$/.test(valor))) {
+    logger.warn({ txid, valor }, '[webhook] campo valor com formato inválido — ignorado');
+    valor = null;
+  }
 
   const r = await query(
     `SELECT id, company_id, contract_id, billing_id, due_date, txid, status

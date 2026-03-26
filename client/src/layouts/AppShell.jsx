@@ -24,6 +24,8 @@ import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings'
 import ExpandLess from '@mui/icons-material/ExpandLess'
 import ExpandMore from '@mui/icons-material/ExpandMore'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
+import WarningAmberIcon from '@mui/icons-material/WarningAmber'
+import MonitorHeartIcon from '@mui/icons-material/MonitorHeart'
 
 const drawerWidth = 264
 
@@ -44,6 +46,7 @@ const navItems = (role, companyId) => [
       { to: '/notifications/auto', label: 'Automático', icon: <AutorenewIcon /> },
       { to: '/notifications/templates', label: 'Modelos', icon: <EditNoteIcon /> },
       { to: '/billings/paid', label: 'Contratos pagos', icon: <CheckCircleIcon /> },
+      { to: '/reports/overdue-clients', label: 'Clientes em atraso', icon: <WarningAmberIcon /> },
     ],
   },
 
@@ -57,6 +60,7 @@ const navItems = (role, companyId) => [
           children: [
     
             { to: '/companies', label: 'Empresas', icon: <BusinessIcon /> },
+            { to: '/system/health', label: 'Saúde do sistema', icon: <MonitorHeartIcon /> },
           ],
         },
       ]
@@ -80,8 +84,8 @@ export default function AppShell({ children }) {
     const path = location.pathname
     setOpenGroups(prev => ({
       ...prev,
-      notifications: prev.notifications ?? path.startsWith('/notifications'),
-      admin: prev.admin ?? path.startsWith('/companies'),
+      notifications: prev.notifications ?? (path.startsWith('/notifications') || path.startsWith('/billings') || path.startsWith('/reports')),
+      admin: prev.admin ?? (path.startsWith('/companies') || path.startsWith('/system')),
     }))
   }, [location.pathname])
 

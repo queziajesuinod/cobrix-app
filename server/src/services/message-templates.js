@@ -141,7 +141,7 @@ DEFAULT_TEMPLATES.late_custom_gateway = DEFAULT_TEMPLATES.late_gateway;
 
 const PLACEHOLDERS = [
   { key: 'client_name', label: 'Nome do destinatário', example: 'Maria Souza' },
-  { key: 'client_responsible', label: 'Responsável pelo cliente', example: 'JoÃ£o Pereira' },
+  { key: 'client_responsible', label: 'Responsável pelo cliente', example: 'João Pereira' },
   { key: 'client_legal_name', label: 'Nome oficial do cliente', example: 'Empresa XPTO Ltda' },
   { key: 'contract_type', label: 'Descrição do contrato', example: 'Consultoria Contábil' },
   { key: 'reference_month', label: 'Mês de referência (extenso)', example: 'setembro' },
@@ -419,7 +419,7 @@ async function getTemplatesForCompany(companyId) {
 }
 
 async function upsertTemplate(companyId, type, template) {
-  if (!companyId) throw new Error('companyId obrigatÃ³rio');
+  if (!companyId) throw new Error('companyId obrigatório');
   const clean = String(template ?? '').trim();
   await query(
     `INSERT INTO ${SCHEMA}.message_templates (company_id, type, template)

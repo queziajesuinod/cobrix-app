@@ -53,6 +53,8 @@ app.use('/api/billings', require('./routes/billings'))
 app.use('/api/message-templates', require('./routes/message-templates'))
 app.use('/api/contract-types', require('./routes/contract-types'))
 app.use('/api/dashboard', require('./routes/dashboard'))
+app.use('/api/reports', require('./routes/reports'))
+app.use('/api/system', require('./routes/system-health'))
 
 // novas rotas (fixpack v7)
 app.use('/api/companies', require('./routes/companies'))

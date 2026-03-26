@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
 import { messageTemplatesService } from './messageTemplates.service'
@@ -27,15 +27,15 @@ const TEMPLATE_TYPES = [
   { key: 'due_gateway', title: 'Dia do vencimento (com gateway)', description: 'Mensagem com link Pix enviada no D0.' },
   { key: 'late', title: 'Em atraso (sem gateway)', description: 'Cobrança enviada quatro dias após o vencimento.' },
   { key: 'late_gateway', title: 'Em atraso (com gateway)', description: 'Cobrança com link Pix para empresas integradas ao gateway.' },
-  { key: 'due_weekly', title: 'Semanal - dia do vencimento (sem gateway)', description: 'Mensagem enviada no dia do vencimento para cobrancas semanais.' },
+  { key: 'due_weekly', title: 'Semanal - dia do vencimento (sem gateway)', description: 'Mensagem enviada no dia do vencimento para cobranças semanais.' },
   { key: 'due_weekly_gateway', title: 'Semanal - dia do vencimento (com gateway)', description: 'Mensagem enviada no dia do vencimento com link Pix.' },
-  { key: 'late_weekly', title: 'Semanal - em atraso (sem gateway)', description: 'Cobranca enviada dois dias apos o vencimento.' },
-  { key: 'late_weekly_gateway', title: 'Semanal - em atraso (com gateway)', description: 'Cobranca enviada dois dias apos o vencimento com link Pix.' },
+  { key: 'late_weekly', title: 'Semanal - em atraso (sem gateway)', description: 'Cobrança enviada dois dias após o vencimento.' },
+  { key: 'late_weekly_gateway', title: 'Semanal - em atraso (com gateway)', description: 'Cobrança enviada dois dias após o vencimento com link Pix.' },
   { key: 'due_custom', title: 'Data personalizada - dia do vencimento (sem gateway)', description: 'Mensagem enviada no dia da data personalizada.' },
   { key: 'due_custom_gateway', title: 'Data personalizada - dia do vencimento (com gateway)', description: 'Mensagem enviada no dia da data personalizada com link Pix.' },
-  { key: 'late_custom', title: 'Data personalizada - em atraso (sem gateway)', description: 'Cobranca enviada quatro dias apos o vencimento.' },
-  { key: 'late_custom_gateway', title: 'Data personalizada - em atraso (com gateway)', description: 'Cobranca enviada quatro dias apos o vencimento com link Pix.' },
-  { key: 'paid', title: 'Pagamento confirmado', description: 'Mensagem enviada quando o pagamento e confirmado.' },
+  { key: 'late_custom', title: 'Data personalizada - em atraso (sem gateway)', description: 'Cobrança enviada quatro dias após o vencimento.' },
+  { key: 'late_custom_gateway', title: 'Data personalizada - em atraso (com gateway)', description: 'Cobrança enviada quatro dias após o vencimento com link Pix.' },
+  { key: 'paid', title: 'Pagamento confirmado', description: 'Mensagem enviada quando o pagamento é confirmado.' },
 ];
 
 const TEMPLATE_KEYS = TEMPLATE_TYPES.map((item) => item.key);

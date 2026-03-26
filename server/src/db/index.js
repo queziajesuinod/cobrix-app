@@ -202,6 +202,23 @@ async function initDb() {
         ON ${schema}.billing_notifications (status, retry_count, created_at)
         WHERE status = 'failed';
     `);
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.system_cron_runs (
+        job_name TEXT PRIMARY KEY,
+        schedule_expression TEXT,
+        last_started_at TIMESTAMPTZ,
+        last_finished_at TIMESTAMPTZ,
+        last_status TEXT NOT NULL DEFAULT 'never',
+        last_error TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    await c.query(`ALTER TABLE ${schema}.system_cron_runs ADD COLUMN IF NOT EXISTS schedule_expression TEXT;`);
+    await c.query(`ALTER TABLE ${schema}.system_cron_runs ADD COLUMN IF NOT EXISTS last_started_at TIMESTAMPTZ;`);
+    await c.query(`ALTER TABLE ${schema}.system_cron_runs ADD COLUMN IF NOT EXISTS last_finished_at TIMESTAMPTZ;`);
+    await c.query(`ALTER TABLE ${schema}.system_cron_runs ADD COLUMN IF NOT EXISTS last_status TEXT NOT NULL DEFAULT 'never';`);
+    await c.query(`ALTER TABLE ${schema}.system_cron_runs ADD COLUMN IF NOT EXISTS last_error TEXT;`);
+    await c.query(`ALTER TABLE ${schema}.system_cron_runs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();`);
   });
 }
 

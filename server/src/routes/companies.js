@@ -73,7 +73,7 @@ function parseLimitField(value, label) {
   if (str === '') return null;
   const parsed = Number(str);
   if (!Number.isInteger(parsed) || parsed < 0) {
-    const err = new Error(`Limite de ${label} invalido`);
+    const err = new Error(`Limite de ${label} inválido`);
     err.status = 400;
     throw err;
   }
@@ -99,10 +99,10 @@ router.get("/", requireAuth, async (req, res) => {
 // GET by id
 router.get("/:id", requireAuth, async (req, res) => {
   const id = Number(req.params.id);
-  if (!canReadCompany(req.user, req.companyId, id)) return res.status(403).json({ error: "Sem permiss�o" });
+  if (!canReadCompany(req.user, req.companyId, id)) return res.status(403).json({ error: "Sem permissão" });
   const r = await query("SELECT id, name, pix_key, evo_api_url, evo_api_key, evo_instance, clients_limit, contracts_limit, created_at, efi_client_id_enc, efi_client_secret_enc, efi_cert_base64_enc FROM companies WHERE id=$1", [id]);
   const row = r.rows[0];
-  if (!row) return res.status(404).json({ error: "Empresa n�o encontrada" });
+  if (!row) return res.status(404).json({ error: "Empresa não encontrada" });
   res.json(mapGatewayResponse(row));
 });
 
@@ -110,12 +110,12 @@ router.get("/:id", requireAuth, async (req, res) => {
 router.post("/", requireAuth, async (req, res) => {
   if (!isMaster(req.user)) return res.status(403).json({ error: "Apenas master cria empresa" });
   const { name, pix_key, clients_limit, contracts_limit, gateway_client_id, gateway_client_secret, gateway_cert_base64 } = req.body || {};
-  if (!name || String(name).trim().length < 2) return res.status(400).json({ error: "Nome obrigat??rio" });
+  if (!name || String(name).trim().length < 2) return res.status(400).json({ error: "Nome obrigatório" });
   if (!process.env.EVO_API_URL || !process.env.EVO_API_KEY) {
-    return res.status(500).json({ error: "Configura??uo EVO_API_URL/EVO_API_KEY ausente" });
+    return res.status(500).json({ error: "Configuração EVO_API_URL/EVO_API_KEY ausente" });
   }
   if (!MASTER_EMAIL || !MASTER_PASSWORD) {
-    return res.status(500).json({ error: "MASTER_EMAIL/MASTER_PASSWORD nuo configurados" });
+    return res.status(500).json({ error: "MASTER_EMAIL/MASTER_PASSWORD não configurados" });
   }
   let normalizedClientLimit;
   let normalizedContractLimit;
@@ -200,7 +200,7 @@ router.put("/:id", requireAuth, async (req, res) => {
   if (!canWriteCompany(req.user, req.companyId, id)) return res.status(403).json({ error: "Sem permissão" });
   const payload = req.body || {};
   const { name, pix_key, clients_limit, contracts_limit } = payload;
-  if (!name || String(name).trim().length < 2) return res.status(400).json({ error: "Nome obrigat??rio" });
+  if (!name || String(name).trim().length < 2) return res.status(400).json({ error: "Nome obrigatório" });
   let normalizedClientLimit;
   let normalizedContractLimit;
   try {
@@ -217,7 +217,7 @@ router.put("/:id", requireAuth, async (req, res) => {
   try {
     const current = await query("SELECT id, name, evo_instance, efi_client_id_enc, efi_client_secret_enc, efi_cert_base64_enc FROM companies WHERE id=$1", [id]);
     const currentRow = current.rows[0];
-    if (!currentRow) return res.status(404).json({ error: "Empresa nuo encontrada" });
+    if (!currentRow) return res.status(404).json({ error: "Empresa não encontrada" });
 
     let gatewayColumns;
     try {
@@ -240,7 +240,7 @@ router.put("/:id", requireAuth, async (req, res) => {
 
     if (!instanceName) {
       if (!process.env.EVO_API_URL || !process.env.EVO_API_KEY) {
-        return res.status(500).json({ error: "Configura??uo EVO_API_URL/EVO_API_KEY ausente" });
+        return res.status(500).json({ error: "Configuração EVO_API_URL/EVO_API_KEY ausente" });
       }
       instanceName = formatInstanceName(String(name).trim(), id);
       const created = await createInstance(instanceName);
@@ -297,6 +297,7 @@ router.delete("/:id", requireAuth, async (req, res) => {
 });
 
 module.exports = router;
+
 
 
 

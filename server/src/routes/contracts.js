@@ -137,9 +137,11 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
 
     // ym=YYYY-MM (se não vier, usa mês atual)
     const ym = String(req.query.ym || '').trim();
-  const baseDate = ym && /^\d{4}-\d{2}$/.test(ym) ? new Date(`${ym}-01`) : new Date();
-  const year = baseDate.getFullYear();
-  const month = baseDate.getMonth() + 1;
+  // Extrai year/month diretamente da string para evitar UTC shift:
+  // new Date('2024-01-01') cria UTC midnight → em UTC-3/UTC-4 vira 2023-12-31 local.
+  const now = new Date();
+  const year  = ym && /^\d{4}-\d{2}$/.test(ym) ? Number(ym.split('-')[0]) : now.getFullYear();
+  const month = ym && /^\d{4}-\d{2}$/.test(ym) ? Number(ym.split('-')[1]) : now.getMonth() + 1;
   const clientIdRaw = req.query.clientId;
   const clientId = clientIdRaw != null && clientIdRaw !== '' ? Number(clientIdRaw) : null;
   const contractTypeRaw = req.query.contractTypeId;
@@ -424,11 +426,11 @@ router.put('/:id/custom-billings', requireAuth, companyScope(true), async (req, 
 
 router.patch('/:id/status', requireAuth, companyScope(true), async (req, res) => {
   const { active } = req.body || {};
-  if (typeof active !== 'boolean') return res.status(400).json({ error: 'Campo active obrigatorio' });
+  if (typeof active !== 'boolean') return res.status(400).json({ error: 'Campo active obrigatório' });
   try {
     if (active) await assertContractLimit(req.companyId);
     const r = await query('UPDATE contracts SET active=$1 WHERE id=$2 AND company_id=$3 RETURNING *', [active, req.params.id, req.companyId]);
-    if (!r.rows[0]) return res.status(404).json({ error: 'Contrato nao encontrado' });
+    if (!r.rows[0]) return res.status(404).json({ error: 'Contrato não encontrado' });
     res.json(r.rows[0]);
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
@@ -438,7 +440,7 @@ router.patch('/:id/status', requireAuth, companyScope(true), async (req, res) =>
 router.delete('/:id', requireAuth, companyScope(true), async (req, res) => {
   try {
     const r = await query('UPDATE contracts SET active=false WHERE id=$1 AND company_id=$2 RETURNING *', [req.params.id, req.companyId]);
-    if (!r.rows[0]) return res.status(404).json({ error: 'Contrato nao encontrado' });
+    if (!r.rows[0]) return res.status(404).json({ error: 'Contrato não encontrado' });
     res.json({ ok: true, active: false });
   } catch (err) {
     res.status(500).json({ error: err.message });

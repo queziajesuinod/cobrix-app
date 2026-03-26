@@ -84,9 +84,20 @@ async function runNotificationRetry() {
         evo = { ok: false, error: err.message };
       }
 
-      await markRetried(n.id, Number(n.retry_count), evo).catch((err) =>
-        console.error(`[RETRY] Falha ao salvar retry #${n.id}:`, err.message)
-      );
+      try {
+        await markRetried(n.id, Number(n.retry_count), evo);
+      } catch (err) {
+        console.error(`[RETRY] Falha ao salvar retry #${n.id}:`, err.message);
+        // Garante que retry_count é incrementado mesmo se o update completo falhar,
+        // evitando que a mesma notificação entre em loop infinito de retries.
+        await query(
+          `UPDATE ${SCHEMA}.billing_notifications
+              SET retry_count    = retry_count + 1,
+                  next_retry_at  = NOW() + INTERVAL '60 minutes'
+            WHERE id = $1`,
+          [n.id]
+        ).catch(() => {});
+      }
 
       console.log(
         `[RETRY] #${n.id} type=${n.type || n.kind} due=${n.due_date} retry=${Number(n.retry_count) + 1}/${MAX_RETRIES} -> ${evo.ok ? 'sent' : `failed(${evo.error || evo.status})`}`
