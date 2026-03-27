@@ -213,7 +213,12 @@ function overdueCte(whereSql) {
       FROM ${SCHEMA}.billings b
       JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
       JOIN ${SCHEMA}.clients cl ON cl.id = c.client_id
+      LEFT JOIN ${SCHEMA}.contract_month_status cms
+        ON cms.contract_id = b.contract_id
+        AND cms.year = EXTRACT(YEAR FROM b.billing_date)::int
+        AND cms.month = EXTRACT(MONTH FROM b.billing_date)::int
       WHERE ${whereSql}
+        AND LOWER(COALESCE(cms.status, 'pending')) NOT IN ('paid', 'canceled')
     )
   `;
 }

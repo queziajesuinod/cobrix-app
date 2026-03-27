@@ -764,10 +764,10 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
   }
 });
 
-// Lista contratos marcados como PAGO em um m├¬s
+// Lista contratos marcados como PAGO em um mês
 router.get('/paid', requireAuth, companyScope(true), async (req, res) => {
   const ym = String(req.query.ym || '').trim();
-  if (!/^\d{4}-\d{2}$/.test(ym)) return res.status(400).json({ error: 'Par├ómetro ym (YYYY-MM) obrigatório' });
+  if (!/^\d{4}-\d{2}$/.test(ym)) return res.status(400).json({ error: 'Parâmetro ym (YYYY-MM) obrigatório' });
   const [year, month] = ym.split('-').map(Number);
   const clientIdRaw = req.query.clientId;
   const contractIdRaw = req.query.contractId;
