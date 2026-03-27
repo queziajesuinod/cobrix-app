@@ -134,6 +134,7 @@ function buildOverdueWhere({ companyId, todayIso, filters, clientId = null, bill
     'c.company_id = $1',
     "LOWER(COALESCE(b.status, 'pending')) = 'pending'",
     'b.billing_date < $2::date',
+    '($2::date - b.billing_date) > 30',
   ];
 
   if (clientId != null) {
