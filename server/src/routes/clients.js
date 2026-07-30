@@ -2,6 +2,7 @@ const express = require('express');
 const { query } = require('../db');
 const { z } = require('zod');
 const { requireAuth, companyScope } = require('./auth');
+const { requirePermission, getEffectivePermissions } = require('../services/permissions');
 const { assertClientLimit } = require('../utils/company-limits');
 const { createNotification } = require('../services/notifications');
 const { respondError } = require('../utils/http-error');
@@ -99,6 +100,9 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
       params
     );
     const data = rows.rows.map(attachDocument);
+    // Redige telefone para quem não tem permissão de vê-lo.
+    const perms = await getEffectivePermissions(req.user);
+    if (!perms.includes('data.viewPhone')) data.forEach((c) => { c.phone = null; });
     res.json({ page, pageSize, total: count.rows[0].total, data });
   } catch (err) {
     respondError(res, err);
@@ -115,7 +119,7 @@ router.get('/:id', requireAuth, companyScope(true), async (req, res) => {
   }
 });
 
-router.post('/', requireAuth, companyScope(true), async (req, res) => {
+router.post('/', requireAuth, companyScope(true), requirePermission('clients.create'), async (req, res) => {
   const parse = clientSchema.safeParse(req.body);
   if (!parse.success) return res.status(400).json({ error: parse.error.flatten() });
   const { name, email, phone, responsavel, document } = parse.data;
@@ -169,7 +173,7 @@ router.post('/', requireAuth, companyScope(true), async (req, res) => {
   }
 });
 
-router.put('/:id', requireAuth, companyScope(true), async (req, res) => {
+router.put('/:id', requireAuth, companyScope(true), requirePermission('clients.edit'), async (req, res) => {
   const parse = clientSchema.safeParse(req.body);
   if (!parse.success) return res.status(400).json({ error: parse.error.flatten() });
   const { name, email, phone, responsavel, document } = parse.data;
@@ -212,7 +216,7 @@ router.put('/:id', requireAuth, companyScope(true), async (req, res) => {
   }
 });
 
-router.patch('/:id/status', requireAuth, companyScope(true), async (req, res) => {
+router.patch('/:id/status', requireAuth, companyScope(true), requirePermission('clients.toggle'), async (req, res) => {
   const { active } = req.body || {};
   if (typeof active !== 'boolean') return res.status(400).json({ error: 'Campo active obrigatório' });
   try {
@@ -229,7 +233,7 @@ router.patch('/:id/status', requireAuth, companyScope(true), async (req, res) =>
   }
 });
 
-router.delete('/:id', requireAuth, companyScope(true), async (req, res) => {
+router.delete('/:id', requireAuth, companyScope(true), requirePermission('clients.toggle'), async (req, res) => {
   try {
     const r = await query('UPDATE clients SET active=false WHERE id=$1 AND company_id=$2 RETURNING *', [
       req.params.id,

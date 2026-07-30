@@ -2,6 +2,7 @@ const express = require('express');
 const { query, withClient } = require('../db');
 const { z } = require('zod');
 const { requireAuth, companyScope } = require('./auth');
+const { requirePermission, getEffectivePermissions } = require('../services/permissions');
 const { assertContractLimit } = require('../utils/company-limits');
 const { respondError } = require('../utils/http-error');
 
@@ -246,11 +247,17 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
     `;
     const rows = await query(listSql, listParams);
 
+    // Redige o valor para quem não tem permissão de vê-lo.
+    const perms = await getEffectivePermissions(req.user);
+    const data = perms.includes('data.viewValues')
+      ? rows.rows
+      : rows.rows.map((r) => ({ ...r, value: null }));
+
     res.json({
       page,
       pageSize,
       total: count.rows[0].total,
-      data: rows.rows
+      data,
     });
   } catch (err) {
     respondError(res, err);
@@ -272,7 +279,7 @@ router.get('/:id', requireAuth, companyScope(true), async (req, res) => {
   }
 });
 
-router.post('/', requireAuth, companyScope(true), async (req, res) => {
+router.post('/', requireAuth, companyScope(true), requirePermission('contracts.create'), async (req, res) => {
   const parse = contractSchema.safeParse({
     ...req.body,
     client_id: Number(req.body.client_id),
@@ -314,7 +321,7 @@ router.post('/', requireAuth, companyScope(true), async (req, res) => {
   }
 });
 
-router.put('/:id', requireAuth, companyScope(true), async (req, res) => {
+router.put('/:id', requireAuth, companyScope(true), requirePermission('contracts.edit'), async (req, res) => {
   const parse = contractSchema.safeParse({
     ...req.body,
     client_id: Number(req.body.client_id),
@@ -379,7 +386,7 @@ router.get('/:id/custom-billings', requireAuth, companyScope(true), async (req, 
 });
 
 // Substitui o cronograma de parcelas customizadas de um contrato (modo custom_dates)
-router.put('/:id/custom-billings', requireAuth, companyScope(true), async (req, res) => {
+router.put('/:id/custom-billings', requireAuth, companyScope(true), requirePermission('contracts.edit'), async (req, res) => {
   const itemsRaw = Array.isArray(req.body?.items) ? req.body.items : (Array.isArray(req.body?.billings) ? req.body.billings : req.body);
   const parsed = z.array(customBillingItemSchema).safeParse(itemsRaw || []);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
@@ -441,7 +448,7 @@ router.put('/:id/custom-billings', requireAuth, companyScope(true), async (req, 
   }
 });
 
-router.patch('/:id/status', requireAuth, companyScope(true), async (req, res) => {
+router.patch('/:id/status', requireAuth, companyScope(true), requirePermission('contracts.toggle'), async (req, res) => {
   const { active } = req.body || {};
   if (typeof active !== 'boolean') return res.status(400).json({ error: 'Campo active obrigatório' });
   try {
@@ -454,7 +461,7 @@ router.patch('/:id/status', requireAuth, companyScope(true), async (req, res) =>
   }
 });
 
-router.delete('/:id', requireAuth, companyScope(true), async (req, res) => {
+router.delete('/:id', requireAuth, companyScope(true), requirePermission('contracts.toggle'), async (req, res) => {
   try {
     const r = await query('UPDATE contracts SET active=false WHERE id=$1 AND company_id=$2 RETURNING *', [req.params.id, req.companyId]);
     if (!r.rows[0]) return res.status(404).json({ error: 'Contrato não encontrado' });

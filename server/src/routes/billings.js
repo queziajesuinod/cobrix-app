@@ -11,6 +11,7 @@ const { ensureDateOnly, formatISODate } = require('../utils/date-only');
 const { normalizeBillingIntervalMonths, isBillingMonthFor } = require('../jobs/billing-cron');
 const { withCronLock } = require('../utils/cron-lock');
 const { respondError } = require('../utils/http-error');
+const { requirePermission, getEffectivePermissions } = require('../services/permissions');
 
 const router = express.Router();
 const SCHEMA = process.env.DB_SCHEMA || 'public';
@@ -268,7 +269,7 @@ router.get('/kpis', requireAuth, companyScope(true), async (req, res) => {
 });
 
 // Notifica├º├úo MANUAL (pre/due/late)
-router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
+router.post('/notify', requireAuth, companyScope(true), requirePermission('billings.notify'), async (req, res) => {
   try {
     const { contract_id, date, type } = req.body || {};
     const typ = String(type || '').toLowerCase();
@@ -453,7 +454,7 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
 });
 
 // Atualiza status da cobrança
-router.put('/:id/status', requireAuth, companyScope(true), async (req, res) => {
+router.put('/:id/status', requireAuth, companyScope(true), requirePermission('billings.markPaid'), async (req, res) => {
   const status = String(req.body?.status || '').toLowerCase();
   if (!validStatus(status)) return res.status(400).json({ error: 'status inválido' });
   const billingId = Number(req.params.id);
@@ -781,6 +782,13 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
       if (dayA !== dayB) return dayA - dayB;
       return (a.contract_id || 0) - (b.contract_id || 0);
     });
+    // Redige os valores das cobranças para quem não tem permissão de vê-los.
+    const perms = await getEffectivePermissions(req.user);
+    if (!perms.includes('data.viewValues')) {
+      for (const item of result) {
+        if (Array.isArray(item.billings)) item.billings = item.billings.map((b) => ({ ...b, amount: null }));
+      }
+    }
     res.json(result);
   } catch (e) {
     respondError(res, e);
@@ -862,7 +870,7 @@ router.get('/paid', requireAuth, companyScope(true), async (req, res) => {
 });
 
 // Rodar pipeline (manual)
-  router.post('/check/run', requireAuth, companyScope(true), async (req, res) => {
+  router.post('/check/run', requireAuth, companyScope(true), requirePermission('billings.notify'), async (req, res) => {
     try {
       let {
         date,

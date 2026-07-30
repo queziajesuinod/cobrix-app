@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Alert, Box, Button, Dialog, DialogTitle, DialogContent, DialogActions,
   TextField, Table, TableHead, TableRow, TableCell, TableBody,
-  Stack, Switch, FormControlLabel, IconButton
+  Stack, Switch, FormControlLabel, IconButton, Typography
 } from '@mui/material'
 import EditIcon from '@mui/icons-material/Edit'
 import DeleteIcon from '@mui/icons-material/Delete'
@@ -18,6 +18,7 @@ import { contractTypesService } from '@/features/contracts/contractTypes.service
 import { useForm } from 'react-hook-form'
 import { useAuth } from '@/features/auth/AuthContext'
 import { useConfirm } from '@/components/ConfirmDialog'
+import { usePermissions } from '@/features/permissions/PermissionsContext'
 
 function TypeDialog({ open, onClose, onSubmit, defaultValues }) {
   const { register, handleSubmit, reset, watch } = useForm({
@@ -60,6 +61,8 @@ export default function ContractTypesPage() {
   const { selectedCompanyId } = useAuth()
   const enabled = Number.isInteger(selectedCompanyId)
   const confirm = useConfirm()
+  const { can } = usePermissions()
+  const canManage = can('contractTypes.manage')
   const qc = useQueryClient()
   const list = useQuery({
     queryKey: ['contract_types', selectedCompanyId],
@@ -114,7 +117,7 @@ export default function ContractTypesPage() {
 
   return (
     <Stack spacing={2}>
-      <PageHeader title="Tipos de contrato" actions={<Button startIcon={<AddIcon />} variant="contained" onClick={() => { setEditing(null); setDialogOpen(true) }} disabled={!enabled}>Novo tipo</Button>} />
+      <PageHeader title="Tipos de contrato" actions={canManage ? <Button startIcon={<AddIcon />} variant="contained" onClick={() => { setEditing(null); setDialogOpen(true) }} disabled={!enabled}>Novo tipo</Button> : null} />
       {!enabled && (
         <Alert severity="info">Selecione uma empresa para gerenciar os tipos de contrato.</Alert>
       )}
@@ -156,8 +159,14 @@ export default function ContractTypesPage() {
                     <TableCell>{row.is_recurring ? 'Sim' : 'Não'}</TableCell>
                     <TableCell>{Number(row.adjustment_percent || 0).toFixed(2)}</TableCell>
                     <TableCell align="right">
-                      <IconButton size="small" onClick={() => { setEditing(row); setDialogOpen(true) }}><EditIcon fontSize="inherit" /></IconButton>
-                      <IconButton size="small" color="error" onClick={() => handleDelete(row)}><DeleteIcon fontSize="inherit" /></IconButton>
+                      {canManage ? (
+                        <>
+                          <IconButton size="small" onClick={() => { setEditing(row); setDialogOpen(true) }}><EditIcon fontSize="inherit" /></IconButton>
+                          <IconButton size="small" color="error" onClick={() => handleDelete(row)}><DeleteIcon fontSize="inherit" /></IconButton>
+                        </>
+                      ) : (
+                        <Typography variant="caption" color="text.secondary">—</Typography>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))

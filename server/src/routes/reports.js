@@ -4,6 +4,13 @@ const { requireAuth, companyScope } = require('./auth');
 const { ensureDateOnly, formatISODate } = require('../utils/date-only');
 const { sendWhatsapp } = require('../services/messenger');
 const { computeRiskScore } = require('../services/risk');
+const { requirePermission, getEffectivePermissions } = require('../services/permissions');
+
+// Redige (mascara) campos sensíveis conforme as permissões do usuário.
+async function sensitiveFlags(user) {
+  const perms = await getEffectivePermissions(user);
+  return { values: perms.includes('data.viewValues'), phone: perms.includes('data.viewPhone') };
+}
 
 const router = express.Router();
 const SCHEMA = process.env.DB_SCHEMA || 'public';
@@ -385,6 +392,11 @@ router.get('/overdue-clients', requireAuth, companyScope(true), async (req, res)
     const page = Math.max(Number(req.query.page) || 1, 1);
     const pageSize = Math.min(Math.max(Number(req.query.pageSize) || 20, 1), 500);
 
+    // Sem permissão de ver valores, o usuário também não pode FILTRAR por valor
+    // (isso permitiria inferir os montantes). Ignora os filtros de valor.
+    const s = await sensitiveFlags(req.user);
+    if (!s.values) { filters.minAmount = null; filters.maxAmount = null; }
+
     const data = await listOverdueBillings({
       companyId,
       filters,
@@ -393,13 +405,22 @@ router.get('/overdue-clients', requireAuth, companyScope(true), async (req, res)
       pageSize,
     });
 
+    if (!s.values || !s.phone) {
+      data.data = data.data.map((r) => ({
+        ...r,
+        amount: s.values ? r.amount : null,
+        client_phone: s.phone ? r.client_phone : null,
+      }));
+      if (!s.values && data.summary) data.summary.totalOverdueAmount = null;
+    }
+
     res.json(data);
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
   }
 });
 
-router.post('/overdue-clients/client/:clientId/notify', requireAuth, companyScope(true), async (req, res) => {
+router.post('/overdue-clients/client/:clientId/notify', requireAuth, companyScope(true), requirePermission('billings.notify'), async (req, res) => {
   try {
     const companyId = req.companyId;
     if (!companyId) return res.status(400).json({ error: 'Selecione uma empresa' });
@@ -457,7 +478,7 @@ router.post('/overdue-clients/client/:clientId/notify', requireAuth, companyScop
   }
 });
 
-router.post('/overdue-clients/client/:clientId/mark-paid', requireAuth, companyScope(true), async (req, res) => {
+router.post('/overdue-clients/client/:clientId/mark-paid', requireAuth, companyScope(true), requirePermission('billings.markPaid'), async (req, res) => {
   try {
     const companyId = req.companyId;
     if (!companyId) return res.status(400).json({ error: 'Selecione uma empresa' });
@@ -493,7 +514,7 @@ router.post('/overdue-clients/client/:clientId/mark-paid', requireAuth, companyS
   }
 });
 
-router.post('/overdue-clients/billing/:billingId/mark-paid', requireAuth, companyScope(true), async (req, res) => {
+router.post('/overdue-clients/billing/:billingId/mark-paid', requireAuth, companyScope(true), requirePermission('billings.markPaid'), async (req, res) => {
   try {
     const companyId = req.companyId;
     if (!companyId) return res.status(400).json({ error: 'Selecione uma empresa' });
@@ -625,7 +646,18 @@ router.get('/risk', requireAuth, companyScope(true), async (req, res) => {
       totalOpenOverdueAmount: data.reduce((s, d) => s + Number(d.open_overdue_amount || 0), 0),
     };
 
-    res.json({ generatedAt: todayIso, summary, data });
+    // Redige valores/telefones para quem não tem permissão de vê-los.
+    const flags = await sensitiveFlags(req.user);
+    const outData = (!flags.values || !flags.phone)
+      ? data.map((d) => ({
+          ...d,
+          client_phone: flags.phone ? d.client_phone : null,
+          open_overdue_amount: flags.values ? d.open_overdue_amount : null,
+        }))
+      : data;
+    if (!flags.values) summary.totalOpenOverdueAmount = null;
+
+    res.json({ generatedAt: todayIso, summary, data: outData });
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
   }

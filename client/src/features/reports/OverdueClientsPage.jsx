@@ -1,6 +1,8 @@
 import React, { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useConfirm } from '@/components/ConfirmDialog';
+import { usePermissions } from '@/features/permissions/PermissionsContext';
+import { useSensitive } from '@/features/permissions/useSensitive';
 import {
   Accordion,
   AccordionSummary,
@@ -99,6 +101,10 @@ function buildExportRows(rows) {
 export default function OverdueClientsPage() {
   const queryClient = useQueryClient();
   const confirm = useConfirm();
+  const { can } = usePermissions();
+  const { money, phone, canValues } = useSensitive();
+  const canNotify = can('billings.notify');
+  const canMarkPaid = can('billings.markPaid');
   const { selectedCompanyId, user } = useAuth();
   const enabled = Number.isInteger(selectedCompanyId);
 
@@ -374,28 +380,32 @@ export default function OverdueClientsPage() {
                 disabled={!enabled}
               />
             </Grid>
-            <Grid item xs={12} md={2}>
-              <TextField
-                fullWidth
-                type="number"
-                label="Valor mínimo"
-                value={draftFilters.minAmount}
-                onChange={handleFilterChange('minAmount')}
-                inputProps={{ min: 0, step: '0.01' }}
-                disabled={!enabled}
-              />
-            </Grid>
-            <Grid item xs={12} md={2}>
-              <TextField
-                fullWidth
-                type="number"
-                label="Valor máximo"
-                value={draftFilters.maxAmount}
-                onChange={handleFilterChange('maxAmount')}
-                inputProps={{ min: 0, step: '0.01' }}
-                disabled={!enabled}
-              />
-            </Grid>
+            {canValues && (
+              <Grid item xs={12} md={2}>
+                <TextField
+                  fullWidth
+                  type="number"
+                  label="Valor mínimo"
+                  value={draftFilters.minAmount}
+                  onChange={handleFilterChange('minAmount')}
+                  inputProps={{ min: 0, step: '0.01' }}
+                  disabled={!enabled}
+                />
+              </Grid>
+            )}
+            {canValues && (
+              <Grid item xs={12} md={2}>
+                <TextField
+                  fullWidth
+                  type="number"
+                  label="Valor máximo"
+                  value={draftFilters.maxAmount}
+                  onChange={handleFilterChange('maxAmount')}
+                  inputProps={{ min: 0, step: '0.01' }}
+                  disabled={!enabled}
+                />
+              </Grid>
+            )}
             <Grid item xs={12} md={2}>
               <TextField
                 fullWidth
@@ -443,7 +453,7 @@ export default function OverdueClientsPage() {
           <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} sx={{ mb: 2 }}>
             <Chip label={`Cobranças em atraso: ${total}`} color="warning" />
             <Chip label={`Clientes com atraso: ${totalClients}`} color="default" variant="outlined" />
-            <Chip label={`Total em aberto: ${formatCurrency(totalOverdueAmount)}`} color="error" />
+            <Chip label={`Total em aberto: ${money(totalOverdueAmount)}`} color="error" />
           </Stack>
         </Box>
 
@@ -495,7 +505,7 @@ export default function OverdueClientsPage() {
                         <Grid item xs={12} md={6}>
                           <Stack direction="row" spacing={0.5} justifyContent={{ xs: 'flex-start', md: 'flex-end' }} sx={{ flexWrap: 'wrap', gap: 0.5 }}>
                             <Chip size="small" color="warning" label={`${g.count} cobrança${g.count > 1 ? 's' : ''}`} />
-                            <Chip size="small" color="error" label={`Total ${formatCurrency(g.totalAmount)}`} />
+                            <Chip size="small" color="error" label={`Total ${money(g.totalAmount)}`} />
                             <Chip size="small" variant="outlined" color="error" label={`Máx ${g.maxDaysLate} dias`} />
                           </Stack>
                         </Grid>
@@ -504,28 +514,32 @@ export default function OverdueClientsPage() {
                     <AccordionDetails sx={{ borderTop: '1px solid', borderColor: 'divider', bgcolor: 'action.hover' }}>
                       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mb: 1.5, alignItems: { sm: 'center' } }}>
                         <Typography variant="caption" color="text.secondary">
-                          {(g.client_phone || '—')} · {(g.client_email || '—')}
+                          {phone(g.client_phone)} · {(g.client_email || '—')}
                         </Typography>
                         <Box sx={{ flexGrow: 1 }} />
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          startIcon={<NotificationsActiveIcon />}
-                          disabled={isClientNotifying(g.client_id) || isClientPaying(g.client_id)}
-                          onClick={() => notifyClient({ client_id: g.client_id })}
-                        >
-                          Notificar atraso
-                        </Button>
-                        <Button
-                          size="small"
-                          variant="contained"
-                          color="success"
-                          startIcon={<TaskAltIcon />}
-                          disabled={isClientNotifying(g.client_id) || isClientPaying(g.client_id)}
-                          onClick={() => markClientPaid({ client_id: g.client_id, client_name: g.client_name })}
-                        >
-                          Pago (todas)
-                        </Button>
+                        {canNotify && (
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            startIcon={<NotificationsActiveIcon />}
+                            disabled={isClientNotifying(g.client_id) || isClientPaying(g.client_id)}
+                            onClick={() => notifyClient({ client_id: g.client_id })}
+                          >
+                            Notificar atraso
+                          </Button>
+                        )}
+                        {canMarkPaid && (
+                          <Button
+                            size="small"
+                            variant="contained"
+                            color="success"
+                            startIcon={<TaskAltIcon />}
+                            disabled={isClientNotifying(g.client_id) || isClientPaying(g.client_id)}
+                            onClick={() => markClientPaid({ client_id: g.client_id, client_name: g.client_name })}
+                          >
+                            Pago (todas)
+                          </Button>
+                        )}
                       </Stack>
                       <Box sx={{ overflow: 'auto', maxHeight: { xs: 320, md: 400 } }}>
                         <Table stickyHeader size="small">
@@ -548,17 +562,21 @@ export default function OverdueClientsPage() {
                                 <TableCell>#{b.contract_id} - {b.contract_description || '-'}</TableCell>
                                 <TableCell>{formatDateOnly(b.billing_date)}</TableCell>
                                 <TableCell>{b.days_late}</TableCell>
-                                <TableCell>{formatCurrency(b.amount)}</TableCell>
+                                <TableCell>{money(b.amount)}</TableCell>
                                 <TableCell align="right">
-                                  <Button
-                                    size="small"
-                                    variant="text"
-                                    color="success"
-                                    disabled={isBillingPaying(b.billing_id)}
-                                    onClick={() => markBillingPaid(b)}
-                                  >
-                                    Pago (esta)
-                                  </Button>
+                                  {canMarkPaid ? (
+                                    <Button
+                                      size="small"
+                                      variant="text"
+                                      color="success"
+                                      disabled={isBillingPaying(b.billing_id)}
+                                      onClick={() => markBillingPaid(b)}
+                                    >
+                                      Pago (esta)
+                                    </Button>
+                                  ) : (
+                                    <Typography variant="caption" color="text.secondary">—</Typography>
+                                  )}
                                 </TableCell>
                               </TableRow>
                             ))}

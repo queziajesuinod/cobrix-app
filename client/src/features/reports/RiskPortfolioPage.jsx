@@ -19,6 +19,8 @@ import PapperBlock from '@/components/PapperBlock'
 import CompanyRequiredAlert from '@/components/CompanyRequiredAlert'
 import RiskBadge from '@/components/RiskBadge'
 import { useAuth } from '@/features/auth/AuthContext'
+import { usePermissions } from '@/features/permissions/PermissionsContext'
+import { useSensitive } from '@/features/permissions/useSensitive'
 import { useConfirm } from '@/components/ConfirmDialog'
 import { reportsService } from './reports.service'
 
@@ -63,7 +65,7 @@ function StatTile({ label, value, icon, color }) {
   )
 }
 
-function RiskRow({ rank, row, onCobrar, cobrando, onVer }) {
+function RiskRow({ rank, row, onCobrar, cobrando, onVer, canCobrar, money }) {
   return (
     <Box
       sx={{
@@ -119,7 +121,7 @@ function RiskRow({ rank, row, onCobrar, cobrando, onVer }) {
           {row.open_overdue_count > 0 ? (
             <>
               <Typography sx={{ fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
-                {BRL(row.open_overdue_amount)}
+                {money(row.open_overdue_amount)}
               </Typography>
               <Typography variant="caption" color="text.secondary">
                 {row.open_overdue_count} em aberto · {row.max_open_days}d
@@ -130,7 +132,7 @@ function RiskRow({ rank, row, onCobrar, cobrando, onVer }) {
           )}
         </Box>
         <Stack direction="row" spacing={1} sx={{ flex: '0 0 auto' }}>
-          {row.open_overdue_count > 0 && (
+          {row.open_overdue_count > 0 && canCobrar && (
             <Tooltip title="Enviar cobrança por WhatsApp">
               <span>
                 <Button
@@ -173,6 +175,8 @@ export default function RiskPortfolioPage() {
   const enabled = Number.isInteger(selectedCompanyId)
   const navigate = useNavigate()
   const confirm = useConfirm()
+  const { can } = usePermissions()
+  const { money } = useSensitive()
   const [band, setBand] = React.useState('todos')
   const [toast, setToast] = React.useState(null)
 
@@ -258,7 +262,7 @@ export default function RiskPortfolioPage() {
           <StatTile label="Risco baixo" value={summary?.baixo ?? '—'} color="success" icon={<VerifiedUserIcon />} />
         </Grid>
         <Grid item xs={6} md={3}>
-          <StatTile label="Total em aberto" value={BRL(summary?.totalOpenOverdueAmount)} color="primary" icon={<AccountBalanceWalletIcon />} />
+          <StatTile label="Total em aberto" value={money(summary?.totalOpenOverdueAmount)} color="primary" icon={<AccountBalanceWalletIcon />} />
         </Grid>
       </Grid>
 
@@ -299,7 +303,9 @@ export default function RiskPortfolioPage() {
             <RiskRow
               rank={idx + 1}
               row={row}
+              money={money}
               cobrando={notify.isPending}
+              canCobrar={can('billings.notify')}
               onCobrar={handleCobrar}
               onVer={(r) => navigate(`/clients/${r.client_id}/edit`)}
             />

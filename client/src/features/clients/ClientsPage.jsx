@@ -20,6 +20,8 @@ import FilterListIcon from '@mui/icons-material/FilterList'
 import PeopleIcon from '@mui/icons-material/People'
 import { formatDocumentValue } from './ClientForm'
 import { useConfirm } from '@/components/ConfirmDialog'
+import { usePermissions } from '@/features/permissions/PermissionsContext'
+import { useSensitive } from '@/features/permissions/useSensitive'
 
 const STATUS_OPTIONS = [
   { value: 'active', label: 'Ativos' },
@@ -31,6 +33,8 @@ export default function ClientsPage() {
   const qc = useQueryClient()
   const navigate = useNavigate()
   const confirm = useConfirm()
+  const { can } = usePermissions()
+  const { phone } = useSensitive()
   const [page, setPage] = useState(0)
   const [rowsPerPage, setRowsPerPage] = useState(20)
   const [searchInput, setSearchInput] = useState('')
@@ -177,20 +181,24 @@ export default function ClientsPage() {
                     <TableCell>{r.name}</TableCell>
                     <TableCell>{r.responsavel || '-'}</TableCell>
                     <TableCell>{r.email || '-'}</TableCell>
-                    <TableCell>{r.phone || '-'}</TableCell>
+                    <TableCell>{phone(r.phone)}</TableCell>
                     <TableCell>{formatDocumentValue(r.document || r.document_cpf || r.document_cnpj || '') || '-'}</TableCell>
                     <TableCell>
                       <Chip label={r.active ? 'Ativo' : 'Inativo'} color={r.active ? 'success' : 'default'} size="small" />
                     </TableCell>
                     <TableCell align="right">
-                      <Tooltip title="Editar">
-                        <IconButton size="small" onClick={() => handleEdit(r)}><EditIcon fontSize="small" /></IconButton>
-                      </Tooltip>
-                      <Tooltip title={r.active ? 'Inativar' : 'Ativar'}>
-                        <IconButton size="small" color={r.active ? 'warning' : 'success'} onClick={() => handleToggleActive(r)}>
-                          {r.active ? <ToggleOffIcon fontSize="small" /> : <ToggleOnIcon fontSize="small" />}
-                        </IconButton>
-                      </Tooltip>
+                      {can('clients.edit') && (
+                        <Tooltip title="Editar">
+                          <IconButton size="small" onClick={() => handleEdit(r)}><EditIcon fontSize="small" /></IconButton>
+                        </Tooltip>
+                      )}
+                      {can('clients.toggle') && (
+                        <Tooltip title={r.active ? 'Inativar' : 'Ativar'}>
+                          <IconButton size="small" color={r.active ? 'warning' : 'success'} onClick={() => handleToggleActive(r)}>
+                            {r.active ? <ToggleOffIcon fontSize="small" /> : <ToggleOnIcon fontSize="small" />}
+                          </IconButton>
+                        </Tooltip>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))

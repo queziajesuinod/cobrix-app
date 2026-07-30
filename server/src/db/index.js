@@ -281,6 +281,34 @@ async function initDb() {
         PRIMARY KEY (notification_id, user_id)
       );
     `);
+
+    // Perfis e permissões (RBAC configurável). Perfis são GLOBAIS; o vínculo do
+    // usuário ao perfil fica em users.profile_id; overrides por usuário afinam
+    // permissões específicas além do perfil.
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.profiles (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        is_system BOOLEAN NOT NULL DEFAULT false,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.profile_permissions (
+        profile_id INTEGER NOT NULL REFERENCES ${schema}.profiles(id) ON DELETE CASCADE,
+        permission_key TEXT NOT NULL,
+        PRIMARY KEY (profile_id, permission_key)
+      );
+    `);
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.user_permission_overrides (
+        user_id INTEGER NOT NULL REFERENCES ${schema}.users(id) ON DELETE CASCADE,
+        permission_key TEXT NOT NULL,
+        allowed BOOLEAN NOT NULL,
+        PRIMARY KEY (user_id, permission_key)
+      );
+    `);
+    await c.query(`ALTER TABLE ${schema}.users ADD COLUMN IF NOT EXISTS profile_id INTEGER REFERENCES ${schema}.profiles(id) ON DELETE SET NULL;`);
   });
 }
 

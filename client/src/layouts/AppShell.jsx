@@ -8,6 +8,7 @@ import { useTheme, alpha } from '@mui/material/styles'
 import { useNavigate, NavLink, useLocation } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '@/features/auth/AuthContext'
+import { usePermissions } from '@/features/permissions/PermissionsContext'
 import { useColorMode } from '@/theme/ColorModeProvider'
 import CompanySelector from '@/components/CompanySelector'
 import { notificationsService } from '@/features/notifications/notifications.service'
@@ -32,40 +33,51 @@ import NotificationsNoneIcon from '@mui/icons-material/NotificationsNone'
 import PersonAddAlt1Icon from '@mui/icons-material/PersonAddAlt1'
 import PostAddIcon from '@mui/icons-material/PostAdd'
 import InsightsIcon from '@mui/icons-material/Insights'
+import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings'
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined'
+import GroupIcon from '@mui/icons-material/Group'
 
 const drawerWidth = 268
 
-// Estrutura de navegação em seções (padrão Dandelion).
+// Estrutura de navegação em seções (padrão Dandelion). `perm` = permissão de
+// acesso à tela (usada para filtrar o menu e barrar acesso). Itens sem `perm`
+// (área master) não passam pelo filtro de permissão.
 const buildSections = (role) => [
   {
     label: 'Principal',
     items: [
-      { to: '/dashboard', label: 'Início', icon: <HomeIcon /> },
-      { to: '/clients', label: 'Clientes', icon: <PeopleIcon /> },
-      { to: '/contracts', label: 'Contratos', icon: <AssignmentIcon /> },
-      { to: '/contracts/types', label: 'Tipos de contrato', icon: <CategoryIcon /> },
-      { to: '/integration/evo', label: 'Integração', icon: <QrCodeIcon /> },
+      { to: '/dashboard', label: 'Início', icon: <HomeIcon />, perm: 'dashboard.view' },
+      { to: '/clients', label: 'Clientes', icon: <PeopleIcon />, perm: 'clients.view' },
+      { to: '/contracts', label: 'Contratos', icon: <AssignmentIcon />, perm: 'contracts.view' },
+      { to: '/contracts/types', label: 'Tipos de contrato', icon: <CategoryIcon />, perm: 'contractTypes.view' },
+      { to: '/integration/evo', label: 'Integração', icon: <QrCodeIcon />, perm: 'integration.view' },
     ],
   },
   {
     label: 'Cadastros',
     items: [
-      { to: '/cadastro', label: 'Novo cadastro', icon: <PersonAddAlt1Icon /> },
+      { to: '/cadastro', label: 'Novo cadastro', icon: <PersonAddAlt1Icon />, perm: 'cadastro.view' },
     ],
   },
   {
     label: 'Notificações',
     items: [
-      { to: '/notifications/auto', label: 'Automático', icon: <AutorenewIcon /> },
-      { to: '/notifications/templates', label: 'Modelos', icon: <EditNoteIcon /> },
-      { to: '/billings/paid', label: 'Contratos pagos', icon: <CheckCircleIcon /> },
-      { to: '/reports/overdue-clients', label: 'Clientes em atraso', icon: <WarningAmberIcon /> },
+      { to: '/notifications/auto', label: 'Automático', icon: <AutorenewIcon />, perm: 'notifications.auto.view' },
+      { to: '/notifications/templates', label: 'Modelos', icon: <EditNoteIcon />, perm: 'notifications.templates.view' },
+      { to: '/billings/paid', label: 'Contratos pagos', icon: <CheckCircleIcon />, perm: 'billings.paid.view' },
+      { to: '/reports/overdue-clients', label: 'Clientes em atraso', icon: <WarningAmberIcon />, perm: 'reports.overdue.view' },
     ],
   },
   {
     label: 'Inteligência',
     items: [
-      { to: '/reports/risk', label: 'Carteira em risco', icon: <InsightsIcon /> },
+      { to: '/reports/risk', label: 'Carteira em risco', icon: <InsightsIcon />, perm: 'reports.risk.view' },
+    ],
+  },
+  {
+    label: 'Administração',
+    items: [
+      { to: '/admin/users', label: 'Usuários', icon: <GroupIcon />, perm: 'users.view' },
     ],
   },
   ...(role === 'master'
@@ -73,6 +85,7 @@ const buildSections = (role) => [
         label: 'Admin',
         items: [
           { to: '/companies', label: 'Empresas', icon: <BusinessIcon /> },
+          { to: '/admin/permissions', label: 'Perfis e permissões', icon: <AdminPanelSettingsIcon /> },
           { to: '/system/health', label: 'Saúde do sistema', icon: <MonitorHeartIcon /> },
         ],
       }]
@@ -97,6 +110,7 @@ export default function AppShell({ children }) {
   const navigate = useNavigate()
   const location = useLocation()
   const { user, logout, selectedCompanyId } = useAuth()
+  const { can } = usePermissions()
   const { mode, toggle } = useColorMode()
 
   const [anchorEl, setAnchorEl] = React.useState(null)
@@ -135,7 +149,16 @@ export default function AppShell({ children }) {
   }
 
   const sections = React.useMemo(() => buildSections(user?.role), [user?.role])
+  // Filtra o menu pelas permissões de tela (master vê tudo; itens sem `perm` passam).
+  const visibleSections = React.useMemo(
+    () =>
+      sections
+        .map((s) => ({ ...s, items: s.items.filter((it) => can(it.perm)) }))
+        .filter((s) => s.items.length > 0),
+    [sections, can]
+  )
   const current = React.useMemo(() => findCurrent(sections, location.pathname), [sections, location.pathname])
+  const pageAllowed = !current?.perm || can(current.perm)
 
   const userEmail = user?.email || ''
   const userName = user?.name || ''
@@ -191,7 +214,7 @@ export default function AppShell({ children }) {
           '&::-webkit-scrollbar': { width: 0, height: 0, display: 'none' },
         }}
       >
-        {sections.map((section) => (
+        {visibleSections.map((section) => (
           <List
             key={section.label}
             subheader={
@@ -397,7 +420,13 @@ export default function AppShell({ children }) {
 
       <Box component="main" sx={{ flexGrow: 1, p: { xs: 2, md: 3 }, width: { md: `calc(100% - ${drawerWidth}px)` } }}>
         <Toolbar />
-        {children}
+        {pageAllowed ? children : (
+          <Box sx={{ py: 10, textAlign: 'center', color: 'text.secondary' }}>
+            <LockOutlinedIcon sx={{ fontSize: 48, opacity: 0.4 }} />
+            <Typography variant="h6" sx={{ fontWeight: 700, mt: 1 }}>Sem acesso a esta tela</Typography>
+            <Typography variant="body2">Seu perfil não tem permissão para acessar esta área. Fale com o administrador.</Typography>
+          </Box>
+        )}
       </Box>
     </Box>
   )

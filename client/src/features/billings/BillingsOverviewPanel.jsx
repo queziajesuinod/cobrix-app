@@ -10,6 +10,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { formatDateOnly } from '@/utils/date'
 import TableSkeleton from '@/components/TableSkeleton'
 import EmptyState from '@/components/EmptyState'
+import { useSensitive } from '@/features/permissions/useSensitive'
 
 const label = (t) => t === 'pre' ? 'Avisado (D-4)' : t === 'due' ? 'Vence hoje (D0)' : 'Atrasado (D+3)'
 const color = (t) => t === 'pre' ? 'info' : t === 'due' ? 'warning' : 'error'
@@ -87,6 +88,7 @@ function getForceType(today, dueDate) {
 
 export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay }) {
   const qc = useQueryClient()
+  const { money } = useSensitive()
   const q = useQuery({
     queryKey: ['billings_overview', ym, clientId || null, contractId || null, dueDay || null],
     queryFn: () => billingsService.overview(ym, {
@@ -323,7 +325,7 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
                         <TableRow key={b.id}>
                           <TableCell>{b.id}</TableCell>
                           <TableCell>{formatDateOnly(b.billing_date)}</TableCell>
-                          <TableCell>R$ {Number(b.amount).toFixed(2)}</TableCell>
+                          <TableCell>{b.amount == null ? '••••' : money(b.amount)}</TableCell>
                           <TableCell>{String(b.status || '').toUpperCase()}</TableCell>
                           <TableCell>{b.created_at ? new Date(b.created_at).toLocaleString() : '-'}</TableCell>
                         </TableRow>

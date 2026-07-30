@@ -6,6 +6,8 @@ import ClientAutocomplete from '@/components/ClientAutocomplete'
 import { contractTypesService } from './contractTypes.service'
 import { useAuth } from '@/features/auth/AuthContext'
 import { useConfirm } from '@/components/ConfirmDialog'
+import { usePermissions } from '@/features/permissions/PermissionsContext'
+import { useSensitive } from '@/features/permissions/useSensitive'
 import PageHeader from '@/components/PageHeader'
 import PapperBlock from '@/components/PapperBlock'
 import TableSkeleton from '@/components/TableSkeleton'
@@ -610,6 +612,8 @@ export default function ContractsPage() {
   const { selectedCompanyId } = useAuth()
   const enabled = Number.isInteger(selectedCompanyId)
   const confirm = useConfirm()
+  const { can } = usePermissions()
+  const { money } = useSensitive()
 
   const [page, setPage] = useState(0)
   const [rowsPerPage, setRowsPerPage] = useState(20)
@@ -850,7 +854,7 @@ export default function ContractsPage() {
                         <TableCell>{r.description}</TableCell>
                         <TableCell>{r.contract_type_name || '-'}</TableCell>
                         <TableCell>{formatBillingMode(r.billing_mode, r.billing_interval_months, r.billing_interval_days)}</TableCell>
-                        <TableCell>{Number(r.value).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</TableCell>
+                        <TableCell>{money(r.value)}</TableCell>
                         <TableCell>{formatDateOnly(r.start_date)} ? {formatDateOnly(r.end_date)}</TableCell>
                         <TableCell>{r.billing_day}</TableCell>
                         <TableCell>
@@ -861,14 +865,18 @@ export default function ContractsPage() {
                         </TableCell>
                         <TableCell>{formatDateOnly(r.last_billed_date)}</TableCell>
                         <TableCell align="right">
-                          <IconButton size="small" onClick={() => handleEdit(r)} disabled={!enabled}><EditIcon fontSize="small" /></IconButton>
-                          <Tooltip title={r.active ? 'Inativar' : 'Ativar'}>
-                            <span>
-                              <IconButton size="small" color={r.active ? 'warning' : 'success'} onClick={() => handleToggleActive(r)} disabled={!enabled}>
-                                {r.active ? <ToggleOffIcon fontSize="small" /> : <ToggleOnIcon fontSize="small" />}
-                              </IconButton>
-                            </span>
-                          </Tooltip>
+                          {can('contracts.edit') && (
+                            <IconButton size="small" onClick={() => handleEdit(r)} disabled={!enabled}><EditIcon fontSize="small" /></IconButton>
+                          )}
+                          {can('contracts.toggle') && (
+                            <Tooltip title={r.active ? 'Inativar' : 'Ativar'}>
+                              <span>
+                                <IconButton size="small" color={r.active ? 'warning' : 'success'} onClick={() => handleToggleActive(r)} disabled={!enabled}>
+                                  {r.active ? <ToggleOffIcon fontSize="small" /> : <ToggleOnIcon fontSize="small" />}
+                                </IconButton>
+                              </span>
+                            </Tooltip>
+                          )}
                         </TableCell>
                       </TableRow>
                     ))

@@ -1,5 +1,6 @@
 const express = require('express');
 const { requireAuth, companyScope } = require('./auth');
+const { requirePermission } = require('../services/permissions');
 const { query } = require('../db');
 const {
   DEFAULT_TEMPLATES,
@@ -42,7 +43,7 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
   }
 });
 
-router.put('/', requireAuth, companyScope(true), async (req, res) => {
+router.put('/', requireAuth, companyScope(true), requirePermission('templates.edit'), async (req, res) => {
   const { templates } = req.body || {};
   if (!templates || typeof templates !== 'object') {
     return res.status(400).json({ error: 'Campo templates obrigatório' });

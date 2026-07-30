@@ -1,6 +1,7 @@
 const express = require('express')
 const { query } = require('../db')
 const { requireAuth, companyScope } = require('./auth')
+const { requirePermission } = require('../services/permissions')
 const { z } = require('zod')
 
 const router = express.Router()
@@ -28,7 +29,7 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
   }
 })
 
-router.post('/', requireAuth, companyScope(true), async (req, res) => {
+router.post('/', requireAuth, companyScope(true), requirePermission('contractTypes.manage'), async (req, res) => {
   const companyId = Number(req.companyId)
   if (!companyId) return res.status(400).json({ error: 'Selecione uma empresa' })
   const parse = typeSchema.safeParse({
@@ -53,7 +54,7 @@ router.post('/', requireAuth, companyScope(true), async (req, res) => {
   }
 })
 
-router.put('/:id', requireAuth, companyScope(true), async (req, res) => {
+router.put('/:id', requireAuth, companyScope(true), requirePermission('contractTypes.manage'), async (req, res) => {
   const id = Number(req.params.id)
   if (!id) return res.status(400).json({ error: 'id inválido' })
   const companyId = Number(req.companyId)
@@ -80,7 +81,7 @@ router.put('/:id', requireAuth, companyScope(true), async (req, res) => {
   }
 })
 
-router.delete('/:id', requireAuth, companyScope(true), async (req, res) => {
+router.delete('/:id', requireAuth, companyScope(true), requirePermission('contractTypes.manage'), async (req, res) => {
   const id = Number(req.params.id)
   if (!id) return res.status(400).json({ error: 'id inválido' })
   const companyId = Number(req.companyId)

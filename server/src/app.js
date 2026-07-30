@@ -64,11 +64,17 @@ if (process.env.ENABLE_RLS === 'true') {
   console.log('[rls] ENABLE_RLS=true — dbRequestContext montado (app.company_id por request)')
 }
 
-// init DB
-initDb().then(() => console.log('DB ok')).catch(err => {
-  console.error('Falha init DB:', err)
-  process.exit(1)
-})
+// init DB + seed dos perfis-modelo de permissão
+const { seedPermissions } = require('./services/permissions')
+initDb()
+  .then(async () => {
+    console.log('DB ok')
+    try { await seedPermissions() } catch (e) { console.error('Falha ao semear permissões:', e.message) }
+  })
+  .catch(err => {
+    console.error('Falha init DB:', err)
+    process.exit(1)
+  })
 
 // rotas base já existentes no seu projeto
 app.use('/api/auth', require('./routes/auth'))
@@ -83,6 +89,7 @@ app.use('/api/reports', require('./routes/reports'))
 app.use('/api/system', require('./routes/system-health'))
 app.use('/api/billing-backfill', require('./routes/billing-backfill'))
 app.use('/api/notifications', require('./routes/notifications'))
+app.use('/api/permissions', require('./routes/permissions'))
 
 // novas rotas (fixpack v7)
 app.use('/api/companies', require('./routes/companies'))
