@@ -44,6 +44,7 @@ const CATALOG = [
   ] },
   { module: 'overdue', label: 'Clientes em atraso', permissions: [
     { key: 'reports.overdue.view', label: 'Acessar', type: 'view' },
+    { key: 'reports.export', label: 'Exportar CSV/Excel', type: 'action' },
   ] },
   { module: 'risk', label: 'Carteira em risco', permissions: [
     { key: 'reports.risk.view', label: 'Acessar', type: 'view' },
@@ -59,6 +60,12 @@ const CATALOG = [
   { module: 'users', label: 'Usuários', permissions: [
     { key: 'users.view', label: 'Ver usuários', type: 'view' },
     { key: 'users.create', label: 'Criar usuários (Operador/Somente leitura)', type: 'action' },
+  ] },
+  { module: 'finance', label: 'Gerenciador Financeiro', permissions: [
+    { key: 'finance.revenues.view', label: 'Receitas: acessar', type: 'view' },
+    { key: 'finance.revenues.manage', label: 'Receitas: lançar / editar / importar / estornar', type: 'action' },
+    { key: 'finance.expenses.view', label: 'Despesas: acessar', type: 'view' },
+    { key: 'finance.expenses.manage', label: 'Despesas: lançar / editar / importar', type: 'action' },
   ] },
 ];
 

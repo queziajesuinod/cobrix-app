@@ -105,6 +105,7 @@ export default function OverdueClientsPage() {
   const { money, phone, canValues } = useSensitive();
   const canNotify = can('billings.notify');
   const canMarkPaid = can('billings.markPaid');
+  const canExport = can('reports.export');
   const { selectedCompanyId, user } = useAuth();
   const enabled = Number.isInteger(selectedCompanyId);
 
@@ -324,7 +325,7 @@ export default function OverdueClientsPage() {
       <PageHeader
         title="Cobranças em atraso"
         subtitle="Relatório de inadimplência agrupado por cliente."
-        actions={
+        actions={canExport ? (
           <>
             <Button
               variant="outlined"
@@ -343,7 +344,7 @@ export default function OverdueClientsPage() {
               Exportar Excel
             </Button>
           </>
-        }
+        ) : null}
       />
 
       <PapperBlock title="Filtros" icon={<FilterListIcon />} iconColor="info.main">

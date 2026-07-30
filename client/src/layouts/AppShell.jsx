@@ -2,16 +2,17 @@ import React from 'react'
 import {
   AppBar, Toolbar, Typography, IconButton, Drawer, List, ListItemButton,
   ListItemIcon, ListItemText, Box, useMediaQuery, Avatar, Menu, MenuItem,
-  Tooltip, Badge, Breadcrumbs, Link as MuiLink, Divider, ListSubheader, Button,
+  Tooltip, Badge, Breadcrumbs, Link as MuiLink, Divider, ListSubheader, Button, Chip,
 } from '@mui/material'
 import { useTheme, alpha } from '@mui/material/styles'
 import { useNavigate, NavLink, useLocation } from 'react-router-dom'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { useAuth } from '@/features/auth/AuthContext'
 import { usePermissions } from '@/features/permissions/PermissionsContext'
 import { useColorMode } from '@/theme/ColorModeProvider'
 import CompanySelector from '@/components/CompanySelector'
 import { notificationsService } from '@/features/notifications/notifications.service'
+import { menuService } from '@/features/menu/menu.service'
 
 // Ícones
 import MenuIcon from '@mui/icons-material/Menu'
@@ -36,8 +37,22 @@ import InsightsIcon from '@mui/icons-material/Insights'
 import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings'
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined'
 import GroupIcon from '@mui/icons-material/Group'
+import AccountBalanceIcon from '@mui/icons-material/AccountBalance'
 
 const drawerWidth = 268
+
+// Etiqueta "Novo" nos itens de menu: aparece por N dias a partir da data de
+// publicação (campo `since: 'AAAA-MM-DD'` no item). É "versionada" — defina a
+// data uma vez ao publicar o módulo; a etiqueta some sozinha após o prazo, sem
+// nenhuma alteração manual depois.
+const NEW_BADGE_DAYS = 7
+function isNewItem(since) {
+  if (!since) return false
+  const d = new Date(`${since}T00:00:00`)
+  if (Number.isNaN(d.getTime())) return false
+  const ms = Date.now() - d.getTime()
+  return ms >= 0 && ms <= NEW_BADGE_DAYS * 24 * 60 * 60 * 1000
+}
 
 // Estrutura de navegação em seções (padrão Dandelion). `perm` = permissão de
 // acesso à tela (usada para filtrar o menu e barrar acesso). Itens sem `perm`
@@ -71,13 +86,19 @@ const buildSections = (role) => [
   {
     label: 'Inteligência',
     items: [
-      { to: '/reports/risk', label: 'Carteira em risco', icon: <InsightsIcon />, perm: 'reports.risk.view' },
+      { to: '/reports/risk', label: 'Carteira em risco', icon: <InsightsIcon />, perm: 'reports.risk.view', since: '2026-07-30' },
     ],
   },
   {
     label: 'Administração',
     items: [
-      { to: '/admin/users', label: 'Usuários', icon: <GroupIcon />, perm: 'users.view' },
+      { to: '/admin/users', label: 'Usuários', icon: <GroupIcon />, perm: 'users.view', since: '2026-07-30' },
+    ],
+  },
+  {
+    label: 'Financeiro',
+    items: [
+      { to: '/finance', label: 'Gerenciador Financeiro', icon: <AccountBalanceIcon />, perms: ['finance.revenues.view', 'finance.expenses.view'], since: '2026-07-30' },
     ],
   },
   ...(role === 'master'
@@ -129,6 +150,23 @@ export default function AppShell({ children }) {
   const notifications = notifData?.items || []
   const unreadCount = notifData?.unreadCount || 0
 
+  // Etiqueta "Novo": aparece na janela de publicação E some quando o usuário
+  // abre o item (registro por usuário, persistido no backend).
+  const { data: seenData } = useQuery({
+    queryKey: ['menu-seen'],
+    queryFn: menuService.getSeen,
+    enabled: Boolean(user),
+    staleTime: 5 * 60 * 1000,
+  })
+  const seenKeys = React.useMemo(() => new Set(seenData?.keys || []), [seenData])
+  const markSeen = useMutation({
+    mutationFn: (key) => menuService.markSeen(key),
+    onMutate: (key) => {
+      qc.setQueryData(['menu-seen'], (old) => ({ keys: [...new Set([...(old?.keys || []), key])] }))
+    },
+  })
+  const showNewBadge = (item) => isNewItem(item.since) && !seenKeys.has(item.to)
+
   const notifIcon = (type) => {
     if (type === 'client_created') return <PersonAddAlt1Icon fontSize="small" color="primary" />
     if (type === 'contract_due_today') return <AssignmentIcon fontSize="small" color="info" />
@@ -149,16 +187,17 @@ export default function AppShell({ children }) {
   }
 
   const sections = React.useMemo(() => buildSections(user?.role), [user?.role])
-  // Filtra o menu pelas permissões de tela (master vê tudo; itens sem `perm` passam).
+  // Um item aparece se o usuário tem sua permissão (ou QUALQUER uma de `perms`).
+  const canNav = React.useCallback((it) => (it?.perms ? it.perms.some((p) => can(p)) : can(it?.perm)), [can])
   const visibleSections = React.useMemo(
     () =>
       sections
-        .map((s) => ({ ...s, items: s.items.filter((it) => can(it.perm)) }))
+        .map((s) => ({ ...s, items: s.items.filter((it) => canNav(it)) }))
         .filter((s) => s.items.length > 0),
-    [sections, can]
+    [sections, canNav]
   )
   const current = React.useMemo(() => findCurrent(sections, location.pathname), [sections, location.pathname])
-  const pageAllowed = !current?.perm || can(current.perm)
+  const pageAllowed = !current || canNav(current)
 
   const userEmail = user?.email || ''
   const userName = user?.name || ''
@@ -241,7 +280,10 @@ export default function AppShell({ children }) {
                 component={NavLink}
                 to={item.to}
                 end
-                onClick={() => { if (!isMdUp) setOpen(false) }}
+                onClick={() => {
+                  if (showNewBadge(item)) markSeen.mutate(item.to)
+                  if (!isMdUp) setOpen(false)
+                }}
                 sx={{
                   mb: 0.5,
                   borderRadius: 2,
@@ -257,6 +299,13 @@ export default function AppShell({ children }) {
               >
                 <ListItemIcon>{item.icon}</ListItemIcon>
                 <ListItemText primary={item.label} primaryTypographyProps={{ fontSize: 14, fontWeight: 600 }} />
+                {showNewBadge(item) && (
+                  <Chip
+                    label="Novo"
+                    size="small"
+                    sx={{ height: 18, fontSize: 10, fontWeight: 700, bgcolor: '#ec407a', color: '#fff', '& .MuiChip-label': { px: 0.75 } }}
+                  />
+                )}
               </ListItemButton>
             ))}
           </List>

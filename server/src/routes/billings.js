@@ -478,7 +478,7 @@ router.put('/:id/status', requireAuth, companyScope(true), requirePermission('bi
           updated_at=NOW(),
           gateway_paid_at = CASE
             WHEN $1 = 'paid' THEN COALESCE(gateway_paid_at, NOW())
-            ELSE gateway_paid_at
+            ELSE NULL
           END
       FROM ${SCHEMA}.contracts c
       WHERE b.id=$2 AND c.id=b.contract_id AND c.company_id=$3
@@ -556,9 +556,13 @@ router.put('/by-contract/:contractId/month/:year/:month/status', requireAuth, co
       DO UPDATE SET status=EXCLUDED.status, updated_at=now()
     `, [contractId, req.companyId, year, month, status]);
 
+    // Marcar como pendente/cancelado é um ESTORNO: limpa a data de pagamento
+    // (senão a cobrança fica "paga" no gateway_paid_at e some inconsistente da receita).
     const r = await query(`
       UPDATE ${SCHEMA}.billings b
-      SET status = $1
+      SET status = $1,
+          updated_at = now(),
+          gateway_paid_at = CASE WHEN $1 = 'paid' THEN COALESCE(gateway_paid_at, NOW()) ELSE NULL END
       WHERE b.contract_id = $2
         AND EXTRACT(YEAR FROM b.billing_date) = $3
         AND EXTRACT(MONTH FROM b.billing_date) = $4

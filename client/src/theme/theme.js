@@ -78,6 +78,12 @@ export function createAppTheme(mode = 'light') {
             backgroundColor: mode === 'dark' ? 'rgba(255,255,255,0.03)' : 'rgba(15,23,42,0.02)',
             borderBottom: `1px solid ${t.divider}`,
           },
+          // Cabeçalho fixo (stickyHeader): precisa de fundo OPACO, senão as linhas
+          // passam "através" dele ao rolar. Cor sólida equivalente ao tom do header.
+          stickyHeader: {
+            backgroundColor: mode === 'dark' ? '#1d2228' : '#fafafb',
+            zIndex: 3,
+          },
         },
       },
       MuiTableRow: {

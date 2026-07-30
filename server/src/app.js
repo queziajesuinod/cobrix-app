@@ -90,6 +90,8 @@ app.use('/api/system', require('./routes/system-health'))
 app.use('/api/billing-backfill', require('./routes/billing-backfill'))
 app.use('/api/notifications', require('./routes/notifications'))
 app.use('/api/permissions', require('./routes/permissions'))
+app.use('/api/finance', require('./routes/finance'))
+app.use('/api/menu', require('./routes/menu'))
 
 // novas rotas (fixpack v7)
 app.use('/api/companies', require('./routes/companies'))

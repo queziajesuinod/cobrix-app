@@ -28,11 +28,24 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
       customTypes = rows.rows.map(r => r.type);
     }
     const gatewayReady = await isGatewayConfigured(companyId);
+    let audit = null;
+    if (companyId) {
+      const a = await query(
+        `SELECT mt.updated_at, COALESCE(NULLIF(u.name,''), u.email) AS updated_by_name
+           FROM ${SCHEMA}.message_templates mt
+           LEFT JOIN ${SCHEMA}.users u ON u.id = mt.updated_by
+          WHERE mt.company_id = $1 AND mt.updated_at IS NOT NULL
+          ORDER BY mt.updated_at DESC LIMIT 1`,
+        [companyId]
+      );
+      audit = a.rows[0] || null;
+    }
     res.json({
       templates,
       defaults: DEFAULT_TEMPLATES,
       customTypes,
       gatewayReady,
+      audit,
       placeholders: PLACEHOLDERS.map(p => ({
         ...p,
         token: `{{${p.key}}}`,
@@ -59,7 +72,7 @@ router.put('/', requireAuth, companyScope(true), requirePermission('templates.ed
     if (!text) {
       return res.status(400).json({ error: `Template ${type} não pode ser vazio` });
     }
-    await upsertTemplate(companyId, type, text);
+    await upsertTemplate(companyId, type, text, req.user.id);
     updated.push(type);
   }
 

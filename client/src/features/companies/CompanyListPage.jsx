@@ -10,6 +10,7 @@ import PapperBlock from '@/components/PapperBlock'
 import TableToolbar from '@/components/TableToolbar'
 import TableSkeleton from '@/components/TableSkeleton'
 import EmptyState from '@/components/EmptyState'
+import AuditInfo from '@/components/AuditInfo'
 import { companyService } from './company.service'
 
 export default function CompanyListPage(){
@@ -35,7 +36,7 @@ export default function CompanyListPage(){
             <TableRow>
               <TableCell>ID</TableCell>
               <TableCell>Nome</TableCell>
-              <TableCell>Criada em</TableCell>
+              <TableCell>Auditoria</TableCell>
               <TableCell align="right">Ações</TableCell>
             </TableRow>
           </TableHead>
@@ -58,7 +59,7 @@ export default function CompanyListPage(){
                 <TableRow key={c.id}>
                   <TableCell>{c.id}</TableCell>
                   <TableCell>{c.name}</TableCell>
-                  <TableCell>{c.created_at ? new Date(c.created_at).toLocaleDateString() : '-'}</TableCell>
+                  <TableCell><AuditInfo createdByName={c.created_by_name} createdAt={c.created_at} updatedByName={c.updated_by_name} updatedAt={c.updated_at} /></TableCell>
                   <TableCell align="right">
                     <IconButton color="primary" onClick={()=>nav(`/companies/${c.id}/settings`)}><SettingsIcon/></IconButton>
                     <IconButton color="error" onClick={()=>delM.mutate(c.id)}><DeleteIcon/></IconButton>

@@ -188,6 +188,11 @@ export default function MessageTemplatesPage() {
         title="Mensagens automáticas"
         subtitle="Monte os textos das notificações arrastando os campos disponí­veis. Use os tokens para preencher dados automaticamente."
       />
+      {data?.audit?.updated_at && (
+        <Typography variant="caption" color="text.secondary">
+          Última edição{data.audit.updated_by_name ? ` por ${data.audit.updated_by_name}` : ''} · {new Date(data.audit.updated_at).toLocaleString('pt-BR')}
+        </Typography>
+      )}
 
       <PapperBlock
         title="Campos disponí­veis"

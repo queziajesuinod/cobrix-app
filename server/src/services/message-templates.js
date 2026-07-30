@@ -418,15 +418,15 @@ async function getTemplatesForCompany(companyId) {
   return result;
 }
 
-async function upsertTemplate(companyId, type, template) {
+async function upsertTemplate(companyId, type, template, userId = null) {
   if (!companyId) throw new Error('companyId obrigatório');
   const clean = String(template ?? '').trim();
   await query(
-    `INSERT INTO ${SCHEMA}.message_templates (company_id, type, template)
-     VALUES ($1,$2,$3)
+    `INSERT INTO ${SCHEMA}.message_templates (company_id, type, template, created_by, updated_by, updated_at)
+     VALUES ($1,$2,$3,$4,$4,now())
      ON CONFLICT (company_id, type)
-     DO UPDATE SET template=EXCLUDED.template, updated_at=now()`,
-    [companyId, type, clean]
+     DO UPDATE SET template=EXCLUDED.template, updated_by=$4, updated_at=now()`,
+    [companyId, type, clean, userId]
   );
   clearTemplateCache(companyId, type);
 }

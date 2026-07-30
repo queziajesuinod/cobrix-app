@@ -97,6 +97,21 @@ function requirePermission(key) {
   };
 }
 
+// Middleware: exige QUALQUER UMA das permissões (master sempre passa).
+function requireAnyPermission(keys) {
+  return async (req, res, next) => {
+    try {
+      if (!req.user) return res.status(401).json({ error: 'Não autenticado' });
+      if (req.user.role === 'master') return next();
+      const perms = await getEffectivePermissions(req.user);
+      if (keys.some((k) => perms.includes(k))) return next();
+      return res.status(403).json({ error: 'Acesso negado: sem permissão para esta ação.' });
+    } catch (e) {
+      next(e);
+    }
+  };
+}
+
 // Middleware: exige papel master.
 function masterOnly(req, res, next) {
   if (!req.user) return res.status(401).json({ error: 'Não autenticado' });
@@ -104,4 +119,4 @@ function masterOnly(req, res, next) {
   next();
 }
 
-module.exports = { seedPermissions, getEffectivePermissions, requirePermission, masterOnly };
+module.exports = { seedPermissions, getEffectivePermissions, requirePermission, requireAnyPermission, masterOnly };

@@ -330,6 +330,78 @@ async function initDb() {
         ) WHERE tt.created_by IS NULL;
       `);
     }
+
+    // Gerenciador Financeiro: receitas (avulsas) e despesas (com recorrência mensal).
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.finance_revenues (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
+        label TEXT NOT NULL,
+        description TEXT,
+        amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+        received_at DATE NOT NULL,
+        created_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        updated_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ
+      );
+    `);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_fin_rev_company_date ON ${schema}.finance_revenues (company_id, received_at DESC);`);
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.finance_expenses (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
+        label TEXT NOT NULL,
+        description TEXT,
+        amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+        paid_at DATE NOT NULL,
+        is_recurring BOOLEAN NOT NULL DEFAULT false,
+        recurrence_active BOOLEAN NOT NULL DEFAULT true,
+        recurrence_of INTEGER REFERENCES ${schema}.finance_expenses(id) ON DELETE SET NULL,
+        created_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        updated_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ
+      );
+    `);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_fin_exp_company_date ON ${schema}.finance_expenses (company_id, paid_at DESC);`);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_fin_exp_recurrence ON ${schema}.finance_expenses (recurrence_of);`);
+    // Tipo de despesa: 'fixed' (fixa) ou 'variable' (variável) — para diferenciar em gráfico.
+    await c.query(`ALTER TABLE ${schema}.finance_expenses ADD COLUMN IF NOT EXISTS expense_type TEXT NOT NULL DEFAULT 'variable';`);
+
+    // Itens de menu "Novo" já vistos por cada usuário (esconde a etiqueta ao abrir).
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.user_seen_menu (
+        user_id INTEGER NOT NULL REFERENCES ${schema}.users(id) ON DELETE CASCADE,
+        item_key TEXT NOT NULL,
+        seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (user_id, item_key)
+      );
+    `);
+
+    // Vínculo opcional de receita a cliente/contrato.
+    await c.query(`ALTER TABLE ${schema}.finance_revenues ADD COLUMN IF NOT EXISTS client_id INTEGER REFERENCES ${schema}.clients(id) ON DELETE SET NULL;`);
+    await c.query(`ALTER TABLE ${schema}.finance_revenues ADD COLUMN IF NOT EXISTS contract_id INTEGER REFERENCES ${schema}.contracts(id) ON DELETE SET NULL;`);
+
+    // Auditoria em companies e message_templates.
+    for (const t of ['companies', 'message_templates']) {
+      await c.query(`ALTER TABLE ${schema}.${t} ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();`);
+      await c.query(`ALTER TABLE ${schema}.${t} ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;`);
+      await c.query(`ALTER TABLE ${schema}.${t} ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL;`);
+      await c.query(`ALTER TABLE ${schema}.${t} ADD COLUMN IF NOT EXISTS updated_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL;`);
+    }
+    await c.query(`
+      UPDATE ${schema}.companies co SET created_by = (
+        SELECT u.id FROM ${schema}.user_companies uc JOIN ${schema}.users u ON u.id = uc.user_id
+        WHERE uc.company_id = co.id ORDER BY (u.role='master') DESC, u.id ASC LIMIT 1
+      ) WHERE co.created_by IS NULL;
+    `);
+    await c.query(`
+      UPDATE ${schema}.message_templates mt SET created_by = (
+        SELECT u.id FROM ${schema}.user_companies uc JOIN ${schema}.users u ON u.id = uc.user_id
+        WHERE uc.company_id = mt.company_id ORDER BY (u.role='master') DESC, u.id ASC LIMIT 1
+      ) WHERE mt.created_by IS NULL;
+    `);
   });
 }
 

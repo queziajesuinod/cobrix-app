@@ -88,7 +88,9 @@ router.get("/", requireAuth, async (req, res) => {
     return res.json([]);
   }
   const r = await query(
-    `SELECT id, name, pix_key, evo_api_url, evo_api_key, evo_instance, clients_limit, contracts_limit, created_at,
+    `SELECT id, name, pix_key, evo_api_url, evo_api_key, evo_instance, clients_limit, contracts_limit, created_at, updated_at,
+            (SELECT COALESCE(NULLIF(cu.name,''), cu.email) FROM users cu WHERE cu.id = companies.created_by) AS created_by_name,
+            (SELECT COALESCE(NULLIF(eu.name,''), eu.email) FROM users eu WHERE eu.id = companies.updated_by) AS updated_by_name,
             efi_client_id_enc, efi_client_secret_enc, efi_cert_base64_enc FROM companies WHERE id = ANY($1::int[]) ORDER BY id DESC`,
     [req.user.company_ids]
   );
@@ -100,7 +102,10 @@ router.get("/", requireAuth, async (req, res) => {
 router.get("/:id", requireAuth, async (req, res) => {
   const id = Number(req.params.id);
   if (!canReadCompany(req.user, req.companyId, id)) return res.status(403).json({ error: "Sem permissão" });
-  const r = await query("SELECT id, name, pix_key, evo_api_url, evo_api_key, evo_instance, clients_limit, contracts_limit, created_at, efi_client_id_enc, efi_client_secret_enc, efi_cert_base64_enc FROM companies WHERE id=$1", [id]);
+  const r = await query(`SELECT id, name, pix_key, evo_api_url, evo_api_key, evo_instance, clients_limit, contracts_limit, created_at, updated_at,
+    (SELECT COALESCE(NULLIF(cu.name,''), cu.email) FROM users cu WHERE cu.id = companies.created_by) AS created_by_name,
+    (SELECT COALESCE(NULLIF(eu.name,''), eu.email) FROM users eu WHERE eu.id = companies.updated_by) AS updated_by_name,
+    efi_client_id_enc, efi_client_secret_enc, efi_cert_base64_enc FROM companies WHERE id=$1`, [id]);
   const row = r.rows[0];
   if (!row) return res.status(404).json({ error: "Empresa não encontrada" });
   res.json(mapGatewayResponse(row));
@@ -139,8 +144,8 @@ router.post("/", requireAuth, async (req, res) => {
 
   const client = String(name).trim();
   const insert = await query(
-    "INSERT INTO companies (name, pix_key, clients_limit, contracts_limit, efi_client_id_enc, efi_client_secret_enc, efi_cert_base64_enc) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, name, pix_key, clients_limit, contracts_limit, efi_client_id_enc, efi_client_secret_enc, efi_cert_base64_enc",
-    [client, pix_key || null, normalizedClientLimit, normalizedContractLimit, gatewayColumns.clientIdEnc, gatewayColumns.clientSecretEnc, gatewayColumns.certBase64Enc]
+    "INSERT INTO companies (name, pix_key, clients_limit, contracts_limit, efi_client_id_enc, efi_client_secret_enc, efi_cert_base64_enc, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, name, pix_key, clients_limit, contracts_limit, efi_client_id_enc, efi_client_secret_enc, efi_cert_base64_enc",
+    [client, pix_key || null, normalizedClientLimit, normalizedContractLimit, gatewayColumns.clientIdEnc, gatewayColumns.clientSecretEnc, gatewayColumns.certBase64Enc, req.user.id]
   );
   const newCompany = mapGatewayResponse(insert.rows[0]);
   let instanceName = formatInstanceName(client, newCompany.id);
@@ -233,7 +238,7 @@ router.put("/:id", requireAuth, async (req, res) => {
       return res.status(400).json({ error: gatewayErr.message });
     }
 
-    await query("UPDATE companies SET name=$1, pix_key=$2, clients_limit=$3, contracts_limit=$4, efi_client_id_enc=$5, efi_client_secret_enc=$6, efi_cert_base64_enc=$7 WHERE id=$8", [String(name).trim(), pix_key || null, normalizedClientLimit, normalizedContractLimit, gatewayColumns.clientIdEnc, gatewayColumns.clientSecretEnc, gatewayColumns.certBase64Enc, id]);
+    await query("UPDATE companies SET name=$1, pix_key=$2, clients_limit=$3, contracts_limit=$4, efi_client_id_enc=$5, efi_client_secret_enc=$6, efi_cert_base64_enc=$7, updated_by=$8, updated_at=now() WHERE id=$9", [String(name).trim(), pix_key || null, normalizedClientLimit, normalizedContractLimit, gatewayColumns.clientIdEnc, gatewayColumns.clientSecretEnc, gatewayColumns.certBase64Enc, req.user.id, id]);
 
     let instanceName = currentRow.evo_instance;
     let integration = null;
