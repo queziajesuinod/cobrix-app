@@ -56,6 +56,7 @@ app.use('/api/dashboard', require('./routes/dashboard'))
 app.use('/api/reports', require('./routes/reports'))
 app.use('/api/system', require('./routes/system-health'))
 app.use('/api/billing-backfill', require('./routes/billing-backfill'))
+app.use('/api/notifications', require('./routes/notifications'))
 
 // novas rotas (fixpack v7)
 app.use('/api/companies', require('./routes/companies'))

@@ -250,6 +250,35 @@ async function initDb() {
     await c.query(`ALTER TABLE ${schema}.system_cron_runs ADD COLUMN IF NOT EXISTS last_status TEXT NOT NULL DEFAULT 'never';`);
     await c.query(`ALTER TABLE ${schema}.system_cron_runs ADD COLUMN IF NOT EXISTS last_error TEXT;`);
     await c.query(`ALTER TABLE ${schema}.system_cron_runs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();`);
+
+    // Notificações in-app (sino do topo). Geradas por empresa; estado de "lido" por usuário.
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.notifications (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
+        type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT,
+        ref_type TEXT,
+        ref_id INTEGER,
+        link TEXT,
+        dedup_key TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (company_id, dedup_key)
+      );
+    `);
+    await c.query(`
+      CREATE INDEX IF NOT EXISTS idx_notifications_company_created
+        ON ${schema}.notifications (company_id, created_at DESC);
+    `);
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.notification_reads (
+        notification_id INTEGER NOT NULL REFERENCES ${schema}.notifications(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES ${schema}.users(id) ON DELETE CASCADE,
+        read_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (notification_id, user_id)
+      );
+    `);
   });
 }
 

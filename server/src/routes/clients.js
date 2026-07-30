@@ -3,6 +3,7 @@ const { query } = require('../db');
 const { z } = require('zod');
 const { requireAuth, companyScope } = require('./auth');
 const { assertClientLimit } = require('../utils/company-limits');
+const { createNotification } = require('../services/notifications');
 
 const router = express.Router();
 
@@ -145,7 +146,23 @@ router.post('/', requireAuth, companyScope(true), async (req, res) => {
         docFields.cnpj,
       ]
     );
-    res.status(201).json(attachDocument(r.rows[0]));
+    const created = r.rows[0];
+    // Notificação in-app de cliente novo (não deve quebrar o cadastro se falhar).
+    try {
+      await createNotification({
+        companyId: req.companyId,
+        type: 'client_created',
+        title: 'Novo cliente cadastrado',
+        body: created.name,
+        refType: 'client',
+        refId: created.id,
+        link: '/clients',
+        dedupKey: `client_created:${created.id}`,
+      });
+    } catch (e) {
+      console.error('[clients] notificação de cliente novo falhou:', e.message);
+    }
+    res.status(201).json(attachDocument(created));
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
   }

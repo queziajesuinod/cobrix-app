@@ -2,13 +2,15 @@ import React from 'react'
 import {
   AppBar, Toolbar, Typography, IconButton, Drawer, List, ListItemButton,
   ListItemIcon, ListItemText, Box, useMediaQuery, Avatar, Menu, MenuItem,
-  Tooltip, Badge, InputBase, Breadcrumbs, Link as MuiLink, Divider, ListSubheader,
+  Tooltip, Badge, Breadcrumbs, Link as MuiLink, Divider, ListSubheader, Button,
 } from '@mui/material'
 import { useTheme, alpha } from '@mui/material/styles'
 import { useNavigate, NavLink, useLocation } from 'react-router-dom'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '@/features/auth/AuthContext'
 import { useColorMode } from '@/theme/ColorModeProvider'
 import CompanySelector from '@/components/CompanySelector'
+import { notificationsService } from '@/features/notifications/notifications.service'
 
 // Ícones
 import MenuIcon from '@mui/icons-material/Menu'
@@ -26,7 +28,6 @@ import WarningAmberIcon from '@mui/icons-material/WarningAmber'
 import MonitorHeartIcon from '@mui/icons-material/MonitorHeart'
 import DarkModeOutlinedIcon from '@mui/icons-material/DarkModeOutlined'
 import LightModeOutlinedIcon from '@mui/icons-material/LightModeOutlined'
-import SearchIcon from '@mui/icons-material/Search'
 import NotificationsNoneIcon from '@mui/icons-material/NotificationsNone'
 import PersonAddAlt1Icon from '@mui/icons-material/PersonAddAlt1'
 import PostAddIcon from '@mui/icons-material/PostAdd'
@@ -92,8 +93,39 @@ export default function AppShell({ children }) {
   const { mode, toggle } = useColorMode()
 
   const [anchorEl, setAnchorEl] = React.useState(null)
+  const [notifAnchor, setNotifAnchor] = React.useState(null)
 
   React.useEffect(() => { setOpen(isMdUp) }, [isMdUp])
+
+  // Notificações in-app (sino). Poll leve enquanto uma empresa está selecionada.
+  const qc = useQueryClient()
+  const { data: notifData } = useQuery({
+    queryKey: ['app-notifications', selectedCompanyId],
+    queryFn: notificationsService.list,
+    enabled: Boolean(selectedCompanyId),
+    refetchInterval: 60000,
+  })
+  const notifications = notifData?.items || []
+  const unreadCount = notifData?.unreadCount || 0
+
+  const notifIcon = (type) => {
+    if (type === 'client_created') return <PersonAddAlt1Icon fontSize="small" color="primary" />
+    if (type === 'contract_due_today') return <AssignmentIcon fontSize="small" color="info" />
+    if (type === 'billing_overdue_60') return <WarningAmberIcon fontSize="small" color="warning" />
+    return <NotificationsNoneIcon fontSize="small" />
+  }
+
+  const handleNotifClick = async (n) => {
+    setNotifAnchor(null)
+    try { await notificationsService.markRead(n.id) } catch { /* ignore */ }
+    qc.invalidateQueries({ queryKey: ['app-notifications'] })
+    if (n.link) navigate(n.link)
+  }
+
+  const handleMarkAll = async () => {
+    try { await notificationsService.markAllRead() } catch { /* ignore */ }
+    qc.invalidateQueries({ queryKey: ['app-notifications'] })
+  }
 
   const sections = React.useMemo(() => buildSections(user?.role), [user?.role])
   const current = React.useMemo(() => findCurrent(sections, location.pathname), [sections, location.pathname])
@@ -262,29 +294,52 @@ export default function AppShell({ children }) {
 
           <Box sx={{ flexGrow: 1 }} />
 
-          {/* Busca (visual — busca global em breve) */}
-          <Box
-            sx={{
-              display: { xs: 'none', sm: 'flex' },
-              alignItems: 'center',
-              gap: 1,
-              px: 1.5,
-              height: 40,
-              borderRadius: 999,
-              bgcolor: (t) => alpha(t.palette.text.primary, 0.06),
-            }}
-          >
-            <SearchIcon fontSize="small" sx={{ color: 'text.secondary' }} />
-            <InputBase placeholder="Buscar…" sx={{ fontSize: 14, width: { sm: 120, md: 200 } }} />
-          </Box>
-
           <Tooltip title="Notificações">
-            <IconButton color="inherit" onClick={() => navigate('/notifications/auto')}>
-              <Badge color="error" variant="dot">
+            <IconButton color="inherit" onClick={(e) => setNotifAnchor(e.currentTarget)}>
+              <Badge color="error" badgeContent={unreadCount} max={99}>
                 <NotificationsNoneIcon />
               </Badge>
             </IconButton>
           </Tooltip>
+          <Menu
+            anchorEl={notifAnchor}
+            open={Boolean(notifAnchor)}
+            onClose={() => setNotifAnchor(null)}
+            slotProps={{ paper: { sx: { width: 380, maxWidth: '92vw' } } }}
+          >
+            <Box sx={{ px: 2, py: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
+              <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Notificações</Typography>
+              {unreadCount > 0 && (
+                <Button size="small" onClick={handleMarkAll} sx={{ textTransform: 'none' }}>
+                  Marcar todas como lidas
+                </Button>
+              )}
+            </Box>
+            <Divider />
+            {notifications.length === 0 ? (
+              <Box sx={{ px: 2, py: 3, textAlign: 'center' }}>
+                <Typography variant="body2" color="text.secondary">Nenhuma notificação nova</Typography>
+              </Box>
+            ) : (
+              notifications.map((n) => (
+                <MenuItem
+                  key={n.id}
+                  onClick={() => handleNotifClick(n)}
+                  sx={{ whiteSpace: 'normal', alignItems: 'flex-start', gap: 1, py: 1.1 }}
+                >
+                  <ListItemIcon sx={{ mt: 0.3, minWidth: 32 }}>{notifIcon(n.type)}</ListItemIcon>
+                  <Box sx={{ minWidth: 0 }}>
+                    <Typography variant="body2" sx={{ fontWeight: 600 }}>{n.title}</Typography>
+                    {n.body && (
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                        {n.body}
+                      </Typography>
+                    )}
+                  </Box>
+                </MenuItem>
+              ))
+            )}
+          </Menu>
 
           <Tooltip title={mode === 'dark' ? 'Modo claro' : 'Modo escuro'}>
             <IconButton color="inherit" onClick={toggle} aria-label="alternar tema">
