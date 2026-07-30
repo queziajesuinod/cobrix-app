@@ -695,6 +695,14 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
       'c.end_date >= $3::date',
       '(c.cancellation_date IS NULL OR c.cancellation_date >= $3::date)',
       '(cms2.status IS NULL OR LOWER(cms2.status) <> \'paid\')',
+      // Contratos mensais só entram no mês se a data de início for até o dia de
+      // vencimento efetivo do mês. Um contrato iniciado depois do vencimento não
+      // gera cobrança/notificação neste mês (a 1ª cai só no mês seguinte), então
+      // não deve aparecer no resumo. Modos interval_days/custom_dates ficam livres.
+      `(LOWER(COALESCE(c.billing_mode, 'monthly')) <> 'monthly'
+        OR c.start_date <= make_date($4::int, $5::int,
+             LEAST(COALESCE(c.billing_day, 1),
+                   EXTRACT(DAY FROM (make_date($4::int, $5::int, 1) + INTERVAL '1 month' - INTERVAL '1 day'))::int)))`,
     ];
     const contractParams = [req.companyId, monthEndIso, monthStartIso, year, month];
     if (clientId != null) {
