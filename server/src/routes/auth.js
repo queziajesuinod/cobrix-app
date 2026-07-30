@@ -2,14 +2,26 @@ const express = require("express");
 const jwt = require("jsonwebtoken");
 const { query } = require("../db");
 const { z } = require("zod");
+const { respondError } = require("../utils/http-error");
 
 const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET || (() => {
-  if (process.env.NODE_ENV === 'production') {
-    console.error('[FATAL] JWT_SECRET não está definido. Configure no .env antes de iniciar em produção.');
-    process.exit(1);
+// Segredos placeholder conhecidos: em produção o boot deve falhar se o
+// JWT_SECRET estiver ausente OU for um destes valores públicos.
+const PLACEHOLDER_JWT_SECRETS = new Set([
+  'change-me-dev-secret',
+  'devsecret-apenas-desenvolvimento',
+]);
+const JWT_SECRET = (() => {
+  const secret = process.env.JWT_SECRET;
+  const isProd = process.env.NODE_ENV === 'production';
+  if (!secret || PLACEHOLDER_JWT_SECRETS.has(secret)) {
+    if (isProd) {
+      console.error('[FATAL] JWT_SECRET ausente ou usando um valor placeholder inseguro. Defina um segredo forte e único no .env antes de iniciar em produção.');
+      process.exit(1);
+    }
+    return 'devsecret-apenas-desenvolvimento';
   }
-  return 'devsecret-apenas-desenvolvimento';
+  return secret;
 })();
 
 // Assinatura padronizada do token
@@ -48,7 +60,7 @@ async function requireAuth(req, res, next) {
   if (!token) return res.status(401).json({ error: "Unauthorized" });
 
   try {
-    const payload = jwt.verify(token, JWT_SECRET);
+    const payload = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
     req.user = {
       id: payload.id,
       email: payload.email,
@@ -96,7 +108,7 @@ async function maybeAuth(req, _res, next) {
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
   if (token) {
     try {
-      const payload = jwt.verify(token, JWT_SECRET);
+      const payload = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
       req.user = {
         id: payload.id,
         email: payload.email,
@@ -178,7 +190,8 @@ router.post("/login", async (req, res) => {
       `SELECT u.id, u.email, u.name, u.role, uc.company_id
        FROM users u
        LEFT JOIN user_companies uc ON u.id = uc.user_id
-       WHERE u.email = $1 AND u.password_hash = public.crypt($2, u.password_hash)`,
+       WHERE u.email = $1 AND u.password_hash = public.crypt($2, u.password_hash)
+         AND u.active = true`,
       [email, password]
     );
 
@@ -200,7 +213,7 @@ router.post("/login", async (req, res) => {
     const token = await sign(user);
     return res.json({ token, user });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return respondError(res, err);
   }
 });
 

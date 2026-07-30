@@ -5,8 +5,8 @@ import { Box, Card, Stack, TextField, Typography, Button, Alert } from '@mui/mat
 
 export default function LoginPage() {
   const { login } = useAuth()
-  const [email, setEmail] = useState('master@cobrix.local')
-  const [password, setPassword] = useState('SenhaForte123')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [error, setError] = useState(null)
   const navigate = useNavigate()
 
@@ -17,7 +17,8 @@ export default function LoginPage() {
     try {
       const res = await login(email, password)    // << aqui: dois args, não objeto
       const user = res?.user ?? res
-      if (user?.role === 'master') navigate('/companies/select')
+      // Master cai na lista de empresas para selecionar; demais no dashboard.
+      if (user?.role === 'master') navigate('/companies')
       else navigate('/dashboard')
     } catch (err) {
       setError(err?.response?.data?.error || 'Falha no login')

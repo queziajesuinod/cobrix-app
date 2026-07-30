@@ -13,11 +13,14 @@ const app = express()
 
 
 app.use(helmet())
+// Allowlist de CORS. localhost é sempre permitido (não é explorável via CORS —
+// um site atacante não consegue forjar Origin: localhost no navegador da vítima)
+// e é necessário para rodar o build localmente. Origens extras (domínios/IPs de
+// produção) vêm de ALLOWED_ORIGINS. O domínio de produção entra por padrão.
 const baseAllowlist = [
-  'http://localhost:5173',      // Frontend local
-  'http://localhost:3002',      // API local
-  'http://62.72.63.137:3002',   // IP público (opcional)
-  'https://cobrix.aleftec.com.br' // Domínio em produção (HTTPS)
+  'http://localhost:5173',
+  'http://localhost:3002',
+  'https://cobrix.aleftec.com.br',
 ]
 const envOrigins = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
@@ -26,10 +29,14 @@ const envOrigins = (process.env.ALLOWED_ORIGINS || '')
 const allowlist = [...new Set([...baseAllowlist, ...envOrigins])]
 app.use(cors({
   origin: (origin, cb) => {
+    // Sem Origin (mesma origem, curl, apps nativos) → permite.
     if (!origin) return cb(null, true)
     if (allowlist.includes(origin)) return cb(null, true)
     console.warn('[cors] rejection origin', origin)
-    return cb(new Error('Not allowed by CORS'))
+    // 403 explícito em vez de estourar como erro 500 no handler global.
+    const err = new Error('Origem não permitida por CORS')
+    err.status = 403
+    return cb(err)
   },
   credentials: true
 }))
@@ -37,6 +44,25 @@ app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 
 app.use('/api', rateLimit({ windowMs: 15 * 60 * 1000, limit: 300 }))
+
+// Limite mais estrito para o login (mitiga brute force). Fica ANTES do mount de
+// /api/auth para valer só nas rotas de autenticação.
+app.use('/api/auth/login', rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: true, legacyHeaders: false }))
+
+// Row-Level Security (opcional, DESLIGADO por padrão). Quando ENABLE_RLS=true,
+// cada request roda num cliente de banco com app.company_id setado, permitindo
+// que as policies RLS filtrem por empresa no nível do banco (defesa em
+// profundidade além dos filtros `WHERE company_id`).
+// Pré-requisitos para habilitar (ver RUNBOOK.md):
+//   1. Aplicar as policies (migration rls-policies);
+//   2. Rodar o app como role NÃO-owner das tabelas + FORCE ROW LEVEL SECURITY;
+//   3. Ajustar os cron jobs para setar app.company_id por empresa (ainda não
+//      fazem isso — habilitar sem esse passo bloquearia as cobranças).
+if (process.env.ENABLE_RLS === 'true') {
+  const { dbRequestContext } = require('./db')
+  app.use('/api', dbRequestContext)
+  console.log('[rls] ENABLE_RLS=true — dbRequestContext montado (app.company_id por request)')
+}
 
 // init DB
 initDb().then(() => console.log('DB ok')).catch(err => {
@@ -67,6 +93,21 @@ app.use('/api/companies', require('./routes/company-users-management'))
 app.use('/api/webhooks', require('./routes/webhooks'))
 // health
 app.get('/api/status', (_req, res) => res.json({ status: 'OK', schema: process.env.DB_SCHEMA || 'public', time: new Date().toISOString() }))
+// Liveness: o processo está de pé (barato, sem dependências).
 app.get('/healthz', (_req, res) => res.json({ ok: true }))
+// Readiness: valida conectividade com o banco — para uptime monitor / orquestrador.
+app.get('/readyz', async (_req, res) => {
+  const { query } = require('./db')
+  try {
+    await query('SELECT 1')
+    res.json({ ok: true, db: true })
+  } catch (err) {
+    res.status(503).json({ ok: false, db: false, error: 'db unreachable' })
+  }
+})
+
+// Middleware final de erro — captura throws/next(err) não tratados e responde
+// sem vazar detalhes internos. Deve ser o último `app.use`.
+app.use(require('./utils/http-error').errorHandler)
 
 module.exports = app

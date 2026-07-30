@@ -27,8 +27,13 @@ const router = express.Router();
 router.post('/pix/:secret', async (req, res) => {
   const expectedSecret = process.env.EFI_WEBHOOK_SECRET;
 
-  // Se não há secret configurado, aceita qualquer chamada (menos seguro, mas funcional)
-  if (expectedSecret && req.params.secret !== expectedSecret) {
+  // Fail closed: sem secret configurado, o webhook não pode ser confiável e é
+  // rejeitado (evita que qualquer chamada externa marque cobranças como pagas).
+  if (!expectedSecret) {
+    logger.error({ ip: req.ip }, '[webhook] EFI_WEBHOOK_SECRET não configurado — chamada rejeitada');
+    return res.status(503).json({ error: 'Webhook não configurado' });
+  }
+  if (req.params.secret !== expectedSecret) {
     logger.warn({ ip: req.ip }, '[webhook] tentativa com secret inválido');
     return res.status(401).json({ error: 'Unauthorized' });
   }

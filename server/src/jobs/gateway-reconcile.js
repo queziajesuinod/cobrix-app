@@ -148,7 +148,7 @@ async function processWebhookPayment({ txid, valor, horario, endToEndId }) {
   }
 
   const r = await query(
-    `SELECT id, company_id, contract_id, billing_id, due_date, txid, status
+    `SELECT id, company_id, contract_id, billing_id, due_date, txid, status, amount
        FROM ${SCHEMA}.billing_gateway_links
       WHERE txid = $1
         AND status IN ('generated','processing')
@@ -160,6 +160,17 @@ async function processWebhookPayment({ txid, valor, horario, endToEndId }) {
   if (!link) {
     logger.warn({ txid }, '[webhook] txid não encontrado ou já processado');
     return { skipped: true, reason: 'not-found-or-paid' };
+  }
+
+  // Anti-fraude: se o evento traz o valor pago, ele deve bater com o valor
+  // esperado da cobrança. Divergência → não marca como pago.
+  if (valor != null && link.amount != null) {
+    const paid = Number(valor);
+    const expected = Number(link.amount);
+    if (Number.isFinite(paid) && Number.isFinite(expected) && Math.abs(paid - expected) > 0.001) {
+      logger.warn({ txid, valor, expected }, '[webhook] valor pago diverge do esperado — ignorado');
+      return { skipped: true, reason: 'amount-mismatch' };
+    }
   }
 
   const detail = {

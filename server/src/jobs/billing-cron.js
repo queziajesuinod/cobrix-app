@@ -20,6 +20,20 @@ function dueDateForMonth(baseDate, billingDay) {
   return new Date(base.getFullYear(), base.getMonth(), eff);
 }
 
+// Guard de idempotência: verifica se já existe um envio BEM-SUCEDIDO para
+// (empresa, contrato, tipo, vencimento). Evita reenviar WhatsApp ao rodar o
+// cron duas vezes no dia ou ao sobrepor a execução manual com a agendada.
+// Envios com status 'failed' NÃO são considerados (devem ser reenviados).
+async function alreadySentSuccessfully(companyId, contractId, kind, dueDate) {
+  const r = await query(
+    `SELECT 1 FROM ${SCHEMA}.billing_notifications
+      WHERE company_id=$1 AND contract_id=$2 AND kind=$3 AND due_date=$4 AND status='sent'
+      LIMIT 1`,
+    [companyId, contractId, kind, dueDate]
+  );
+  return r.rowCount > 0;
+}
+
 function normalizeBillingIntervalMonths(value) {
   const numeric = Number(value);
   if (numeric === 3 || numeric === 12) return numeric;
@@ -348,6 +362,10 @@ async function sendPreReminders(now = new Date(), companyId = null) {
 
     const dueStr = isoDate(due);
     if (!c.client_phone) continue;
+    if (await alreadySentSuccessfully(c.company_id, c.id, 'pre', dueStr)) {
+      console.log(`[PRE] c#${c.id} due=${dueStr} já enviado — pulando`);
+      continue;
+    }
 
     try {
       const mesRefDate = new Date(due.getFullYear(), due.getMonth(), 1);
@@ -459,6 +477,10 @@ async function sendDueReminders(now = new Date(), companyId = null, opts = {}) {
     if (mode === "interval_days" && !includeWeekly) continue;
     if (mode === "custom_dates" && !includeCustom) continue;
     if (!r.client_phone) continue;
+    if (await alreadySentSuccessfully(r.company_id, r.contract_id, 'due', todayStr)) {
+      console.log(`[DUE] c#${r.contract_id} ${todayStr} já enviado — pulando`);
+      continue;
+    }
 
     try {
       const mesRefDate = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -573,6 +595,10 @@ async function sendLateRemindersForTarget(now, target, companyId, modeFilter, op
     if (mode === "interval_days" && !includeWeekly) continue;
     if (mode === "custom_dates" && !includeCustom) continue;
     if (!r.client_phone) continue;
+    if (await alreadySentSuccessfully(r.company_id, r.contract_id, 'late', targetStr)) {
+      console.log(`[LATE] c#${r.contract_id} ${targetStr} já enviado — pulando`);
+      continue;
+    }
 
     try {
       const mesRefDate = new Date(target.getFullYear(), target.getMonth(), 1);

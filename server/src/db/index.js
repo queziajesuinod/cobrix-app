@@ -13,8 +13,10 @@ const pool = new Pool({
   host: process.env.DB_HOST,
   port: process.env.DB_PORT || 5432,
   database: process.env.DB_NAME,
-  max: 10,
+  max: Number(process.env.DB_POOL_MAX || 20),
   idleTimeoutMillis: 30000,
+  // Falha rápido em vez de pendurar a request se o pool estiver esgotado.
+  connectionTimeoutMillis: Number(process.env.DB_POOL_CONN_TIMEOUT_MS || 10000),
 });
 const schema = (process.env.DB_SCHEMA || 'public').replace(/[^a-zA-Z0-9_]/g,'');
 

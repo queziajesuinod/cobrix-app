@@ -6,3 +6,7 @@ client/dist
 server/node_modules
 npm-debug.log
 Dockerfile.old
+# Nunca bakear segredos na imagem — fornecidos em runtime (compose env_file).
+.env
+**/.env
+!**/.env.example

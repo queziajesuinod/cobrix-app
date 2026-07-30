@@ -2,6 +2,7 @@ const express = require('express');
 const { query } = require('../db');
 const { requireAuth, companyScope } = require('./auth');
 const { syncSystemNotifications } = require('../services/notifications');
+const { respondError } = require('../utils/http-error');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 const router = express.Router();
@@ -26,7 +27,7 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
     );
     res.json({ items: r.rows, unreadCount: r.rowCount });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    respondError(res, e);
   }
 });
 
@@ -42,7 +43,7 @@ router.post('/read-all', requireAuth, companyScope(true), async (req, res) => {
     );
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    respondError(res, e);
   }
 });
 
@@ -64,7 +65,7 @@ router.post('/:id/read', requireAuth, companyScope(true), async (req, res) => {
     );
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    respondError(res, e);
   }
 });
 

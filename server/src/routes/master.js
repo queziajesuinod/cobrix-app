@@ -60,31 +60,9 @@ router.delete('/companies/:id', requireAuth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// CREATE USER (empresa)
-router.post('/users', requireAuth, async (req, res) => {
-  if (req.user.role !== 'master') return res.status(403).json({ error: 'Apenas master' });
-  const schema = z.object({
-    email: z.string().email(),
-    password: z.string().min(6),
-    company_id: z.coerce.number().int().positive(),
-    role: z.enum(['user','master']).optional().default('user')
-  });
-  const parse = schema.safeParse(req.body);
-  if (!parse.success) return res.status(400).json({ error: parse.error.flatten() });
-
-  const { email, password, company_id, role } = parse.data;
-  try {
-    const exists = await query('SELECT id FROM companies WHERE id=$1', [company_id]);
-    if (!exists.rows[0]) return res.status(400).json({ error: 'Empresa não encontrada' });
-    const bcrypt = require('bcryptjs');
-    const hash = await bcrypt.hash(password + `::company:${companyId}`, 12);
-
-    const r = await query('INSERT INTO users (email, password_hash, role, company_id) VALUES ($1,$2,$3,$4) RETURNING id, email, role, company_id', [email, hash, role, company_id]);
-    res.status(201).json(r.rows[0]);
-  } catch (err) {
-    if (String(err.message).includes('duplicate key')) return res.status(409).json({ error: 'Email já cadastrado' });
-    res.status(500).json({ error: err.message });
-  }
-});
+// Nota: a antiga rota POST /users foi removida — estava quebrada (referenciava
+// a variável indefinida `companyId` e uma coluna users.company_id inexistente,
+// sempre resultando em 500). A criação de usuários é feita por
+// company-users-management.js (modelo M2M via user_companies).
 
 module.exports = router;

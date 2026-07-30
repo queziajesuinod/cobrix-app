@@ -35,6 +35,7 @@ const { runDueOnly, runPreOnly, runLateOnly, runRenewOnly } = require('./jobs/bi
 const { runGatewayReconcile } = require('./jobs/gateway-reconcile');
 const { runNotificationRetry } = require('./jobs/notification-retry');
 const { withCronLock } = require('./utils/cron-lock');
+const { sendOpsAlert } = require('./services/alerts');
 const logger = require('./utils/logger');
 const {
   registerCronJob,
@@ -73,6 +74,7 @@ function scheduleCronJob(label, expression, job) {
       finalStatus = 'error';
       errorMessage = err?.message || String(err);
       logger.error({ err, job: label, ms: Date.now() - start }, `[CRON] failed ${label}`);
+      sendOpsAlert(`Cron ${label} falhou`, { job: label, error: errorMessage });
     } finally {
       await trackCron(label, () => markCronJobFinished(label, { status: finalStatus, error: errorMessage }));
     }
@@ -114,6 +116,7 @@ if (!Number.isNaN(gatewayPollMs) && gatewayPollMs > 0) {
       finalStatus = 'error';
       errorMessage = err?.message || String(err);
       logger.error({ err }, '[gateway-reconcile] polling cycle failed');
+      sendOpsAlert('Reconciliação de pagamentos (gateway) falhou', { error: errorMessage });
     } finally {
       await trackCron(gatewayJobName, () => markCronJobFinished(gatewayJobName, { status: finalStatus, error: errorMessage }));
     }
@@ -147,7 +150,7 @@ if (staticDir) {
 
 // 5) Server start
 const PORT = process.env.PORT || 3002;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   logger.info(
     {
       port: PORT,
@@ -159,3 +162,49 @@ app.listen(PORT, () => {
     `Server listening on port ${PORT}`
   );
 });
+
+// 6) Resiliência de processo e encerramento gracioso
+const { pool } = require('./db');
+
+// Um erro no pool (ex.: conexão derrubada pelo Postgres) não deve derrubar o
+// processo silenciosamente — apenas logamos; o pg recria conexões sob demanda.
+pool.on('error', (err) => {
+  logger.error({ err }, '[db] erro inesperado em cliente ocioso do pool');
+});
+
+// Promises rejeitadas sem catch: logar em vez de deixar o Node derrubar o
+// processo (o default do Node moderno é encerrar). Mantém o servidor de pé e dá
+// visibilidade — o correto é corrigir o caminho que rejeitou.
+process.on('unhandledRejection', (reason) => {
+  logger.error({ err: reason }, '[process] unhandledRejection não tratada');
+});
+
+// Exceção não capturada: o estado do processo é indefinido — logar e encerrar
+// para evitar comportamento corrompido (envios/PIX errados). Reinicie o serviço.
+process.on('uncaughtException', (err) => {
+  logger.error({ err }, '[process] uncaughtException — encerrando');
+  shutdown('uncaughtException', 1);
+});
+
+let shuttingDown = false;
+function shutdown(signal, exitCode = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info({ signal }, '[shutdown] encerrando graciosamente');
+
+  const forceTimer = setTimeout(() => {
+    logger.error('[shutdown] timeout de 10s — forçando saída');
+    process.exit(exitCode || 1);
+  }, 10000);
+  if (forceTimer.unref) forceTimer.unref();
+
+  server.close(async () => {
+    try { await pool.end(); }
+    catch (err) { logger.warn({ err }, '[shutdown] erro ao fechar o pool'); }
+    clearTimeout(forceTimer);
+    process.exit(exitCode);
+  });
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

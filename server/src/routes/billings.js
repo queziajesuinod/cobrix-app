@@ -9,6 +9,8 @@ const { notifyBillingPaid } = require('../services/payment-notifications');
 const { isGatewayConfigured } = require('../services/company-gateway');
 const { ensureDateOnly, formatISODate } = require('../utils/date-only');
 const { normalizeBillingIntervalMonths, isBillingMonthFor } = require('../jobs/billing-cron');
+const { withCronLock } = require('../utils/cron-lock');
+const { respondError } = require('../utils/http-error');
 
 const router = express.Router();
 const SCHEMA = process.env.DB_SCHEMA || 'public';
@@ -176,7 +178,7 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
     `, params);
     res.json(r.rows);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    respondError(res, e);
   }
 });
 
@@ -261,7 +263,7 @@ router.get('/kpis', requireAuth, companyScope(true), async (req, res) => {
     }
     res.json(k);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    respondError(res, e);
   }
 });
 
@@ -331,119 +333,122 @@ router.post('/notify', requireAuth, companyScope(true), async (req, res) => {
       if (b.rowCount) return res.status(409).json({ error: 'Cobrança já está PAGA/CANCELADA — notificação bloqueada' });
     }
 
-    // usa advisory lock por contrato para evitar race conditions
-    // withClient garante que lock e unlock ocorrem na MESMA conexão do pool
-    await withClient(async (lockClient) => {
-      await lockClient.query('SELECT pg_advisory_lock($1)', [Number(contract_id)]);
-      try {
-        // checa existência novamente dentro da lock
-        const exists2 = await query(`
-          SELECT 1 FROM ${SCHEMA}.billing_notifications
-          WHERE contract_id=$1 AND due_date=$2 AND type=$3 LIMIT 1
-        `, [contract_id, dueStr, typ]);
-        if (exists2.rowCount) {
-          return res.status(409).json({ error: 'Notificação já enviada para esse tipo/data' });
-        }
+    if (!row.client_phone) return res.status(400).json({ error: 'Contrato sem telefone do cliente' });
 
-        if (!row.client_phone) return res.status(400).json({ error: 'Contrato sem telefone do cliente' });
+    // Claim atômico da notificação via índice único parcial
+    // uq_bn_company_contract_kind_due (company_id, contract_id, kind, due_date).
+    // Substitui o advisory lock: o próprio banco garante unicidade e NÃO
+    // seguramos conexão do pool durante o I/O externo (gateway + WhatsApp).
+    const claim = await query(`
+      INSERT INTO ${SCHEMA}.billing_notifications
+        (company_id, contract_id, client_id, kind, target_date, status, provider, to_number, message, type, due_date, created_at)
+      VALUES ($1,$2,$3,'manual',$4,'queued','evo',$5,'',$6,$7, NOW())
+      ON CONFLICT (company_id, contract_id, kind, due_date) WHERE due_date IS NOT NULL
+      DO NOTHING
+      RETURNING id
+    `, [req.companyId, Number(contract_id), Number(row.client_id), isoDate(new Date()), row.client_phone, typ, dueStr]);
+    if (!claim.rows[0]) {
+      return res.status(409).json({ error: 'Notificação já enviada/em andamento para este contrato e vencimento' });
+    }
+    const notifId = claim.rows[0].id;
 
-        const mesRefDate = new Date(due.getFullYear(), due.getMonth(), 1);
-        const billingLookup = await query(`
-          SELECT id FROM ${SCHEMA}.billings
-          WHERE company_id=$1 AND contract_id=$2 AND billing_date=$3
-          LIMIT 1
-        `, [req.companyId, Number(contract_id), dueStr]);
-        let billingId = billingLookup.rows[0]?.id || null;
-        let createdBilling = false;
-        if (!billingId) {
-          const inserted = await query(`
-            INSERT INTO ${SCHEMA}.billings (company_id, contract_id, billing_date, amount, status)
-            VALUES ($1,$2,$3,$4,'pending')
-            ON CONFLICT (contract_id, billing_date)
-            DO UPDATE SET amount = EXCLUDED.amount
-            RETURNING id
-          `, [req.companyId, Number(contract_id), dueStr, amount]);
-          billingId = inserted.rows[0]?.id || billingId;
-          createdBilling = Boolean(billingId);
-        }
-        if (createdBilling) {
-          await ensureContractMonthStatusPending(contract_id, req.companyId, dueStr);
-        }
-        const map = { pre: msgPre, due: msgDue, late: msgLate };
-        const recipientName = row.client_responsavel || row.client_name;
-        const clientDocument = {
-          cpf: row.client_document_cpf || null,
-          cnpj: row.client_document_cnpj || null,
-        };
-        const gatewayPayment = gatewayReady ? await ensureGatewayPaymentLink({
-          companyId: req.companyId,
-          contractId: Number(contract_id),
-          billingId,
-          dueDate: dueStr,
-          amount,
-          contractDescription: row.description,
-          clientName: recipientName,
-          clientDocument,
-        }) : null;
-        const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
-        const copyPaste = gatewaySummary?.copyPaste || null;
-        const text = await map[typ]({
-          nome: recipientName,
-          responsavel: row.client_responsavel,
-          client_name: row.client_name,
-          tipoContrato: row.description,
-          billing_mode: row.billing_mode,
-          mesRefDate,
-          vencimentoDate: due,
-          valor: amount,
-          companyId: req.companyId,
-          gatewayPayment,
-          gatewayPaymentLink: Boolean(copyPaste),
-          payment_link: null,
-          payment_code: copyPaste,
-          payment_qrcode: null,
-          payment_expires_at_iso: gatewaySummary?.expiresAtIso || null,
-        });
-
-        // envia via EVO com config da empresa
-        const evo = await sendWhatsapp(req.companyId, { number: row.client_phone, text });
-
-        // registra completo
-        const providerResponse = {
-          messenger: evo.data ?? null,
-          messengerStatus: evo.status ?? null,
-          gateway: gatewaySummary,
-        };
-
-        await insertBillingNotification({
-          companyId: req.companyId,
-          billingId,
-          contractId: Number(contract_id),
-          clientId: Number(row.client_id),
-          kind: 'manual',
-          targetDate: isoDate(new Date()),
-          status: evo.ok ? 'sent' : 'failed',
-          provider: 'evo',
-          toNumber: row.client_phone,
-          message: text,
-          providerStatus: evo.status != null ? String(evo.status) : null,
-          providerResponse,
-          error: evo.ok ? null : (evo.error || null),
-          sentAt: evo.ok ? new Date() : null,
-          type: typ,
-          dueDate: dueStr,
-        });
-
-        res.json({ ok: true, provider: { ok: evo.ok, status: evo.status, data: evo.data } });
-      } finally {
-        // libera sempre o advisory lock na mesma conexão
-        await lockClient.query('SELECT pg_advisory_unlock($1)', [Number(contract_id)]).catch((unlockErr) => {
-          console.warn('[notify] advisory unlock falhou:', unlockErr.message);
-        });
+    try {
+      const mesRefDate = new Date(due.getFullYear(), due.getMonth(), 1);
+      const billingLookup = await query(`
+        SELECT id FROM ${SCHEMA}.billings
+        WHERE company_id=$1 AND contract_id=$2 AND billing_date=$3
+        LIMIT 1
+      `, [req.companyId, Number(contract_id), dueStr]);
+      let billingId = billingLookup.rows[0]?.id || null;
+      let createdBilling = false;
+      if (!billingId) {
+        const inserted = await query(`
+          INSERT INTO ${SCHEMA}.billings (company_id, contract_id, billing_date, amount, status)
+          VALUES ($1,$2,$3,$4,'pending')
+          ON CONFLICT (contract_id, billing_date)
+          DO UPDATE SET amount = EXCLUDED.amount
+          RETURNING id
+        `, [req.companyId, Number(contract_id), dueStr, amount]);
+        billingId = inserted.rows[0]?.id || billingId;
+        createdBilling = Boolean(billingId);
       }
-    });
+      if (createdBilling) {
+        await ensureContractMonthStatusPending(contract_id, req.companyId, dueStr);
+      }
+      if (billingId) {
+        await query(`UPDATE ${SCHEMA}.billing_notifications SET billing_id=$1 WHERE id=$2`, [billingId, notifId]);
+      }
+
+      const map = { pre: msgPre, due: msgDue, late: msgLate };
+      const recipientName = row.client_responsavel || row.client_name;
+      const clientDocument = {
+        cpf: row.client_document_cpf || null,
+        cnpj: row.client_document_cnpj || null,
+      };
+      const gatewayPayment = gatewayReady ? await ensureGatewayPaymentLink({
+        companyId: req.companyId,
+        contractId: Number(contract_id),
+        billingId,
+        dueDate: dueStr,
+        amount,
+        contractDescription: row.description,
+        clientName: recipientName,
+        clientDocument,
+      }) : null;
+      const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
+      const copyPaste = gatewaySummary?.copyPaste || null;
+      const text = await map[typ]({
+        nome: recipientName,
+        responsavel: row.client_responsavel,
+        client_name: row.client_name,
+        tipoContrato: row.description,
+        billing_mode: row.billing_mode,
+        mesRefDate,
+        vencimentoDate: due,
+        valor: amount,
+        companyId: req.companyId,
+        gatewayPayment,
+        gatewayPaymentLink: Boolean(copyPaste),
+        payment_link: null,
+        payment_code: copyPaste,
+        payment_qrcode: null,
+        payment_expires_at_iso: gatewaySummary?.expiresAtIso || null,
+      });
+
+      // envia via EVO com config da empresa (fora de qualquer lock/conexão retida)
+      const evo = await sendWhatsapp(req.companyId, { number: row.client_phone, text });
+
+      const providerResponse = {
+        messenger: evo.data ?? null,
+        messengerStatus: evo.status ?? null,
+        gateway: gatewaySummary,
+      };
+
+      // finaliza a linha reivindicada com o resultado do envio
+      await query(`
+        UPDATE ${SCHEMA}.billing_notifications
+           SET status=$1, message=$2, provider_status=$3, provider_response=$4,
+               error=$5, sent_at=$6
+         WHERE id=$7
+      `, [
+        evo.ok ? 'sent' : 'failed',
+        text,
+        evo.status != null ? String(evo.status) : null,
+        encodeProviderResponse(providerResponse),
+        evo.ok ? null : (evo.error || null),
+        evo.ok ? new Date() : null,
+        notifId,
+      ]);
+
+      res.json({ ok: true, provider: { ok: evo.ok, status: evo.status, data: evo.data } });
+    } catch (err) {
+      // marca a linha reivindicada como falha (permite retry e evita ficar presa em 'queued')
+      await query(`UPDATE ${SCHEMA}.billing_notifications SET status='failed', error=$1 WHERE id=$2`,
+        [String(err?.message || err), notifId]).catch(() => {});
+      throw err;
+    }
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    respondError(res, e);
   }
 });
 
@@ -501,7 +506,7 @@ router.put('/:id/status', requireAuth, companyScope(true), async (req, res) => {
 
     res.json(updated.rows[0]);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    respondError(res, e);
   }
 });
 // Hist├│rico de notifica├º├Áes de uma cobran├ºa
@@ -526,7 +531,7 @@ router.get('/:id/notifications', requireAuth, companyScope(true), async (req, re
     `, [row.contract_id, row.billing_date]);
     res.json(n.rows);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    respondError(res, e);
   }
 });
 
@@ -561,7 +566,7 @@ router.put('/by-contract/:contractId/month/:year/:month/status', requireAuth, co
 
     res.json({ updated: r.rowCount, ids: r.rows.map(x => x.id) });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    respondError(res, e);
   }
 });
 
@@ -598,8 +603,8 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
       JOIN ${SCHEMA}.clients cl ON cl.id = c.client_id
       WHERE c.company_id = $1
         AND c.active = true
-        AND EXTRACT(YEAR FROM bn.due_date) = $2
-        AND EXTRACT(MONTH FROM bn.due_date) = $3
+        AND bn.due_date >= $7::date
+        AND bn.due_date < $8::date
         AND ($4::int IS NULL OR c.client_id = $4)
         AND ($5::int IS NULL OR c.id = $5)
         AND ($6::int IS NULL OR EXTRACT(DAY FROM bn.due_date) = $6)
@@ -637,8 +642,8 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
       JOIN ${SCHEMA}.clients   cl ON cl.id = c.client_id
       WHERE c.company_id = $1
         AND c.active = true
-        AND EXTRACT(YEAR FROM b.billing_date) = $2
-        AND EXTRACT(MONTH FROM b.billing_date) = $3
+        AND b.billing_date >= $7::date
+        AND b.billing_date < $8::date
         AND ($4::int IS NULL OR cl.id = $4)
         AND ($5::int IS NULL OR c.id = $5)
         AND ($6::int IS NULL OR EXTRACT(DAY FROM b.billing_date) = $6)
@@ -778,7 +783,7 @@ router.get('/overview', requireAuth, companyScope(true), async (req, res) => {
     });
     res.json(result);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    respondError(res, e);
   }
 });
 
@@ -852,7 +857,7 @@ router.get('/paid', requireAuth, companyScope(true), async (req, res) => {
       data: rows.rows,
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    respondError(res, e);
   }
 });
 
@@ -882,12 +887,18 @@ router.get('/paid', requireAuth, companyScope(true), async (req, res) => {
       console.log(
         `[billing-run] company=${req.companyId} date=${isoDate(base)} payload=${JSON.stringify(payload)}`
       );
-      await runDaily(base, payload);
+      // Lock por empresa: impede execuções manuais concorrentes que poderiam
+      // gerar/reenviar cobranças em duplicidade. O guard de idempotência no cron
+      // já protege contra reenvio; o lock evita o trabalho concorrente.
+      const ran = await withCronLock(`MANUAL_RUN:${req.companyId}`, () => runDaily(base, payload));
+      if (!ran) {
+        return res.status(409).json({ error: 'Já existe uma execução em andamento para esta empresa. Tente novamente em instantes.' });
+      }
       console.log(`[billing-run] completed company=${req.companyId} date=${isoDate(base)}`);
       res.json({ ok: true, ran_for: isoDate(base), steps: { generate, pre, due, late } });
     } catch (e) {
       console.error(`[billing-run] failed company=${req.companyId} date=${req.body?.date || ''}`, e);
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 

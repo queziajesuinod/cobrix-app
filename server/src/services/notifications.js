@@ -6,6 +6,12 @@ const { formatISODate, addDays } = require('../utils/date-only');
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 const OVERDUE_DAYS = 60;
 
+// Throttle do sync por empresa: o sino faz poll frequente, mas os alertas de
+// "vence hoje"/"atraso +60d" só mudam ao longo do dia. Evita rodar os scans +
+// upserts a cada poll. Cache em memória (por processo) do último sync.
+const SYNC_THROTTLE_MS = Number(process.env.NOTIF_SYNC_THROTTLE_MS || 5 * 60 * 1000);
+const lastSyncByCompany = new Map();
+
 // Formata uma data (string ISO ou Date) para DD/MM/AAAA (pt-BR).
 function formatBrDate(value) {
   const iso = formatISODate(value);
@@ -33,6 +39,10 @@ async function createNotification({ companyId, type, title, body = null, refType
 // Cliente novo é emitido diretamente na rota de cadastro.
 async function syncSystemNotifications(companyId, now = new Date()) {
   if (!companyId) return;
+  const throttleKey = Number(companyId);
+  const nowMs = now.getTime();
+  if (nowMs - (lastSyncByCompany.get(throttleKey) || 0) < SYNC_THROTTLE_MS) return;
+  lastSyncByCompany.set(throttleKey, nowMs);
   const todayIso = formatISODate(now);
   const year = now.getFullYear();
   const month = now.getMonth() + 1;

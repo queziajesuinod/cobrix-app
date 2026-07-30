@@ -19,6 +19,7 @@ import ToggleOffIcon from '@mui/icons-material/ToggleOff'
 import FilterListIcon from '@mui/icons-material/FilterList'
 import PeopleIcon from '@mui/icons-material/People'
 import { formatDocumentValue } from './ClientForm'
+import { useConfirm } from '@/components/ConfirmDialog'
 
 const STATUS_OPTIONS = [
   { value: 'active', label: 'Ativos' },
@@ -29,6 +30,7 @@ const STATUS_OPTIONS = [
 export default function ClientsPage() {
   const qc = useQueryClient()
   const navigate = useNavigate()
+  const confirm = useConfirm()
   const [page, setPage] = useState(0)
   const [rowsPerPage, setRowsPerPage] = useState(20)
   const [searchInput, setSearchInput] = useState('')
@@ -82,10 +84,16 @@ export default function ClientsPage() {
 
   const handleCreate = () => navigate('/clients/new')
   const handleEdit = (row) => navigate(`/clients/${row.id}/edit`)
-  const handleToggleActive = (row) => {
+  const handleToggleActive = async (row) => {
     const next = !row.active
     const action = next ? 'Ativar' : 'Inativar'
-    if (!confirm(`${action} este cliente?`)) return
+    const ok = await confirm({
+      title: `${action} cliente`,
+      description: `Deseja ${action.toLowerCase()} o cliente "${row.name}"?`,
+      confirmText: action,
+      tone: next ? 'default' : 'danger',
+    })
+    if (!ok) return
     setStatus.mutate({ id: row.id, active: next })
   }
 

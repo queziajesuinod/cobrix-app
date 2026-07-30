@@ -17,6 +17,7 @@ import EmptyState from '@/components/EmptyState'
 import { contractTypesService } from '@/features/contracts/contractTypes.service'
 import { useForm } from 'react-hook-form'
 import { useAuth } from '@/features/auth/AuthContext'
+import { useConfirm } from '@/components/ConfirmDialog'
 
 function TypeDialog({ open, onClose, onSubmit, defaultValues }) {
   const { register, handleSubmit, reset, watch } = useForm({
@@ -58,6 +59,7 @@ function TypeDialog({ open, onClose, onSubmit, defaultValues }) {
 export default function ContractTypesPage() {
   const { selectedCompanyId } = useAuth()
   const enabled = Number.isInteger(selectedCompanyId)
+  const confirm = useConfirm()
   const qc = useQueryClient()
   const list = useQuery({
     queryKey: ['contract_types', selectedCompanyId],
@@ -99,7 +101,13 @@ export default function ContractTypesPage() {
 
   const handleDelete = async (row) => {
     if (!enabled) return
-    if (window.confirm(`Excluir o tipo ${row.name}?`)) {
+    const ok = await confirm({
+      title: 'Excluir tipo de contrato',
+      description: `Excluir o tipo "${row.name}"? Esta ação não pode ser desfeita.`,
+      confirmText: 'Excluir',
+      tone: 'danger',
+    })
+    if (ok) {
       await remove.mutateAsync(row.id)
     }
   }

@@ -5,6 +5,7 @@ import { contractsService, clientsPicker } from './contracts.service'
 import ClientAutocomplete from '@/components/ClientAutocomplete'
 import { contractTypesService } from './contractTypes.service'
 import { useAuth } from '@/features/auth/AuthContext'
+import { useConfirm } from '@/components/ConfirmDialog'
 import PageHeader from '@/components/PageHeader'
 import PapperBlock from '@/components/PapperBlock'
 import TableSkeleton from '@/components/TableSkeleton'
@@ -608,6 +609,7 @@ export default function ContractsPage() {
   const navigate = useNavigate()
   const { selectedCompanyId } = useAuth()
   const enabled = Number.isInteger(selectedCompanyId)
+  const confirm = useConfirm()
 
   const [page, setPage] = useState(0)
   const [rowsPerPage, setRowsPerPage] = useState(20)
@@ -686,11 +688,17 @@ export default function ContractsPage() {
     if (!enabled) return
     navigate(`/contracts/${row.id}/edit`)
   }
-  const handleToggleActive = (row) => {
+  const handleToggleActive = async (row) => {
     if (!enabled) return
     const next = !row.active
     const action = next ? 'Ativar' : 'Inativar'
-    if (!confirm(`${action} este contrato?`)) return
+    const ok = await confirm({
+      title: `${action} contrato`,
+      description: `Deseja ${action.toLowerCase()} este contrato?`,
+      confirmText: action,
+      tone: next ? 'default' : 'danger',
+    })
+    if (!ok) return
     setStatus.mutate({ id: row.id, active: next })
   }
 

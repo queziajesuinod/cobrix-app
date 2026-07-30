@@ -3,6 +3,7 @@ const { query, withClient } = require('../db');
 const { z } = require('zod');
 const { requireAuth, companyScope } = require('./auth');
 const { assertContractLimit } = require('../utils/company-limits');
+const { respondError } = require('../utils/http-error');
 
 const router = express.Router();
 const DATE_ISO = /^\d{4}-\d{2}-\d{2}$/;
@@ -252,7 +253,7 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
       data: rows.rows
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 });
 
@@ -267,7 +268,7 @@ router.get('/:id', requireAuth, companyScope(true), async (req, res) => {
     if (!r.rows[0]) return res.status(404).json({ error: 'Contrato não encontrado' });
     res.json(r.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 });
 
@@ -298,7 +299,7 @@ router.post('/', requireAuth, companyScope(true), async (req, res) => {
     const hasClient = await query('SELECT id FROM clients WHERE id=$1 AND company_id=$2', [client_id, req.companyId]);
     if (!hasClient.rows[0]) return res.status(400).json({ error: 'Cliente não encontrado nesta empresa' });
 
-    const typeExists = await query(`SELECT id FROM ${SCHEMA}.contract_types WHERE id=$1`, [contract_type_id]);
+    const typeExists = await query(`SELECT id FROM ${SCHEMA}.contract_types WHERE id=$1 AND company_id=$2`, [contract_type_id, req.companyId]);
     if (!typeExists.rows[0]) return res.status(400).json({ error: 'Tipo de contrato inválido' });
 
     await ensureUniqueContractDescription(req.companyId, client_id, description, null);
@@ -309,7 +310,7 @@ router.post('/', requireAuth, companyScope(true), async (req, res) => {
     `, [req.companyId, client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, billing_interval_days, billing_mode, cancellation_date]);
     res.status(201).json(r.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 });
 
@@ -340,7 +341,7 @@ router.put('/:id', requireAuth, companyScope(true), async (req, res) => {
     const hasClient = await query('SELECT id FROM clients WHERE id=$1 AND company_id=$2', [client_id, req.companyId]);
     if (!hasClient.rows[0]) return res.status(400).json({ error: 'Cliente não encontrado nesta empresa' });
 
-    const typeExists = await query(`SELECT id FROM ${SCHEMA}.contract_types WHERE id=$1`, [contract_type_id]);
+    const typeExists = await query(`SELECT id FROM ${SCHEMA}.contract_types WHERE id=$1 AND company_id=$2`, [contract_type_id, req.companyId]);
     if (!typeExists.rows[0]) return res.status(400).json({ error: 'Tipo de contrato inválido' });
 
     const r = await query(`
@@ -351,7 +352,7 @@ router.put('/:id', requireAuth, companyScope(true), async (req, res) => {
     if (!r.rows[0]) return res.status(404).json({ error: 'Contrato não encontrado' });
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 });
 
@@ -373,7 +374,7 @@ router.get('/:id/custom-billings', requireAuth, companyScope(true), async (req, 
     );
     res.json(billings.rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 });
 
@@ -436,7 +437,7 @@ router.put('/:id/custom-billings', requireAuth, companyScope(true), async (req, 
     );
     res.json({ ok: true, items: saved.rows });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 });
 
@@ -459,7 +460,7 @@ router.delete('/:id', requireAuth, companyScope(true), async (req, res) => {
     if (!r.rows[0]) return res.status(404).json({ error: 'Contrato não encontrado' });
     res.json({ ok: true, active: false });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 });
 

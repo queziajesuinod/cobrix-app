@@ -1,27 +1,10 @@
 import axios from 'axios'
 import { authService } from '@/features/auth/auth.service'
+import { getApiBaseUrl } from '@/lib/api-base'
 
-// ✅ OPÇÃO 3: Detecção Automática de Domínio
-// A URL da API é detectada automaticamente baseada no hostname
-// Vantagem: Funciona em qualquer ambiente sem configuração
-
-const getApiUrl = () => {
-  const hostname = window.location.hostname
-  
-  // Mapeamento de domínios
-  const domainMap = {
-    'cobrix.aleftec.com.br': 'https://apicobrix.aleftec.com.br',
-    'localhost': 'http://localhost:3002',
-    '127.0.0.1': 'http://localhost:3002',
-  }
-  
-  // Retorna a URL mapeada ou usa o próprio origin como fallback
-  return domainMap[hostname] || window.location.origin
-}
-
-const api = axios.create({ 
-  baseURL: `${getApiUrl()}/api`,
-  withCredentials: true 
+const api = axios.create({
+  baseURL: getApiBaseUrl(),
+  withCredentials: true
 })
 
 // Função para obter o selectedCompanyId atual
@@ -69,8 +52,10 @@ function handleSessionExpired() {
   window.dispatchEvent(new CustomEvent(SESSION_EVENT))
   if (redirectingToLogin) return
   redirectingToLogin = true
-  if (window.location.pathname !== '/login') {
-    window.location.replace('/login')
+  // App usa HashRouter: as rotas vivem em window.location.hash (#/login), e
+  // pathname é sempre '/'. Redirecionar via hash mantém a navegação dentro da SPA.
+  if (!window.location.hash.startsWith('#/login')) {
+    window.location.hash = '#/login'
   }
 }
 

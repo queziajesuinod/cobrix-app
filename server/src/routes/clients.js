@@ -4,6 +4,7 @@ const { z } = require('zod');
 const { requireAuth, companyScope } = require('./auth');
 const { assertClientLimit } = require('../utils/company-limits');
 const { createNotification } = require('../services/notifications');
+const { respondError } = require('../utils/http-error');
 
 const router = express.Router();
 
@@ -100,7 +101,7 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
     const data = rows.rows.map(attachDocument);
     res.json({ page, pageSize, total: count.rows[0].total, data });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 });
 
@@ -110,7 +111,7 @@ router.get('/:id', requireAuth, companyScope(true), async (req, res) => {
     if (!r.rows[0]) return res.status(404).json({ error: 'Cliente não encontrado' });
     res.json(attachDocument(r.rows[0]));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 });
 
@@ -207,7 +208,7 @@ router.put('/:id', requireAuth, companyScope(true), async (req, res) => {
     if (!r.rows[0]) return res.status(404).json({ error: 'Cliente não encontrado' });
     res.json(attachDocument(r.rows[0]));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 });
 
@@ -237,7 +238,7 @@ router.delete('/:id', requireAuth, companyScope(true), async (req, res) => {
     if (!r.rows[0]) return res.status(404).json({ error: 'Cliente não encontrado' });
     res.json({ ok: true, active: false });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 });
 

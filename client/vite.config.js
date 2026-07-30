@@ -32,4 +32,20 @@ export default defineConfig({
     strictPort: true,
     allowedHosts: ['cobrix.aleftec.com.br'],
   },
+
+  build: {
+    rollupOptions: {
+      output: {
+        // Separa vendors em chunks cacheáveis independentemente, reduzindo o
+        // chunk principal (que passava de 500 kB).
+        manualChunks: {
+          react: ['react', 'react-dom', 'react-router-dom'],
+          mui: ['@mui/material', '@emotion/react', '@emotion/styled'],
+          'mui-icons': ['@mui/icons-material'],
+          query: ['@tanstack/react-query'],
+          forms: ['react-hook-form', '@hookform/resolvers', 'zod'],
+        },
+      },
+    },
+  },
 })

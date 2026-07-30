@@ -372,13 +372,12 @@ function cleanupTempCerts() {
   companyCertCache.clear();
 }
 
-// Registra handlers para os sinais de encerramento mais comuns
-for (const sig of ['exit', 'SIGINT', 'SIGTERM', 'SIGUSR2']) {
-  process.once(sig, () => {
-    cleanupTempCerts();
-    if (sig !== 'exit') process.exit(0);
-  });
-}
+// Limpeza dos certificados temporários (.p12) no encerramento. O encerramento
+// gracioso de SIGINT/SIGTERM (drenar conexões + pool.end) é orquestrado pelo
+// server.js; aqui só garantimos a limpeza dos arquivos via evento 'exit'.
+// SIGUSR2 (usado pelo nodemon para reiniciar) precisa encerrar após a limpeza.
+process.once('exit', () => { cleanupTempCerts(); });
+process.once('SIGUSR2', () => { cleanupTempCerts(); process.exit(0); });
 
 async function registerCompanyWebhook({ companyId, webhookUrl }) {
   const credentials = await getCompanyGatewayCredentials(companyId);

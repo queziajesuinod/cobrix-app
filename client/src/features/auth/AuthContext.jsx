@@ -1,6 +1,7 @@
 // client/src/features/auth/AuthContext.jsx
 import React from 'react'
 import { authService } from './auth.service'
+import { queryClient } from '@/lib/queryClient'
 
 const AuthContext = React.createContext(null)
 const COMPANY_STORAGE_KEY = 'selectedCompanyId'
@@ -26,6 +27,7 @@ export function AuthProvider({ children }) {
   const persistSelectedCompanyId = React.useCallback((id) => {
     const numeric = Number(id)
     const nextValue = Number.isInteger(numeric) && numeric > 0 ? numeric : null
+    const prevValue = readStoredCompanyId()
     setSelectedCompanyIdState(nextValue)
     try {
       if (nextValue) {
@@ -35,6 +37,12 @@ export function AuthProvider({ children }) {
       }
     } catch {
       // ignore storage errors
+    }
+    // Trocar de empresa muda o tenant de TODAS as queries por-empresa. Sem isso,
+    // como as query keys nem sempre incluem o companyId, o cache do React Query
+    // devolveria dados da empresa anterior. Limpar o cache força refetch limpo.
+    if (prevValue !== nextValue) {
+      queryClient.clear()
     }
   }, [])
 

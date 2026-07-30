@@ -171,7 +171,7 @@ router.post("/:companyId/users", requireAuth, async (req, res) => {
 
       const userResult = await query(`
         INSERT INTO users (email, password_hash, role, active, name, created_at)
-        VALUES ($1, public.crypt($2, public.gen_salt('bf')), $3, $4, $5, now())
+        VALUES ($1, public.crypt($2, public.gen_salt('bf', 12)), $3, $4, $5, now())
         RETURNING id, email, name, role, active, created_at
       `, [email, password, role, active, name]);
 
@@ -292,7 +292,7 @@ router.put("/:companyId/users/:userId", requireAuth, async (req, res) => {
     }
 
     if (updateData.password) {
-      updateFields.push(`password_hash = public.crypt($${paramCount}, public.gen_salt('bf'))`);
+      updateFields.push(`password_hash = public.crypt($${paramCount}, public.gen_salt('bf', 12))`);
       updateValues.push(updateData.password);
       paramCount++;
     }

@@ -2,11 +2,10 @@ import React, { lazy, Suspense } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import ProtectedRoute from './ProtectedRoute'
 import AppShell from '@/layouts/AppShell'
-import AutoNotificationsPage from '@/features/notifications/AutoNotificationsPage'
-import MessageTemplatesPage from '@/features/notifications/MessageTemplatesPage'
-import EvoConnectionPage from '@/features/integration/EvoConnectionPage'
-
-import CompanyCreatePage from '@/features/companies/CompanyCreatePage'
+const AutoNotificationsPage = lazy(() => import('@/features/notifications/AutoNotificationsPage'))
+const MessageTemplatesPage = lazy(() => import('@/features/notifications/MessageTemplatesPage'))
+const EvoConnectionPage = lazy(() => import('@/features/integration/EvoConnectionPage'))
+const CompanyCreatePage = lazy(() => import('@/features/companies/CompanyCreatePage'))
 const LoginPage = lazy(() => import('@/features/auth/LoginPage'))
 const DashboardPage = lazy(() => import('@/features/dashboard/DashboardPage'))
 const ClientsPage = lazy(() => import('@/features/clients/ClientsPage'))

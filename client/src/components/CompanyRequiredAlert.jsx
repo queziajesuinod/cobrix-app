@@ -39,16 +39,10 @@ export default function CompanyRequiredAlert() {
             size="small"
             startIcon={<BusinessIcon />}
             onClick={() => {
-              // Scroll para o seletor de empresa no sidebar
-              const companySelector = document.querySelector('[data-testid="company-selector"]')
-              if (companySelector) {
-                companySelector.scrollIntoView({ behavior: 'smooth', block: 'center' })
-                // Destacar temporariamente o seletor
-                companySelector.style.animation = 'pulse 2s ease-in-out'
-                setTimeout(() => {
-                  companySelector.style.animation = ''
-                }, 2000)
-              }
+              // Rola até o seletor de empresa no sidebar (sem animação inexistente).
+              document
+                .querySelector('[data-testid="company-selector"]')
+                ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
             }}
           >
             Ir para seletor de empresa

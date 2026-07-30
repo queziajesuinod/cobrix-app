@@ -14,16 +14,18 @@ function mapGatewayResponse(row = {}) {
     efi_client_id_enc,
     efi_client_secret_enc,
     efi_cert_base64_enc,
+    evo_api_key,
     ...rest
   } = row;
+  // NUNCA retornar segredos descriptografados para o cliente. Devolvemos apenas
+  // o client_id (identificador, necessário à tela de config) e flags booleanas.
   const clientId = efi_client_id_enc ? decryptSafe(efi_client_id_enc, { allowMissingKey: true }) : null;
-  const clientSecret = efi_client_secret_enc ? decryptSafe(efi_client_secret_enc, { allowMissingKey: true }) : null;
   return {
     ...rest,
     gateway_client_id: clientId,
-    gateway_client_secret: clientSecret,
     gateway_has_secret: Boolean(efi_client_secret_enc),
     gateway_cert_uploaded: Boolean(efi_cert_base64_enc),
+    evo_has_api_key: Boolean(evo_api_key),
   };
 }
 

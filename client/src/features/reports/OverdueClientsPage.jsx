@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useConfirm } from '@/components/ConfirmDialog';
 import {
   Accordion,
   AccordionSummary,
@@ -97,6 +98,7 @@ function buildExportRows(rows) {
 
 export default function OverdueClientsPage() {
   const queryClient = useQueryClient();
+  const confirm = useConfirm();
   const { selectedCompanyId, user } = useAuth();
   const enabled = Number.isInteger(selectedCompanyId);
 
@@ -240,15 +242,25 @@ export default function OverdueClientsPage() {
     notifyClientMutation.mutate({ clientId: row.client_id });
   };
 
-  const markClientPaid = (row) => {
-    const confirmText = `Marcar TODAS as cobranças em atraso do cliente "${row.client_name}" como pagas?`;
-    if (!window.confirm(confirmText)) return;
+  const markClientPaid = async (row) => {
+    const ok = await confirm({
+      title: 'Marcar cliente como pago',
+      description: `Marcar TODAS as cobranças em atraso do cliente "${row.client_name}" como pagas?`,
+      confirmText: 'Marcar como pago',
+      color: 'success',
+    });
+    if (!ok) return;
     markClientPaidMutation.mutate({ clientId: row.client_id });
   };
 
-  const markBillingPaid = (row) => {
-    const confirmText = `Marcar a cobrança #${row.billing_id} como paga?`;
-    if (!window.confirm(confirmText)) return;
+  const markBillingPaid = async (row) => {
+    const ok = await confirm({
+      title: 'Marcar cobrança como paga',
+      description: `Marcar a cobrança #${row.billing_id} como paga?`,
+      confirmText: 'Marcar como pago',
+      color: 'success',
+    });
+    if (!ok) return;
     markBillingPaidMutation.mutate({ billingId: row.billing_id });
   };
 

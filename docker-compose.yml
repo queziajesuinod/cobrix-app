@@ -5,7 +5,11 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        VITE_API_URL: "http://apicobrix.aleftec.com.br"
+        VITE_API_URL: "https://apicobrix.aleftec.com.br"
+    # Variáveis de ambiente (DB, JWT, EFI, crons...) fornecidas em runtime.
+    # Copie server/.env.example para server/.env e preencha antes de subir.
+    env_file:
+      - ./server/.env
     environment:
       NODE_ENV: production
     depends_on:

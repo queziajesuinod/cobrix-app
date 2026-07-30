@@ -19,13 +19,13 @@ async function ensureEnvMasterUser(companyId) {
   if (existing.rowCount) {
     userId = existing.rows[0].id;
     await query(
-      `UPDATE users SET password_hash = public.crypt($1, public.gen_salt('bf')), role='master', active=true WHERE id=$2`,
+      `UPDATE users SET password_hash = public.crypt($1, public.gen_salt('bf', 12)), role='master', active=true WHERE id=$2`,
       [MASTER_PASSWORD, userId]
     );
   } else {
     const inserted = await query(
       `INSERT INTO users (email, password_hash, role, active, created_at)
-       VALUES ($1, public.crypt($2, public.gen_salt('bf')), 'master', true, NOW())
+       VALUES ($1, public.crypt($2, public.gen_salt('bf', 12)), 'master', true, NOW())
        RETURNING id`,
       [MASTER_EMAIL, MASTER_PASSWORD]
     );
