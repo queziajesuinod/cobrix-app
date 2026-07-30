@@ -4,8 +4,9 @@ import { contractsService, clientsPicker } from './contracts.service'
 import { contractTypesService } from './contractTypes.service'
 import { useAuth } from '@/features/auth/AuthContext'
 import PageHeader from '@/components/PageHeader'
+import PapperBlock from '@/components/PapperBlock'
 import {
-  Alert, Button, Card, CardContent, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
+  Alert, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
   Grid, IconButton, MenuItem, Snackbar, Stack, Table, TableBody, TableCell, TableHead, TableRow,
   TablePagination, TextField, Tooltip, Typography
 } from '@mui/material'
@@ -14,6 +15,8 @@ import EditIcon from '@mui/icons-material/Edit'
 import ToggleOnIcon from '@mui/icons-material/ToggleOn'
 import ToggleOffIcon from '@mui/icons-material/ToggleOff'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
+import FilterListIcon from '@mui/icons-material/FilterList'
+import DescriptionIcon from '@mui/icons-material/Description'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -653,9 +656,8 @@ export default function ContractsPage() {
       {!enabled && (
         <Alert severity="info">Selecione uma empresa para visualizar e gerenciar os contratos.</Alert>
       )}
-      <Card>
-        <CardContent>
-          <Grid container spacing={2}>
+      <PapperBlock title="Filtros" icon={<FilterListIcon />} iconColor="info.main">
+        <Grid container spacing={2}>
             <Grid item xs={12} md={3}>
               <TextField
                 label="Buscar serviço"
@@ -723,19 +725,19 @@ export default function ContractsPage() {
               </Button>
             </Grid>
           </Grid>
-          {contractTypesQuery.isError && enabled && (
+        {contractTypesQuery.isError && enabled && (
             <Alert severity="warning" sx={{ mt: 2 }}>
               Não foi possível carregar os tipos de contrato: {contractTypesQuery.error?.message || 'tente novamente.'}
             </Alert>
           )}
-        </CardContent>
-      </Card>
-      <Card><CardContent>
+      </PapperBlock>
+      <PapperBlock title="Contratos" icon={<DescriptionIcon />} iconColor="primary.main" noPadding>
         {!enabled ? (
-          <Alert severity="info">Selecione uma empresa para acessar os dados desta página.</Alert>
-        ) : list.isLoading ? 'Carregando…' : list.error ? <Alert severity="error">Erro ao carregar contratos: {list.error?.message || 'tente novamente.'}</Alert> : rows.length === 0 ? (
-          <Alert severity="info">Nenhum contrato encontrado.</Alert>
+          <Box sx={{ p: 3 }}><Alert severity="info">Selecione uma empresa para acessar os dados desta página.</Alert></Box>
+        ) : list.isLoading ? <Box sx={{ p: 3 }}>Carregando…</Box> : list.error ? <Box sx={{ p: 3 }}><Alert severity="error">Erro ao carregar contratos: {list.error?.message || 'tente novamente.'}</Alert></Box> : rows.length === 0 ? (
+          <Box sx={{ p: 3 }}><Alert severity="info">Nenhum contrato encontrado.</Alert></Box>
         ) : (
+          <Box sx={{ overflowX: 'auto' }}>
           <Table size="small">
             <TableHead>
               <TableRow>
@@ -784,6 +786,7 @@ export default function ContractsPage() {
               ))}
             </TableBody>
           </Table>
+          </Box>
         )}
         {enabled && (
           <TablePagination
@@ -794,9 +797,10 @@ export default function ContractsPage() {
             rowsPerPage={rowsPerPage}
             onRowsPerPageChange={(event) => { setRowsPerPage(parseInt(event.target.value, 10)); setPage(0); }}
             rowsPerPageOptions={[10, 20, 50]}
+            sx={{ px: 2 }}
           />
         )}
-      </CardContent></Card>
+      </PapperBlock>
 
       <ContractDialog
         open={dialogOpen}

@@ -2,9 +2,8 @@ import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Alert,
+  Box,
   Button,
-  Card,
-  CardContent,
   Chip,
   Grid,
   Stack,
@@ -20,6 +19,10 @@ import MonitorHeartIcon from '@mui/icons-material/MonitorHeart';
 import WifiTetheringIcon from '@mui/icons-material/WifiTethering';
 import AutorenewIcon from '@mui/icons-material/Autorenew';
 import ReportProblemIcon from '@mui/icons-material/ReportProblem';
+import ScheduleIcon from '@mui/icons-material/Schedule';
+import ReplayIcon from '@mui/icons-material/Replay';
+import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
+import PapperBlock from '@/components/PapperBlock';
 import PageHeader from '@/components/PageHeader';
 import CompanyRequiredAlert from '@/components/CompanyRequiredAlert';
 import { useAuth } from '@/features/auth/AuthContext';
@@ -296,38 +299,46 @@ export default function SystemHealthPage() {
         </Alert>
       )}
 
-      <Card>
-        <CardContent>
-          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ md: 'center' }}>
-            <Chip icon={<MonitorHeartIcon />} label={`Gerado em: ${formatDateTime(data?.generatedAt)}`} variant="outlined" />
-            <Chip icon={<AutorenewIcon />} label={`Crons monitorados: ${cronJobs.length}`} color="primary" variant="outlined" />
-            <Chip label={`Crons com erro: ${Number(summary.cronWithError || 0)}`} color={Number(summary.cronWithError || 0) > 0 ? 'error' : 'success'} />
-            <Chip label={`Retries imediatos: ${Number(summary.retryDueNow || 0)}`} color={Number(summary.retryDueNow || 0) > 0 ? 'warning' : 'success'} />
-            <Chip label={`EVO: ${summary.evoOnline ? 'online' : 'offline'}`} color={summary.evoOnline ? 'success' : 'error'} />
-            <Chip label={`Fuso agenda: ${timezone}`} variant="outlined" />
-          </Stack>
-        </CardContent>
-      </Card>
+      <PapperBlock
+        title="Visão geral"
+        subtitle="Resumo operacional dos indicadores de saúde"
+        icon={<MonitorHeartIcon />}
+        iconColor={Number(summary.cronWithError || 0) > 0 ? 'error.main' : 'success.main'}
+      >
+        <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ md: 'center' }}>
+          <Chip icon={<MonitorHeartIcon />} label={`Gerado em: ${formatDateTime(data?.generatedAt)}`} variant="outlined" />
+          <Chip icon={<AutorenewIcon />} label={`Crons monitorados: ${cronJobs.length}`} color="primary" variant="outlined" />
+          <Chip label={`Crons com erro: ${Number(summary.cronWithError || 0)}`} color={Number(summary.cronWithError || 0) > 0 ? 'error' : 'success'} />
+          <Chip label={`Retries imediatos: ${Number(summary.retryDueNow || 0)}`} color={Number(summary.retryDueNow || 0) > 0 ? 'warning' : 'success'} />
+          <Chip label={`EVO: ${summary.evoOnline ? 'online' : 'offline'}`} color={summary.evoOnline ? 'success' : 'error'} />
+          <Chip label={`Fuso agenda: ${timezone}`} variant="outlined" />
+        </Stack>
+      </PapperBlock>
 
       {recommendations.length > 0 && (
-        <Card>
-          <CardContent>
-            <Typography variant="h6" sx={{ fontWeight: 600, mb: 1 }}>Recomendações para ajuste</Typography>
-            <Stack spacing={1}>
-              {recommendations.map((item, idx) => (
-                <RecommendationAlert key={`${item.title || 'rec'}-${idx}`} item={item} />
-              ))}
-            </Stack>
-          </CardContent>
-        </Card>
+        <PapperBlock
+          title="Recomendações para ajuste"
+          subtitle="Sugestões automáticas para corrigir falhas detectadas"
+          icon={<ReportProblemIcon />}
+          iconColor="warning.main"
+        >
+          <Stack spacing={1}>
+            {recommendations.map((item, idx) => (
+              <RecommendationAlert key={`${item.title || 'rec'}-${idx}`} item={item} />
+            ))}
+          </Stack>
+        </PapperBlock>
       )}
 
       <Grid container spacing={2}>
         <Grid item xs={12} md={6}>
-          <Card sx={{ height: '100%' }}>
-            <CardContent>
+          <PapperBlock
+            title="Fila de retries"
+            subtitle="Tentativas de reenvio de notificações"
+            icon={<ReplayIcon />}
+            iconColor={Number(retryQueue.retryDueNow || 0) > 0 ? 'warning.main' : 'info.main'}
+          >
               <Stack spacing={1}>
-                <Typography variant="h6" sx={{ fontWeight: 600 }}>Fila de retries</Typography>
                 <Typography variant="body2">Failed total: <strong>{Number(retryQueue.failedTotal || 0)}</strong></Typography>
                 <Typography variant="body2">Retry pendente: <strong>{Number(retryQueue.retryableTotal || 0)}</strong></Typography>
                 <Typography variant="body2">Pronto para executar agora: <strong>{Number(retryQueue.retryDueNow || 0)}</strong></Typography>
@@ -346,40 +357,41 @@ export default function SystemHealthPage() {
                   </Stack>
                 ) : null}
               </Stack>
-            </CardContent>
-          </Card>
+          </PapperBlock>
         </Grid>
 
         <Grid item xs={12} md={6}>
-          <Card sx={{ height: '100%' }}>
-            <CardContent>
+          <PapperBlock
+            title="EVO WhatsApp"
+            subtitle="Status da integração de mensagens"
+            icon={<WifiTetheringIcon />}
+            iconColor={evo.online ? 'success.main' : 'error.main'}
+          >
               <Stack spacing={1}>
-                <Stack direction="row" spacing={1} alignItems="center">
-                  <WifiTetheringIcon />
-                  <Typography variant="h6" sx={{ fontWeight: 600 }}>EVO WhatsApp</Typography>
-                </Stack>
                 <Typography variant="body2">Instância: <strong>{evo.instance || '-'}</strong></Typography>
                 <EvoStatusChip online={Boolean(evo.online)} connectionStatus={evo.connectionStatus} />
                 <Typography variant="caption" color="text.secondary">Última checagem: {formatDateTime(evo.checkedAt)}</Typography>
                 {evo.error ? <Alert severity="warning">Motivo: {evo.error}</Alert> : null}
                 {evo.resolutionHint ? <Alert severity={evo.online ? 'success' : 'info'}>{evo.resolutionHint}</Alert> : null}
               </Stack>
-            </CardContent>
-          </Card>
+          </PapperBlock>
         </Grid>
       </Grid>
 
-      <Card>
-        <CardContent>
-          <Typography variant="h6" sx={{ fontWeight: 600, mb: 1 }}>Últimas execuções de cron</Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-            Para cada job, veja o último status, erro reportado e sugestão de ajuste.
-          </Typography>
+      <PapperBlock
+        title="Últimas execuções de cron"
+        subtitle="Para cada job, veja o último status, erro reportado e sugestão de ajuste."
+        icon={<ScheduleIcon />}
+        iconColor="info.main"
+        noPadding
+      >
+        <Box sx={{ p: 3, pb: 2 }}>
           {healthQuery.isLoading ? (
             <Typography variant="body2">Carregando...</Typography>
           ) : cronJobs.length === 0 ? (
             <Typography variant="body2">Nenhum cron registrado ainda.</Typography>
           ) : (
+            <Box sx={{ overflowX: 'auto' }}>
             <Table size="small">
               <TableHead>
                 <TableRow>
@@ -435,16 +447,23 @@ export default function SystemHealthPage() {
                 ))}
               </TableBody>
             </Table>
+            </Box>
           )}
-        </CardContent>
-      </Card>
+        </Box>
+      </PapperBlock>
 
-      <Card>
-        <CardContent>
-          <Typography variant="h6" sx={{ fontWeight: 600, mb: 1 }}>Falhas recentes de notificação</Typography>
+      <PapperBlock
+        title="Falhas recentes de notificação"
+        subtitle="Notificações que falharam recentemente e ajustes sugeridos"
+        icon={<ErrorOutlineIcon />}
+        iconColor="error.main"
+        noPadding
+      >
+        <Box sx={{ p: 3, pb: 2 }}>
           {(retryQueue.recentFailures || []).length === 0 ? (
             <Typography variant="body2">Sem falhas recentes na fila de notificações.</Typography>
           ) : (
+            <Box sx={{ overflowX: 'auto' }}>
             <Table size="small">
               <TableHead>
                 <TableRow>
@@ -479,9 +498,10 @@ export default function SystemHealthPage() {
                 ))}
               </TableBody>
             </Table>
+            </Box>
           )}
-        </CardContent>
-      </Card>
+        </Box>
+      </PapperBlock>
     </Stack>
   );
 }

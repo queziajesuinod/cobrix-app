@@ -1,8 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Card,
-  CardContent,
+  Box,
   Grid,
   MenuItem,
   Stack,
@@ -16,7 +15,9 @@ import {
   Button,
 } from '@mui/material'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
+import FilterListIcon from '@mui/icons-material/FilterList'
 import PageHeader from '@/components/PageHeader'
+import PapperBlock from '@/components/PapperBlock'
 import { billingsService } from '@/features/billings/billings.service'
 import { clientsService } from '@/features/clients/clients.service'
 import { contractsService } from '@/features/contracts/contracts.service'
@@ -82,9 +83,8 @@ export default function PaidContractsPage() {
         subtitle="Lista de contratos marcados como PAGO no mês selecionado."
       />
 
-      <Card>
-        <CardContent>
-          <Stack spacing={2}>
+      <PapperBlock title="Filtros" icon={<FilterListIcon />} iconColor="info.main">
+        <Stack spacing={2}>
             <Grid container spacing={2}>
               <Grid item xs={12} md={3}>
                 <TextField
@@ -145,24 +145,21 @@ export default function PaidContractsPage() {
                 </Button>
               </Stack>
             )}
-          </Stack>
-        </CardContent>
-      </Card>
+        </Stack>
+      </PapperBlock>
 
-      <Card>
-        <CardContent>
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
-            <CheckCircleIcon color="success" />
-            <Typography variant="h6" sx={{ fontWeight: 600 }}>
-              {total} contratos marcados como PAGO
-            </Typography>
-          </Stack>
-
+      <PapperBlock
+        title={`${total} contratos marcados como PAGO`}
+        icon={<CheckCircleIcon />}
+        iconColor="success.main"
+        noPadding
+      >
          {paidQ.isLoading ? (
-            <Typography variant="body2">Carregando…</Typography>
+            <Box sx={{ p: 2 }}><Typography variant="body2">Carregando…</Typography></Box>
           ) : rows.length === 0 ? (
-            <Typography variant="body2">Nenhum contrato marcado como PAGO em {ym}.</Typography>
+            <Box sx={{ p: 2 }}><Typography variant="body2">Nenhum contrato marcado como PAGO em {ym}.</Typography></Box>
           ) : (
+            <Box sx={{ overflowX: 'auto' }}>
             <Table size="small">
               <TableHead>
                 <TableRow>
@@ -201,9 +198,10 @@ export default function PaidContractsPage() {
                 ))}
               </TableBody>
             </Table>
+            </Box>
           )}
           {totalPages > 1 && (
-            <Stack direction="row" spacing={1} alignItems="center" justifyContent="flex-end" sx={{ mt: 2 }}>
+            <Stack direction="row" spacing={1} alignItems="center" justifyContent="flex-end" sx={{ px: 2, py: 2 }}>
               <Button size="small" disabled={page === 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>Anterior</Button>
               <Typography variant="caption">
                 Página {page} de {totalPages}
@@ -223,8 +221,7 @@ export default function PaidContractsPage() {
               </TextField>
             </Stack>
           )}
-        </CardContent>
-      </Card>
+      </PapperBlock>
     </Stack>
   )
 }

@@ -1,12 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { Box, Button, Card, CardContent, Stack, Typography, Alert, CircularProgress, Divider, IconButton, Tooltip } from '@mui/material'
+import { Box, Button, Stack, Typography, Alert, CircularProgress, Divider, IconButton, Tooltip } from '@mui/material'
 import RefreshIcon from '@mui/icons-material/Refresh'
 import QrCodeIcon from '@mui/icons-material/QrCode'
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline'
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline'
 import ContentCopyIcon from '@mui/icons-material/ContentCopy'
+import LinkIcon from '@mui/icons-material/Link'
 import PageHeader from '@/components/PageHeader'
+import PapperBlock from '@/components/PapperBlock'
 import { useAuth } from '@/features/auth/AuthContext'
 import { companyIntegrationService } from '@/features/companies/company.integration.service'
 
@@ -210,10 +212,13 @@ export default function EvoConnectionPage() {
 
       {enabled && (
         <>
-          <Card variant="outlined">
-            <CardContent>
-              <Stack spacing={2}>
-                <Typography variant="h6" sx={{ fontWeight: 600 }}>Resumo da instância</Typography>
+          <PapperBlock
+            title="Resumo da instância"
+            subtitle="Situação atual da conexão do WhatsApp da empresa"
+            icon={<LinkIcon />}
+            iconColor={isConnected ? 'success.main' : 'warning.main'}
+          >
+            <Stack spacing={2}>
                 {statusQuery.isLoading ? (
                   <Stack direction="row" spacing={1} alignItems="center">
                     <CircularProgress size={20} />
@@ -285,9 +290,8 @@ export default function EvoConnectionPage() {
                     {testResult.message}
                   </Alert>
                 )}
-              </Stack>
-            </CardContent>
-          </Card>
+            </Stack>
+          </PapperBlock>
 
           {(restartMutation.isPending || connectMutation.isPending) && (
             <Alert severity="info">Solicitando QR Code…</Alert>
@@ -304,13 +308,14 @@ export default function EvoConnectionPage() {
           )}
 
           {qrPayload?.qrcode && !(restartMutation.isPending || connectMutation.isPending) && (
-            <Card variant="outlined">
-              <CardContent>
+            <PapperBlock
+              title="Escaneie para conectar"
+              subtitle="Leia o QR Code com o WhatsApp Business da empresa"
+              icon={<QrCodeIcon />}
+              iconColor="primary.main"
+              action={qrQuery.isFetching ? <CircularProgress size={18} /> : null}
+            >
                 <Stack spacing={1}>
-                  <Stack direction="row" spacing={1} alignItems="center">
-                    <Typography variant="h6" sx={{ fontWeight: 600, flexGrow: 1 }}>Escaneie para conectar</Typography>
-                    {qrQuery.isFetching && <CircularProgress size={18} />}
-                  </Stack>
                   {qrCountdown != null && (
                     <Typography variant="caption" color="text.secondary">
                       QR expira em {Math.max(qrCountdown, 0)}s
@@ -332,8 +337,7 @@ export default function EvoConnectionPage() {
                     </>
                   )}
                 </Stack>
-              </CardContent>
-            </Card>
+            </PapperBlock>
           )}
 
 

@@ -2,9 +2,8 @@ import React, { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
+  Box,
   Button,
-  Card,
-  CardContent,
   Chip,
   Grid,
   Snackbar,
@@ -21,6 +20,9 @@ import {
 import DownloadIcon from '@mui/icons-material/Download';
 import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
+import FilterListIcon from '@mui/icons-material/FilterList';
+import WarningAmberIcon from '@mui/icons-material/WarningAmber';
+import PapperBlock from '@/components/PapperBlock';
 import PageHeader from '@/components/PageHeader';
 import CompanyRequiredAlert from '@/components/CompanyRequiredAlert';
 import { useAuth } from '@/features/auth/AuthContext';
@@ -283,10 +285,9 @@ export default function OverdueClientsPage() {
         }
       />
 
-      <Card>
-        <CardContent>
-          <Grid container spacing={2}>
-            <Grid item xs={12} md={4}>
+      <PapperBlock title="Filtros" icon={<FilterListIcon />} iconColor="info.main">
+        <Grid container spacing={2}>
+          <Grid item xs={12} md={4}>
               <TextField
                 fullWidth
                 label="Buscar"
@@ -374,17 +375,24 @@ export default function OverdueClientsPage() {
               </Button>
             </Grid>
           </Grid>
-        </CardContent>
-      </Card>
+      </PapperBlock>
 
-      <Card>
-        <CardContent>
+      <PapperBlock
+        title="Cobranças em atraso"
+        subtitle="Cada linha representa uma cobrança pendente vencida."
+        icon={<WarningAmberIcon />}
+        iconColor="error.main"
+        noPadding
+      >
+        <Box sx={{ px: 2, pt: 2 }}>
           <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} sx={{ mb: 2 }}>
             <Chip label={`Cobranças em atraso: ${total}`} color="warning" />
             <Chip label={`Clientes com atraso: ${totalClients}`} color="default" variant="outlined" />
             <Chip label={`Total em aberto: ${formatCurrency(totalOverdueAmount)}`} color="error" />
           </Stack>
+        </Box>
 
+        <Box sx={{ px: 2 }}>
           {!enabled ? (
             <Alert severity="info">Selecione uma empresa para acessar os dados deste relatório.</Alert>
           ) : listQuery.isLoading ? (
@@ -396,6 +404,7 @@ export default function OverdueClientsPage() {
           ) : rows.length === 0 ? (
             <Alert severity="info">Nenhuma cobrança em atraso encontrada para os filtros informados.</Alert>
           ) : (
+            <Box sx={{ overflowX: 'auto' }}>
             <Table size="small">
               <TableHead>
                 <TableRow>
@@ -486,9 +495,12 @@ export default function OverdueClientsPage() {
                 })}
               </TableBody>
             </Table>
+            </Box>
           )}
+        </Box>
 
-          {enabled && (
+        {enabled && (
+          <Box sx={{ px: 2 }}>
             <TablePagination
               component="div"
               count={total}
@@ -501,9 +513,9 @@ export default function OverdueClientsPage() {
               }}
               rowsPerPageOptions={[10, 20, 50, 100]}
             />
-          )}
-        </CardContent>
-      </Card>
+          </Box>
+        )}
+      </PapperBlock>
 
       <Snackbar
         open={snack.open}

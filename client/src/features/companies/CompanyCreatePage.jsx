@@ -1,7 +1,9 @@
 ﻿import React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation } from '@tanstack/react-query'
-import { Card, CardContent, Typography, Grid, TextField, Button, Checkbox, FormControlLabel, MenuItem, Stack, Alert } from '@mui/material'
+import { Typography, Grid, TextField, Button, Checkbox, FormControlLabel, MenuItem, Stack, Alert } from '@mui/material'
+import BusinessIcon from '@mui/icons-material/Business'
+import PapperBlock from '@/components/PapperBlock'
 import { companyService } from './company.service'
 import { useAuth } from '@/features/auth/AuthContext'
 
@@ -74,10 +76,7 @@ export default function CompanyCreatePage(){
   })
 
   return (
-    <Card>
-      <CardContent>
-        <Typography variant="h6" sx={{ fontWeight: 700, mb: 2 }}>Nova empresa</Typography>
-
+    <PapperBlock title="Dados da empresa" icon={<BusinessIcon/>} iconColor="primary.main">
         <Grid container spacing={2}>
           <Grid item xs={12} md={6}>
             <TextField label="Nome da empresa" value={name} onChange={e=>setName(e.target.value)} fullWidth />
@@ -177,7 +176,6 @@ export default function CompanyCreatePage(){
             {mut.isPending ? 'Criando...' : 'Criar empresa'}
           </Button>
         </Stack>
-      </CardContent>
-    </Card>
+    </PapperBlock>
   )
 }

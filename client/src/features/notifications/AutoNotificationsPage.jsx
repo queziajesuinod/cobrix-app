@@ -4,11 +4,15 @@ import { billingsService } from '@/features/billings/billings.service'
 import { clientsService } from '@/features/clients/clients.service'
 import { contractsService } from '@/features/contracts/contracts.service'
 import PageHeader from '@/components/PageHeader'
+import PapperBlock from '@/components/PapperBlock'
 import KpiCards from '@/features/billings/KpiCards'
 import BillingsOverviewPanel from '@/features/billings/BillingsOverviewPanel'
 import BillingsRunDialog from '@/features/billings/BillingsRunDialog'
-import { Card, CardContent, Grid, MenuItem, Stack, TextField, Typography, Snackbar, Button } from '@mui/material'
+import { Grid, MenuItem, Stack, TextField, Snackbar, Button } from '@mui/material'
 import AutorenewIcon from '@mui/icons-material/Autorenew'
+import FilterListIcon from '@mui/icons-material/FilterList'
+import InsightsIcon from '@mui/icons-material/Insights'
+import ReceiptLongIcon from '@mui/icons-material/ReceiptLong'
 
 export default function AutoNotificationsPage(){
   const qc = useQueryClient()
@@ -56,9 +60,8 @@ export default function AutoNotificationsPage(){
         actions={<Button variant="outlined" startIcon={<AutorenewIcon/>} onClick={()=>setRunOpen(true)}>Executar por data</Button>}
       />
 
-      <Card>
-        <CardContent>
-          <Stack spacing={2}>
+      <PapperBlock title="Filtros" subtitle="Refine por mês, vencimento, cliente ou contrato." icon={<FilterListIcon/>} iconColor="primary.main">
+        <Stack spacing={2}>
             <Grid container spacing={2}>
               <Grid item xs={12} md={3}>
                 <TextField label="Mês" type="month" value={ym} onChange={(e)=>setYm(e.target.value)} fullWidth InputLabelProps={{shrink:true}} />
@@ -124,18 +127,16 @@ export default function AutoNotificationsPage(){
                 </Button>
               </Stack>
             )}
-          </Stack>
-        </CardContent>
-      </Card>
+        </Stack>
+      </PapperBlock>
 
-      <Card><CardContent>
+      <PapperBlock title="Indicadores" subtitle="KPIs do período selecionado." icon={<InsightsIcon/>} iconColor="info.main">
         {kpisQ.isLoading ? 'Carregando KPIs…' : <KpiCards k={kpisQ.data || {}} />}
-      </CardContent></Card>
+      </PapperBlock>
 
-      <Card><CardContent>
-        <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 700 }}>Resumo por contrato</Typography>
+      <PapperBlock title="Resumo por contrato" subtitle="Status de notificação por contrato." icon={<ReceiptLongIcon/>} iconColor="success.main">
         <BillingsOverviewPanel ym={ym} clientId={clientId} contractId={contractId} dueDay={dueDay} />
-      </CardContent></Card>
+      </PapperBlock>
 
       <BillingsRunDialog open={runOpen} onClose={()=>setRunOpen(false)} onConfirm={onRunConfirm} />
       <Snackbar open={!!snack} autoHideDuration={2500} onClose={()=>setSnack(null)} message={snack||''} />

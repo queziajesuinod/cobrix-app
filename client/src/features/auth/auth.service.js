@@ -1,7 +1,22 @@
 // client/src/features/auth/auth.service.js
 
 const AUTH_KEY = 'auth';
-const BASE =  'https://apicobrix.aleftec.com.br/api'; // URL da API atualizada
+
+// Detecção automática de domínio — MESMA lógica do api-client.js.
+// Antes esta base estava fixa na produção, o que fazia o login/verify baterem
+// no servidor de produção enquanto as demais chamadas iam para o localhost,
+// gerando 401 (token assinado num servidor, validado noutro).
+function getApiBase() {
+  const hostname = window.location.hostname;
+  const domainMap = {
+    'cobrix.aleftec.com.br': 'https://apicobrix.aleftec.com.br',
+    'localhost': 'http://localhost:3002',
+    '127.0.0.1': 'http://localhost:3002',
+  };
+  const origin = domainMap[hostname] || window.location.origin;
+  return `${origin}/api`;
+}
+const BASE = getApiBase();
 
 
 

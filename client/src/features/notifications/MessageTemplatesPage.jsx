@@ -1,14 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
+import PapperBlock from '@/components/PapperBlock'
 import { messageTemplatesService } from './messageTemplates.service'
 import {
   Alert,
   Box,
   Button,
-  Card,
-  CardContent,
-  CardHeader,
   Chip,
   CircularProgress,
   Grid,
@@ -19,6 +17,8 @@ import {
 } from '@mui/material'
 import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined'
 import RestoreIcon from '@mui/icons-material/Restore'
+import DragIndicatorIcon from '@mui/icons-material/DragIndicator'
+import EditNoteIcon from '@mui/icons-material/EditNote'
 
 const TEMPLATE_TYPES = [
   { key: 'pre', title: 'Pré-vencimento (sem gateway)', description: 'Aviso enviado três dias antes para empresas sem link Pix.' },
@@ -189,26 +189,28 @@ export default function MessageTemplatesPage() {
         subtitle="Monte os textos das notificações arrastando os campos disponí­veis. Use os tokens para preencher dados automaticamente."
       />
 
-      <Card variant="outlined">
-        <CardHeader title="Campos disponí­veis" subheader="Arraste um campo para dentro do texto ou clique para inserir onde estiver o cursor." />
-        <CardContent>
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-            {(data?.placeholders || []).map((item) => {
-              const token = item.token || tokenFromKey(item.key)
-              return (
-                <Chip
-                  key={item.key}
-                  label={`${item.label} (${token})`}
-                  draggable
-                  onDragStart={(event) => handleDragStart(event, token)}
-                  onClick={() => handleInsertToken(activeType, token)}
-                  sx={{ cursor: 'grab' }}
-                />
-              )
-            })}
-          </Stack>
-        </CardContent>
-      </Card>
+      <PapperBlock
+        title="Campos disponí­veis"
+        subtitle="Arraste um campo para dentro do texto ou clique para inserir onde estiver o cursor."
+        icon={<DragIndicatorIcon/>}
+        iconColor="secondary.main"
+      >
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          {(data?.placeholders || []).map((item) => {
+            const token = item.token || tokenFromKey(item.key)
+            return (
+              <Chip
+                key={item.key}
+                label={`${item.label} (${token})`}
+                draggable
+                onDragStart={(event) => handleDragStart(event, token)}
+                onClick={() => handleInsertToken(activeType, token)}
+                sx={{ cursor: 'grab' }}
+              />
+            )
+          })}
+        </Stack>
+      </PapperBlock>
 
       <Grid container spacing={2}>
         {visibleTypes.map(({ key, title, description }) => {
@@ -217,17 +219,18 @@ export default function MessageTemplatesPage() {
           const isCustom = currentValue.trim() !== defaultValue.trim()
           return (
             <Grid key={key} item xs={12} md={4}>
-              <Card variant="outlined" sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-                <CardHeader
-                  title={title}
-                  subheader={description}
-                  action={(
-                    <Button size="small" startIcon={<RestoreIcon />} onClick={() => handleReset(key)}>
-                      Padrão
-                    </Button>
-                  )}
-                />
-                <CardContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, flexGrow: 1 }}>
+              <PapperBlock
+                title={title}
+                subtitle={description}
+                icon={<EditNoteIcon/>}
+                iconColor="primary.main"
+                action={(
+                  <Button size="small" startIcon={<RestoreIcon />} onClick={() => handleReset(key)}>
+                    Padrão
+                  </Button>
+                )}
+              >
+                <Stack sx={{ display: 'flex', flexDirection: 'column', gap: 2, flexGrow: 1 }}>
                   {isCustom && (
                     <Chip label="Customizado" color="primary" size="small" sx={{ alignSelf: 'flex-start' }} />
                   )}
@@ -265,8 +268,8 @@ export default function MessageTemplatesPage() {
                       {renderPreview(currentValue) || 'Sem conteúdo.'}
                     </Box>
                   </Box>
-                </CardContent>
-              </Card>
+                </Stack>
+              </PapperBlock>
             </Grid>
           )
         })}

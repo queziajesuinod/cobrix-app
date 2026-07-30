@@ -7,120 +7,178 @@ import {
   Typography,
   Stack,
   Box,
-  LinearProgress,
   Alert,
   Skeleton,
+  useTheme,
 } from '@mui/material'
+import { PieChart } from '@mui/x-charts/PieChart'
+import { BarChart } from '@mui/x-charts/BarChart'
 import AssignmentTurnedInIcon from '@mui/icons-material/AssignmentTurnedIn'
 import PaymentsIcon from '@mui/icons-material/Payments'
 import TodayIcon from '@mui/icons-material/Today'
+import PeopleAltIcon from '@mui/icons-material/PeopleAlt'
 import TimelineIcon from '@mui/icons-material/Timeline'
+import DonutLargeIcon from '@mui/icons-material/DonutLarge'
 import CompanyRequiredAlert from '@/components/CompanyRequiredAlert'
+import PapperBlock from '@/components/PapperBlock'
 import { useAuth } from '@/features/auth/AuthContext'
 import { dashboardService } from '@/features/dashboard/dashboard.service'
+
+// Gradientes vibrantes dos KPI cards (assinatura visual Dandelion).
+const GRAD = {
+  blue: 'linear-gradient(135deg, #00c6ff 0%, #0072ff 100%)',
+  purple: 'linear-gradient(135deg, #8E2DE2 0%, #4A00E0 100%)',
+  orange: 'linear-gradient(135deg, #f7971e 0%, #ffb300 100%)',
+  green: 'linear-gradient(135deg, #11998e 0%, #38ef7d 100%)',
+}
 
 const formatCurrency = (value) =>
   Number(value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 
-function IndicatorCard({ icon, title, value, subtitle, gradient, extra }) {
+// Formato compacto para eixos/tooltip (ex.: R$ 1,2 mil)
+const formatCompactCurrency = (value) => {
+  const n = Number(value || 0)
+  if (Math.abs(n) >= 1000) {
+    return `R$ ${(n / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} mil`
+  }
+  return formatCurrency(n)
+}
+
+function StatCard({ icon, title, value, subtitle, gradient }) {
   return (
-    <Card
-      sx={{
-        height: '100%',
-        borderRadius: 3,
-        background: gradient,
-        color: 'common.white',
-        boxShadow: '0 12px 30px rgba(15,23,42,0.25)',
-        display: 'flex',
-        alignItems: 'center',
-      }}
-    >
-      <CardContent sx={{ width: '100%' }}>
-        <Stack spacing={2} alignItems="center" textAlign="center">
+    <Card sx={{ height: '100%', background: gradient, color: '#fff', border: 'none' }}>
+      <CardContent>
+        <Stack direction="row" spacing={2} alignItems="center">
           <Box
             sx={{
-              width: 56,
-              height: 56,
-              borderRadius: '20px',
-              backgroundColor: 'rgba(255,255,255,0.25)',
+              width: 54,
+              height: 54,
+              borderRadius: 2.5,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
+              bgcolor: 'rgba(255,255,255,0.22)',
+              flexShrink: 0,
             }}
           >
             {icon}
           </Box>
-          <Box>
-            <Typography variant="subtitle2" sx={{ textTransform: 'uppercase', opacity: 0.8 }}>
+          <Box sx={{ minWidth: 0 }}>
+            <Typography variant="caption" sx={{ textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.4, opacity: 0.9 }}>
               {title}
             </Typography>
-            <Typography variant="h4" sx={{ fontWeight: 700 }}>
+            <Typography variant="h5" sx={{ fontWeight: 800, lineHeight: 1.2 }}>
               {value}
             </Typography>
             {subtitle && (
-              <Typography variant="body2" sx={{ opacity: 0.9, mt: 0.5 }}>
+              <Typography variant="body2" sx={{ opacity: 0.9 }}>
                 {subtitle}
               </Typography>
             )}
           </Box>
-          {extra && <Box sx={{ width: '100%' }}>{extra}</Box>}
         </Stack>
       </CardContent>
     </Card>
   )
 }
 
-function FutureReceivablesCard({ data }) {
-  const rows = [
-    { label: 'Próximos 7 dias', value: data.next7 },
-    { label: 'Próximos 15 dias', value: data.next15 },
-    { label: 'Próximos 30 dias', value: data.next30 },
-  ]
+function BillingDonutCard({ paid, pending }) {
+  const theme = useTheme()
+  const colorPaid = theme.palette.success.main
+  const colorPending = theme.palette.warning.main
+  const total = paid + pending
+  const hasData = total > 0
+  const paidPct = hasData ? Math.round((paid / total) * 100) : 0
 
   return (
-    <Card
-      sx={{
-        borderRadius: 3,
-        background: 'linear-gradient(135deg, #b3b3b3ff 0%, #9b9b9bff 100%)',
-        color: 'common.black',
-        boxShadow: '0 12px 30px rgba(15,23,42,0.25)',
-      }}
+    <PapperBlock
+      title="Faturamento do mês"
+      subtitle="Distribuição entre valores pagos e pendentes"
+      icon={<DonutLargeIcon />}
+      iconColor={GRAD.purple}
     >
-      <CardContent>
-        <Stack spacing={3}>
-          <Stack direction="row" spacing={1} alignItems="center" justifyContent="center">
-            <TimelineIcon />
-            <Typography variant="h6" sx={{ fontWeight: 700 }}>
-              Recebimentos futuros
-            </Typography>
-          </Stack>
-          <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
-            {rows.map((row) => (
-              <Box
-                key={row.label}
-                sx={{
-                  flex: 1,
-                  textAlign: 'center',
-                  borderRadius: 2,
-                  border: '1px solid rgba(255,255,255,0.3)',
-                  px: 2,
-                  py: 2,
-                  backgroundColor: 'rgba(255,255,255,0.08)',
-                  backdropFilter: 'blur(6px)',
-                }}
-              >
-                <Typography variant="caption" sx={{ textTransform: 'uppercase', opacity: 0.8 }}>
-                  {row.label}
-                </Typography>
-                <Typography variant="h5" sx={{ fontWeight: 700 }}>
-                  {formatCurrency(row.value)}
-                </Typography>
-              </Box>
-            ))}
-          </Stack>
-        </Stack>
-      </CardContent>
-    </Card>
+      {hasData ? (
+        <Box sx={{ position: 'relative' }}>
+          <PieChart
+            height={260}
+            skipAnimation
+            series={[
+              {
+                innerRadius: 62,
+                outerRadius: 100,
+                paddingAngle: 2,
+                cornerRadius: 4,
+                data: [
+                  { id: 'paid', value: paid, label: 'Pago', color: colorPaid },
+                  { id: 'pending', value: pending, label: 'Pendente', color: colorPending },
+                ],
+                valueFormatter: (item) => formatCurrency(item.value),
+              },
+            ]}
+            slotProps={{
+              legend: { direction: 'row', position: { vertical: 'bottom', horizontal: 'middle' } },
+            }}
+          />
+          <Box sx={{ position: 'absolute', top: 96, left: 0, right: 0, textAlign: 'center', pointerEvents: 'none' }}>
+            <Typography variant="h5" sx={{ fontWeight: 700, color: colorPaid }}>{paidPct}%</Typography>
+            <Typography variant="caption" color="text.secondary">pago</Typography>
+          </Box>
+        </Box>
+      ) : (
+        <Box sx={{ height: 260, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Typography variant="body2" color="text.secondary">Sem valores para exibir neste mês.</Typography>
+        </Box>
+      )}
+
+      <Stack direction="row" justifyContent="space-between" sx={{ mt: 1.5 }}>
+        <Box>
+          <Typography variant="caption" color="text.secondary">Pago</Typography>
+          <Typography variant="subtitle1" sx={{ fontWeight: 700, color: colorPaid }}>{formatCurrency(paid)}</Typography>
+        </Box>
+        <Box sx={{ textAlign: 'right' }}>
+          <Typography variant="caption" color="text.secondary">Pendente</Typography>
+          <Typography variant="subtitle1" sx={{ fontWeight: 700, color: colorPending }}>{formatCurrency(pending)}</Typography>
+        </Box>
+      </Stack>
+    </PapperBlock>
+  )
+}
+
+function FutureReceivablesCard({ data }) {
+  const theme = useTheme()
+  const values = [Number(data.next7 || 0), Number(data.next15 || 0), Number(data.next30 || 0)]
+  const hasData = values.some((v) => v > 0)
+
+  return (
+    <PapperBlock
+      title="Recebimentos futuros"
+      subtitle="Valor acumulado a receber por janela de dias"
+      icon={<TimelineIcon />}
+      iconColor={GRAD.blue}
+    >
+      {hasData ? (
+        <BarChart
+          height={260}
+          skipAnimation
+          xAxis={[{ scaleType: 'band', data: ['Até 7 dias', 'Até 15 dias', 'Até 30 dias'] }]}
+          yAxis={[{ valueFormatter: formatCompactCurrency }]}
+          series={[
+            {
+              data: values,
+              label: 'A receber',
+              color: theme.palette.primary.main,
+              valueFormatter: (v) => formatCurrency(v),
+            },
+          ]}
+          borderRadius={6}
+          slotProps={{ legend: { hidden: true } }}
+        />
+      ) : (
+        <Box sx={{ height: 260, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Typography variant="body2" color="text.secondary">Nenhum recebimento previsto nos próximos 30 dias.</Typography>
+        </Box>
+      )}
+    </PapperBlock>
   )
 }
 
@@ -141,8 +199,7 @@ export default function DashboardPage() {
   const today = summary?.today || { dueCount: 0, dueAmount: 0 }
   const future = summary?.futureReceivables || { next7: 0, next15: 0, next30: 0 }
 
-  const paidRatio =
-    billing.totalAmount > 0 ? Math.min(100, (billing.paidAmount / billing.totalAmount) * 100) : 0
+  const loading = summaryQuery.isLoading && enabled
 
   return (
     <>
@@ -158,73 +215,60 @@ export default function DashboardPage() {
         </Alert>
       )}
 
-      <Grid container spacing={3} justifyContent="center">
-        <Grid item xs={12} md={6} lg={4} xl={3}>
-          {summaryQuery.isLoading ? (
-            <Skeleton variant="rounded" height={170} />
-          ) : (
-            <IndicatorCard
+      <Grid container spacing={3}>
+        <Grid item xs={12} sm={6} lg={3}>
+          {loading ? <Skeleton variant="rounded" height={100} /> : (
+            <StatCard
               title="Contratos ativos"
               value={totals.contractsActive}
-              subtitle={`Clientes ativos: ${totals.clientsActive}`}
-              icon={<AssignmentTurnedInIcon sx={{ fontSize: 30 }} />}
-              gradient="linear-gradient(135deg, #00c6ff 0%, #0072ff 100%)"
+              subtitle="no período vigente"
+              icon={<AssignmentTurnedInIcon />}
+              gradient={GRAD.blue}
             />
           )}
         </Grid>
-
-        <Grid item xs={12} md={6} lg={4} xl={3}>
-          {summaryQuery.isLoading ? (
-            <Skeleton variant="rounded" height={170} />
-          ) : (
-            <IndicatorCard
-              title="Contratos pendentes vs pagos"
+        <Grid item xs={12} sm={6} lg={3}>
+          {loading ? <Skeleton variant="rounded" height={100} /> : (
+            <StatCard
+              title="Clientes ativos"
+              value={totals.clientsActive}
+              subtitle="com contrato vigente"
+              icon={<PeopleAltIcon />}
+              gradient={GRAD.purple}
+            />
+          )}
+        </Grid>
+        <Grid item xs={12} sm={6} lg={3}>
+          {loading ? <Skeleton variant="rounded" height={100} /> : (
+            <StatCard
+              title="A receber (pendente)"
               value={formatCurrency(billing.pendingAmount)}
-              subtitle={`Contratos pagos: ${formatCurrency(billing.paidAmount)}`}
-              icon={<PaymentsIcon sx={{ fontSize: 30 }} />}
-              gradient="linear-gradient(135deg, #8E2DE2 0%, #4A00E0 100%)"
-              extra={
-                <Stack spacing={1}>
-                  <LinearProgress
-                    variant="determinate"
-                    value={paidRatio}
-                    sx={{
-                      height: 8,
-                      borderRadius: 999,
-                      backgroundColor: 'rgba(255,255,255,0.25)',
-                      '& .MuiLinearProgress-bar': {
-                        borderRadius: 999,
-                        backgroundColor: '#fff',
-                      },
-                    }}
-                  />
-                  <Typography variant="caption" sx={{ opacity: 0.85 }}>
-                    {paidRatio.toFixed(0)}% do valor contratado já está marcado como pago
-                  </Typography>
-                </Stack>
-              }
+              subtitle={`Pago: ${formatCurrency(billing.paidAmount)}`}
+              icon={<PaymentsIcon />}
+              gradient={GRAD.orange}
             />
           )}
         </Grid>
-
-        <Grid item xs={12} md={6} lg={4} xl={3}>
-          {summaryQuery.isLoading ? (
-            <Skeleton variant="rounded" height={170} />
-          ) : (
-            <IndicatorCard
+        <Grid item xs={12} sm={6} lg={3}>
+          {loading ? <Skeleton variant="rounded" height={100} /> : (
+            <StatCard
               title="Vencimentos de hoje"
               value={today.dueCount}
               subtitle={`Total do dia: ${formatCurrency(today.dueAmount)}`}
-              icon={<TodayIcon sx={{ fontSize: 30 }} />}
-              gradient="linear-gradient(135deg, #11998e 0%, #38ef7d 100%)"
+              icon={<TodayIcon />}
+              gradient={GRAD.green}
             />
           )}
         </Grid>
-        <Grid item xs={12}>
-          {summaryQuery.isLoading ? (
-            <Skeleton variant="rounded" height={190} />
-          ) : (null
-           /* <FutureReceivablesCard data={future} />*/
+
+        <Grid item xs={12} md={5}>
+          {loading ? <Skeleton variant="rounded" height={430} /> : (
+            <BillingDonutCard paid={billing.paidAmount} pending={billing.pendingAmount} />
+          )}
+        </Grid>
+        <Grid item xs={12} md={7}>
+          {loading ? <Skeleton variant="rounded" height={430} /> : (
+            <FutureReceivablesCard data={future} />
           )}
         </Grid>
       </Grid>

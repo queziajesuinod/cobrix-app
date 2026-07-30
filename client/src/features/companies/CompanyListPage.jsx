@@ -1,10 +1,12 @@
 import React from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Card, CardContent, Stack, Typography, Button, Table, TableHead, TableRow, TableCell, TableBody, IconButton } from '@mui/material'
+import { Box, Button, Table, TableHead, TableRow, TableCell, TableBody, IconButton } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
 import SettingsIcon from '@mui/icons-material/Settings'
 import DeleteIcon from '@mui/icons-material/Delete'
+import BusinessIcon from '@mui/icons-material/Business'
+import PapperBlock from '@/components/PapperBlock'
 import { companyService } from './company.service'
 
 export default function CompanyListPage(){
@@ -14,13 +16,14 @@ export default function CompanyListPage(){
   const delM = useMutation({ mutationFn: (id)=>companyService.remove(id), onSuccess: ()=> qc.invalidateQueries({queryKey:['companies']}) })
 
   return (
-    <Card variant="outlined">
-      <CardContent>
-        <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}>
-          <Typography variant="h6" sx={{ fontWeight: 700 }}>Empresas</Typography>
-          <Button variant="contained" startIcon={<AddIcon/>} onClick={()=>nav('/companies/new')}>Nova empresa</Button>
-        </Stack>
-
+    <PapperBlock
+      title="Empresas"
+      icon={<BusinessIcon/>}
+      iconColor="primary.main"
+      action={<Button variant="contained" startIcon={<AddIcon/>} onClick={()=>nav('/companies/new')}>Nova empresa</Button>}
+      noPadding
+    >
+      <Box sx={{ overflowX: 'auto' }}>
         <Table size="small">
           <TableHead>
             <TableRow>
@@ -45,7 +48,7 @@ export default function CompanyListPage(){
             {!listQ.data?.length && <TableRow><TableCell colSpan={4}><i>Nenhuma empresa.</i></TableCell></TableRow>}
           </TableBody>
         </Table>
-      </CardContent>
-    </Card>
+      </Box>
+    </PapperBlock>
   )
 }

@@ -1,14 +1,16 @@
 import React, { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Alert, Button, Card, CardContent, Dialog, DialogTitle, DialogContent, DialogActions,
+  Alert, Box, Button, Dialog, DialogTitle, DialogContent, DialogActions,
   TextField, Table, TableHead, TableRow, TableCell, TableBody,
   Stack, Switch, FormControlLabel, IconButton
 } from '@mui/material'
 import EditIcon from '@mui/icons-material/Edit'
 import DeleteIcon from '@mui/icons-material/Delete'
 import AddIcon from '@mui/icons-material/Add'
+import DescriptionIcon from '@mui/icons-material/Description'
 import PageHeader from '@/components/PageHeader'
+import PapperBlock from '@/components/PapperBlock'
 import { contractTypesService } from '@/features/contracts/contractTypes.service'
 import { useForm } from 'react-hook-form'
 import { useAuth } from '@/features/auth/AuthContext'
@@ -105,13 +107,13 @@ export default function ContractTypesPage() {
       {!enabled && (
         <Alert severity="info">Selecione uma empresa para gerenciar os tipos de contrato.</Alert>
       )}
-      <Card>
-        <CardContent>
-          {list.isError && (
-            <Alert severity="error" sx={{ mb: 2 }}>
-              Erro ao carregar tipos de contrato: {list.error?.message || 'tente novamente.'}
-            </Alert>
-          )}
+      <PapperBlock title="Tipos cadastrados" icon={<DescriptionIcon />} iconColor="primary.main" noPadding>
+        {list.isError && (
+          <Alert severity="error" sx={{ m: 2 }}>
+            Erro ao carregar tipos de contrato: {list.error?.message || 'tente novamente.'}
+          </Alert>
+        )}
+        <Box sx={{ overflowX: 'auto' }}>
           <Table size="small">
             <TableHead>
               <TableRow>
@@ -138,8 +140,8 @@ export default function ContractTypesPage() {
               )}
             </TableBody>
           </Table>
-        </CardContent>
-      </Card>
+        </Box>
+      </PapperBlock>
 
       <TypeDialog
         open={dialogOpen}

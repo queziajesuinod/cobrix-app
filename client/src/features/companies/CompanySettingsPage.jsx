@@ -8,6 +8,9 @@ import CompanyUsersPanel from './CompanyUsersPanel'
 import { companyIntegrationService } from './company.integration.service'
 import RefreshIcon from '@mui/icons-material/Refresh'
 import QrCodeIcon from '@mui/icons-material/QrCode'
+import BusinessIcon from '@mui/icons-material/Business'
+import WhatsAppIcon from '@mui/icons-material/WhatsApp'
+import PapperBlock from '@/components/PapperBlock'
 import { useNavigate } from 'react-router-dom'
 
 export default function CompanySettingsPage(){
@@ -36,64 +39,59 @@ export default function CompanySettingsPage(){
       </Card>
 
       {tab===0 && (
-        <Card variant="outlined">
-          <CardContent>
-            <CompanyDataForm
-              defaultValues={qCompany.data}
-              submitting={mUpdate.isPending}
-              onSubmit={(payload)=>mUpdate.mutate(payload)}
-            />
-          </CardContent>
-        </Card>
+        <PapperBlock title="Dados da empresa" icon={<BusinessIcon/>} iconColor="primary.main">
+          <CompanyDataForm
+            defaultValues={qCompany.data}
+            submitting={mUpdate.isPending}
+            onSubmit={(payload)=>mUpdate.mutate(payload)}
+          />
+        </PapperBlock>
       )}
 
       {tab===1 && (
-        <Card variant="outlined">
-          <CardContent>
-            <Stack spacing={2}>
-              <Typography variant="h6" sx={{ fontWeight: 600 }}>Status da integração WhatsApp</Typography>
-              {qEvo.isLoading ? (
-                <Typography variant="body2">Consultando status…</Typography>
-              ) : qEvo.error ? (
-                <Alert severity="error">Falha ao obter status: {qEvo.error?.response?.data?.error || qEvo.error?.message}</Alert>
-              ) : (
-                <Stack spacing={1}>
-                  <Typography variant="body2">
-                    Instância: <strong>{qEvo.data?.instance || '—'}</strong>
-                  </Typography>
-                  <Typography variant="body2">
-                    Conexão: <strong>{(qEvo.data?.connectionStatus || 'desconhecida').toUpperCase()}</strong>
-                  </Typography>
-                  <Alert severity={qEvo.data?.connectionStatus === 'open' ? 'success' : 'warning'}>
-                    {qEvo.data?.connectionStatus === 'open'
-                      ? 'Instância conectada. Nenhuma ação necessária.'
-                      : 'Instância desconectada. Utilize a página de conexão para escanear o QR Code.'}
-                  </Alert>
-                </Stack>
-              )}
-              <Stack direction="row" spacing={1}>
-                <Button
-                  variant="outlined"
-                  startIcon={<RefreshIcon />}
-                  onClick={()=>qEvo.refetch()}
-                  disabled={qEvo.isLoading}
-                >
-                  Atualizar status
-                </Button>
-                <Button
-                  variant="contained"
-                  startIcon={<QrCodeIcon />}
-                  onClick={()=>navigate('/integration/evo')}
-                >
-                  Gerenciar conexão
-                </Button>
+        <PapperBlock title="Status da integração WhatsApp" icon={<WhatsAppIcon/>} iconColor="success.main">
+          <Stack spacing={2}>
+            {qEvo.isLoading ? (
+              <Typography variant="body2">Consultando status…</Typography>
+            ) : qEvo.error ? (
+              <Alert severity="error">Falha ao obter status: {qEvo.error?.response?.data?.error || qEvo.error?.message}</Alert>
+            ) : (
+              <Stack spacing={1}>
+                <Typography variant="body2">
+                  Instância: <strong>{qEvo.data?.instance || '—'}</strong>
+                </Typography>
+                <Typography variant="body2">
+                  Conexão: <strong>{(qEvo.data?.connectionStatus || 'desconhecida').toUpperCase()}</strong>
+                </Typography>
+                <Alert severity={qEvo.data?.connectionStatus === 'open' ? 'success' : 'warning'}>
+                  {qEvo.data?.connectionStatus === 'open'
+                    ? 'Instância conectada. Nenhuma ação necessária.'
+                    : 'Instância desconectada. Utilize a página de conexão para escanear o QR Code.'}
+                </Alert>
               </Stack>
-              <Typography variant="caption" color="text.secondary">
-                A conexão pode ser gerenciada por qualquer usuário em <strong>Integração &gt; WhatsApp</strong>.
-              </Typography>
+            )}
+            <Stack direction="row" spacing={1}>
+              <Button
+                variant="outlined"
+                startIcon={<RefreshIcon />}
+                onClick={()=>qEvo.refetch()}
+                disabled={qEvo.isLoading}
+              >
+                Atualizar status
+              </Button>
+              <Button
+                variant="contained"
+                startIcon={<QrCodeIcon />}
+                onClick={()=>navigate('/integration/evo')}
+              >
+                Gerenciar conexão
+              </Button>
             </Stack>
-          </CardContent>
-        </Card>
+            <Typography variant="caption" color="text.secondary">
+              A conexão pode ser gerenciada por qualquer usuário em <strong>Integração &gt; WhatsApp</strong>.
+            </Typography>
+          </Stack>
+        </PapperBlock>
       )}
 
       {tab===2 && (

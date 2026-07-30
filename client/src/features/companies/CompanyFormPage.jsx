@@ -1,7 +1,8 @@
 import React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation } from '@tanstack/react-query'
-import { Card, CardContent, Typography } from '@mui/material'
+import BusinessIcon from '@mui/icons-material/Business'
+import PapperBlock from '@/components/PapperBlock'
 import { companyService } from './company.service'
 import CompanyDataForm from './CompanyDataForm'
 
@@ -13,15 +14,12 @@ export default function CompanyFormPage(){
   })
 
   return (
-    <Card variant="outlined">
-      <CardContent>
-        <Typography variant="h6" sx={{ fontWeight: 700, mb: 2 }}>Nova empresa</Typography>
-        <CompanyDataForm
-          defaultValues={{ name: '' }}
-          submitting={createM.isPending}
-          onSubmit={(p)=>createM.mutate(p)}
-        />
-      </CardContent>
-    </Card>
+    <PapperBlock title="Dados da empresa" icon={<BusinessIcon/>} iconColor="primary.main">
+      <CompanyDataForm
+        defaultValues={{ name: '' }}
+        submitting={createM.isPending}
+        onSubmit={(p)=>createM.mutate(p)}
+      />
+    </PapperBlock>
   )
 }

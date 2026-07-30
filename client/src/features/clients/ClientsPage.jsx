@@ -3,14 +3,17 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { clientsService } from './clients.service'
 import PageHeader from '@/components/PageHeader'
 import {
-  Alert, Button, Card, CardContent, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
+  Alert, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
   Grid, IconButton, MenuItem, Snackbar, Stack, Table, TableBody, TableCell, TableHead, TableRow,
   TablePagination, TextField, Tooltip
 } from '@mui/material'
+import PapperBlock from '@/components/PapperBlock'
 import AddIcon from '@mui/icons-material/Add'
 import EditIcon from '@mui/icons-material/Edit'
 import ToggleOnIcon from '@mui/icons-material/ToggleOn'
 import ToggleOffIcon from '@mui/icons-material/ToggleOff'
+import FilterListIcon from '@mui/icons-material/FilterList'
+import PeopleIcon from '@mui/icons-material/People'
 import { useForm, Controller } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -223,38 +226,37 @@ export default function ClientsPage() {
   return (
     <Stack spacing={2}>
       <PageHeader title="Clientes" actions={<Button variant="contained" startIcon={<AddIcon />} onClick={handleCreate}>Novo</Button>} />
-      <Card>
-        <CardContent>
-          <Grid container spacing={2}>
-            <Grid item xs={12} md={8}>
-              <TextField
-                fullWidth
-                label="Buscar clientes"
-                placeholder="Nome ou Responsável"
-                value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
-              />
-            </Grid>
-            <Grid item xs={12} md={4}>
-              <TextField
-                select
-                label="Status"
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
-                fullWidth
-              >
-                {STATUS_OPTIONS.map((opt) => (
-                  <MenuItem key={opt.value} value={opt.value}>{opt.label}</MenuItem>
-                ))}
-              </TextField>
-            </Grid>
+      <PapperBlock title="Filtros" icon={<FilterListIcon />} iconColor="info.main">
+        <Grid container spacing={2}>
+          <Grid item xs={12} md={8}>
+            <TextField
+              fullWidth
+              label="Buscar clientes"
+              placeholder="Nome ou Responsável"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+            />
           </Grid>
-        </CardContent>
-      </Card>
-      <Card><CardContent>
-        {list.isLoading ? 'Carregando...' : list.error ? <Alert severity="error">Erro ao carregar</Alert> : rows.length === 0 ? (
-          <Alert severity="info">Nenhum cliente encontrado.</Alert>
+          <Grid item xs={12} md={4}>
+            <TextField
+              select
+              label="Status"
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              fullWidth
+            >
+              {STATUS_OPTIONS.map((opt) => (
+                <MenuItem key={opt.value} value={opt.value}>{opt.label}</MenuItem>
+              ))}
+            </TextField>
+          </Grid>
+        </Grid>
+      </PapperBlock>
+      <PapperBlock title="Clientes" icon={<PeopleIcon />} iconColor="primary.main" noPadding>
+        {list.isLoading ? <Box sx={{ p: 3 }}>Carregando...</Box> : list.error ? <Box sx={{ p: 3 }}><Alert severity="error">Erro ao carregar</Alert></Box> : rows.length === 0 ? (
+          <Box sx={{ p: 3 }}><Alert severity="info">Nenhum cliente encontrado.</Alert></Box>
         ) : (
+          <Box sx={{ overflowX: 'auto' }}>
           <Table size="small">
             <TableHead>
               <TableRow>
@@ -292,6 +294,7 @@ export default function ClientsPage() {
               ))}
             </TableBody>
           </Table>
+          </Box>
         )}
         <TablePagination
           component="div"
@@ -301,8 +304,9 @@ export default function ClientsPage() {
           rowsPerPage={rowsPerPage}
           onRowsPerPageChange={(event) => { setRowsPerPage(parseInt(event.target.value, 10)); setPage(0); }}
           rowsPerPageOptions={[10, 20, 50]}
+          sx={{ px: 2 }}
         />
-      </CardContent></Card>
+      </PapperBlock>
 
       <ClientDialog open={dialogOpen} onClose={() => setDialogOpen(false)} onSubmit={onSubmit} defaultValues={editing} />
       <Snackbar open={!!errorToast} autoHideDuration={4000} onClose={() => setErrorToast(null)}>
