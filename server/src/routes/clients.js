@@ -96,7 +96,10 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
     const count = await query(`SELECT COUNT(*)::int AS total FROM clients ${where}`, params);
     params.push(pageSize, offset);
     const rows = await query(
-      `SELECT * FROM clients ${where} ORDER BY name LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      `SELECT *,
+         (SELECT COALESCE(NULLIF(cu.name,''), cu.email) FROM users cu WHERE cu.id = clients.created_by) AS created_by_name,
+         (SELECT COALESCE(NULLIF(eu.name,''), eu.email) FROM users eu WHERE eu.id = clients.updated_by) AS updated_by_name
+       FROM clients ${where} ORDER BY name LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params
     );
     const data = rows.rows.map(attachDocument);
@@ -111,7 +114,13 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
 
 router.get('/:id', requireAuth, companyScope(true), async (req, res) => {
   try {
-    const r = await query(`SELECT * FROM clients WHERE id=$1 AND company_id=$2`, [req.params.id, req.companyId]);
+    const r = await query(
+      `SELECT *,
+         (SELECT COALESCE(NULLIF(cu.name,''), cu.email) FROM users cu WHERE cu.id = clients.created_by) AS created_by_name,
+         (SELECT COALESCE(NULLIF(eu.name,''), eu.email) FROM users eu WHERE eu.id = clients.updated_by) AS updated_by_name
+       FROM clients WHERE id=$1 AND company_id=$2`,
+      [req.params.id, req.companyId]
+    );
     if (!r.rows[0]) return res.status(404).json({ error: 'Cliente não encontrado' });
     res.json(attachDocument(r.rows[0]));
   } catch (err) {
@@ -138,8 +147,8 @@ router.post('/', requireAuth, companyScope(true), requirePermission('clients.cre
     await assertClientLimit(req.companyId);
     const r = await query(
       `
-      INSERT INTO clients (company_id, name, email, phone, responsavel, document_cpf, document_cnpj)
-      VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *
+      INSERT INTO clients (company_id, name, email, phone, responsavel, document_cpf, document_cnpj, created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *
     `,
       [
         req.companyId,
@@ -149,6 +158,7 @@ router.post('/', requireAuth, companyScope(true), requirePermission('clients.cre
         cleanResponsavel || null,
         docFields.cpf,
         docFields.cnpj,
+        req.user.id,
       ]
     );
     const created = r.rows[0];
@@ -195,8 +205,9 @@ router.put('/:id', requireAuth, companyScope(true), requirePermission('clients.e
     );
     const r = await query(
       `
-      UPDATE clients SET name=$1, email=$2, phone=$3, responsavel=$4, document_cpf=$5, document_cnpj=$6
-      WHERE id=$7 AND company_id=$8 RETURNING *
+      UPDATE clients SET name=$1, email=$2, phone=$3, responsavel=$4, document_cpf=$5, document_cnpj=$6,
+        updated_by=$7, updated_at=now()
+      WHERE id=$8 AND company_id=$9 RETURNING *
     `,
       [
         cleanName,
@@ -205,6 +216,7 @@ router.put('/:id', requireAuth, companyScope(true), requirePermission('clients.e
         cleanResponsavel || null,
         docFields.cpf,
         docFields.cnpj,
+        req.user.id,
         req.params.id,
         req.companyId,
       ]
@@ -221,8 +233,9 @@ router.patch('/:id/status', requireAuth, companyScope(true), requirePermission('
   if (typeof active !== 'boolean') return res.status(400).json({ error: 'Campo active obrigatório' });
   try {
     if (active) await assertClientLimit(req.companyId);
-    const r = await query('UPDATE clients SET active=$1 WHERE id=$2 AND company_id=$3 RETURNING *', [
+    const r = await query('UPDATE clients SET active=$1, updated_by=$2, updated_at=now() WHERE id=$3 AND company_id=$4 RETURNING *', [
       active,
+      req.user.id,
       req.params.id,
       req.companyId,
     ]);

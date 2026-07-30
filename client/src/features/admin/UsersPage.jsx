@@ -3,11 +3,12 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Alert, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
   IconButton, MenuItem, Select, Snackbar, Stack, Switch, Table, TableBody, TableCell,
-  TableHead, TableRow, TextField, Tooltip, Typography,
+  TableHead, TableRow, TextField, ToggleButton, ToggleButtonGroup, Tooltip, Typography,
 } from '@mui/material'
 import PersonAddAlt1Icon from '@mui/icons-material/PersonAddAlt1'
 import GroupIcon from '@mui/icons-material/Group'
 import EditIcon from '@mui/icons-material/Edit'
+import TuneIcon from '@mui/icons-material/Tune'
 import PageHeader from '@/components/PageHeader'
 import PapperBlock from '@/components/PapperBlock'
 import CompanyRequiredAlert from '@/components/CompanyRequiredAlert'
@@ -87,6 +88,64 @@ function UserFormDialog({ mode, user, profiles, onClose, onDone, notify }) {
   )
 }
 
+// Permissões personalizadas (overrides) de um usuário — só as chaves que o ator
+// pode gerenciar aparecem (backend filtra o catálogo).
+function OverridesDialog({ userId, userLabel, onClose, notify }) {
+  const qc = useQueryClient()
+  const [state, setState] = React.useState({}) // key -> 'inherit' | 'allow' | 'deny'
+  const catalogQ = useQuery({ queryKey: ['manage-catalog'], queryFn: permissionsService.manageCatalog })
+  const q = useQuery({ queryKey: ['manage-overrides', userId], queryFn: () => permissionsService.getManageUserOverrides(userId), enabled: Boolean(userId) })
+  React.useEffect(() => {
+    const map = {}
+    ;(q.data?.overrides || []).forEach((o) => { map[o.permission_key] = o.allowed ? 'allow' : 'deny' })
+    setState(map)
+  }, [q.data])
+  const catalog = catalogQ.data?.catalog || []
+
+  const save = useMutation({
+    mutationFn: () => {
+      const overrides = Object.entries(state)
+        .filter(([, v]) => v === 'allow' || v === 'deny')
+        .map(([key, v]) => ({ key, allowed: v === 'allow' }))
+      return permissionsService.setManageUserOverrides(userId, overrides)
+    },
+    onSuccess: () => { notify('Permissões personalizadas salvas.'); qc.invalidateQueries({ queryKey: ['me-permissions'] }); onClose() },
+    onError: (e) => notify(e?.response?.data?.error || 'Falha ao salvar.', 'error'),
+  })
+  const setVal = (k, v) => setState((s) => ({ ...s, [k]: v }))
+
+  return (
+    <Dialog open onClose={onClose} maxWidth="sm" fullWidth slotProps={{ paper: { sx: { borderRadius: 3 } } }}>
+      <DialogTitle sx={{ fontWeight: 700 }}>Permissões personalizadas — {userLabel}</DialogTitle>
+      <DialogContent dividers sx={{ maxHeight: 460 }}>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          "Herdar" segue o perfil. "Permitir"/"Negar" ajustam só para este usuário. Você só vê as permissões que pode conceder.
+        </Typography>
+        {catalog.map((mod) => (
+          <Box key={mod.module} sx={{ mb: 2 }}>
+            <Typography sx={{ fontWeight: 700, mb: 0.5 }}>{mod.label}</Typography>
+            {mod.permissions.map((p) => (
+              <Box key={p.key} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, py: 0.5 }}>
+                <Typography variant="body2" sx={{ minWidth: 0 }}>{p.label}</Typography>
+                <ToggleButtonGroup size="small" exclusive value={state[p.key] || 'inherit'} onChange={(_e, v) => v && setVal(p.key, v)}>
+                  <ToggleButton value="inherit">Herdar</ToggleButton>
+                  <ToggleButton value="allow">Permitir</ToggleButton>
+                  <ToggleButton value="deny">Negar</ToggleButton>
+                </ToggleButtonGroup>
+              </Box>
+            ))}
+          </Box>
+        ))}
+        {!catalog.length && <Typography variant="body2" color="text.secondary">Nenhuma permissão gerenciável.</Typography>}
+      </DialogContent>
+      <DialogActions sx={{ px: 3, py: 2 }}>
+        <Button onClick={onClose} color="inherit">Cancelar</Button>
+        <Button variant="contained" disableElevation onClick={() => save.mutate()} disabled={save.isPending}>Salvar</Button>
+      </DialogActions>
+    </Dialog>
+  )
+}
+
 export default function UsersPage() {
   const { selectedCompanyId, user } = useAuth()
   const { can } = usePermissions()
@@ -96,6 +155,7 @@ export default function UsersPage() {
   const isMaster = user?.role === 'master'
   const canManage = can('users.create')
   const [dialog, setDialog] = React.useState(null) // { mode, user }
+  const [overrideUser, setOverrideUser] = React.useState(null)
   const [toast, setToast] = React.useState(null)
   const notify = (msg, severity = 'success') => setToast({ msg, severity })
   const refresh = () => qc.invalidateQueries({ queryKey: ['manage-users'] })
@@ -119,6 +179,8 @@ export default function UsersPage() {
   // Um usuário só é gerenciável aqui se não for o próprio ator e, para não-master,
   // não tiver o perfil Administrador (o backend também valida).
   const manageable = (u) => canManage && (isMaster || u.profile_name !== 'Administrador')
+  // Overrides: só master, ou o Admin para usuários que ELE cadastrou.
+  const canCustomize = (u) => manageable(u) && (isMaster || u.created_by === user?.id)
 
   const handleToggle = async (u) => {
     if (u.id === user?.id) return
@@ -203,6 +265,13 @@ export default function UsersPage() {
                       </Tooltip>
                     </TableCell>
                     <TableCell align="right">
+                      <Tooltip title={canCustomize(u) ? 'Permissões personalizadas' : 'Disponível apenas para usuários que você cadastrou'}>
+                        <span>
+                          <IconButton size="small" disabled={!canCustomize(u)} onClick={() => setOverrideUser(u)}>
+                            <TuneIcon fontSize="small" />
+                          </IconButton>
+                        </span>
+                      </Tooltip>
                       <Tooltip title="Editar">
                         <span>
                           <IconButton size="small" disabled={!editable} onClick={() => setDialog({ mode: 'edit', user: u })}>
@@ -229,6 +298,15 @@ export default function UsersPage() {
           profiles={profiles}
           onClose={() => setDialog(null)}
           onDone={refresh}
+          notify={notify}
+        />
+      )}
+
+      {overrideUser && (
+        <OverridesDialog
+          userId={overrideUser.id}
+          userLabel={overrideUser.name || overrideUser.email}
+          onClose={() => setOverrideUser(null)}
           notify={notify}
         />
       )}

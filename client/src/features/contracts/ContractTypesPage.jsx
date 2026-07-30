@@ -19,6 +19,7 @@ import { useForm } from 'react-hook-form'
 import { useAuth } from '@/features/auth/AuthContext'
 import { useConfirm } from '@/components/ConfirmDialog'
 import { usePermissions } from '@/features/permissions/PermissionsContext'
+import AuditInfo from '@/components/AuditInfo'
 
 function TypeDialog({ open, onClose, onSubmit, defaultValues }) {
   const { register, handleSubmit, reset, watch } = useForm({
@@ -135,15 +136,16 @@ export default function ContractTypesPage() {
                 <TableCell>Nome</TableCell>
                 <TableCell>Recorrente?</TableCell>
                 <TableCell>Reajuste (%)</TableCell>
+                <TableCell>Auditoria</TableCell>
                 <TableCell align="right">Ações</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
               {enabled && list.isLoading ? (
-                <TableSkeleton rows={6} columns={4} />
+                <TableSkeleton rows={6} columns={5} />
               ) : rows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={4} sx={{ border: 0 }}>
+                  <TableCell colSpan={5} sx={{ border: 0 }}>
                     <EmptyState
                       icon={<DescriptionIcon />}
                       title="Nenhum tipo cadastrado"
@@ -158,6 +160,9 @@ export default function ContractTypesPage() {
                     <TableCell>{row.name}</TableCell>
                     <TableCell>{row.is_recurring ? 'Sim' : 'Não'}</TableCell>
                     <TableCell>{Number(row.adjustment_percent || 0).toFixed(2)}</TableCell>
+                    <TableCell>
+                      <AuditInfo createdByName={row.created_by_name} createdAt={row.created_at} updatedByName={row.updated_by_name} updatedAt={row.updated_at} />
+                    </TableCell>
                     <TableCell align="right">
                       {canManage ? (
                         <>

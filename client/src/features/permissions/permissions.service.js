@@ -20,6 +20,9 @@ export const permissionsService = {
   setManageUserProfile: async (id, profileId) => (await api.put(`/permissions/manage/users/${id}/profile`, { profileId })).data,
   setManageUserStatus: async (id, active) => (await api.patch(`/permissions/manage/users/${id}/status`, { active })).data,
   updateManageUser: async (id, payload) => (await api.put(`/permissions/manage/users/${id}`, payload)).data,
+  manageCatalog: async () => (await api.get('/permissions/manage/catalog')).data,
+  getManageUserOverrides: async (id) => (await api.get(`/permissions/manage/users/${id}/overrides`)).data,
+  setManageUserOverrides: async (id, overrides) => (await api.put(`/permissions/manage/users/${id}/overrides`, { overrides })).data,
 }
 
 export default permissionsService

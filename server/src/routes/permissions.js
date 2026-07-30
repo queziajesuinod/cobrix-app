@@ -2,7 +2,7 @@ const express = require('express');
 const { query, withClient } = require('../db');
 const { requireAuth, companyScope } = require('./auth');
 const { masterOnly, getEffectivePermissions, requirePermission } = require('../services/permissions');
-const { CATALOG, isValidPermission } = require('../config/permissions-catalog');
+const { CATALOG, ALL_KEYS, isValidPermission } = require('../config/permissions-catalog');
 const { respondError } = require('../utils/http-error');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
@@ -213,7 +213,7 @@ router.get('/manage/assignable-profiles', requireAuth, companyScope(true), requi
 router.get('/manage/users', requireAuth, companyScope(true), requirePermission('users.view'), async (req, res) => {
   try {
     const r = await query(
-      `SELECT u.id, u.email, u.name, u.role, u.active, u.profile_id, p.name AS profile_name
+      `SELECT u.id, u.email, u.name, u.role, u.active, u.profile_id, u.created_by, p.name AS profile_name
          FROM ${SCHEMA}.users u
          JOIN ${SCHEMA}.user_companies uc ON uc.user_id = u.id
          LEFT JOIN ${SCHEMA}.profiles p ON p.id = u.profile_id
@@ -230,7 +230,7 @@ router.get('/manage/users', requireAuth, companyScope(true), requirePermission('
 //  - se o ator NÃO é master, o alvo não pode ter o perfil Administrador.
 async function loadManageableUser(actor, targetId, companyId) {
   const r = await query(
-    `SELECT u.id, u.email, u.name, u.role, u.active, u.profile_id, p.name AS profile_name
+    `SELECT u.id, u.email, u.name, u.role, u.active, u.profile_id, u.created_by, p.name AS profile_name
        FROM ${SCHEMA}.users u
        JOIN ${SCHEMA}.user_companies uc ON uc.user_id = u.id
        LEFT JOIN ${SCHEMA}.profiles p ON p.id = u.profile_id
@@ -318,10 +318,10 @@ router.post('/manage/users', requireAuth, companyScope(true), requirePermission(
       await client.query('BEGIN');
       try {
         const ins = await client.query(
-          `INSERT INTO ${SCHEMA}.users (email, password_hash, role, active, name, profile_id)
-           VALUES ($1, public.crypt($2, public.gen_salt('bf', 12)), 'user', true, $3, $4)
+          `INSERT INTO ${SCHEMA}.users (email, password_hash, role, active, name, profile_id, created_by)
+           VALUES ($1, public.crypt($2, public.gen_salt('bf', 12)), 'user', true, $3, $4, $5)
            RETURNING id, email, name, role, profile_id`,
-          [email, password, name, profileId]
+          [email, password, name, profileId, req.user.id]
         );
         const u = ins.rows[0];
         await client.query(
@@ -340,6 +340,85 @@ router.post('/manage/users', requireAuth, companyScope(true), requirePermission(
     if (String(e.message).includes('duplicate key')) return res.status(409).json({ error: 'Já existe um usuário com este e-mail.' });
     respondError(res, e);
   }
+});
+
+// Chaves que o ator pode conceder/negar (não escala além das próprias permissões).
+async function grantableKeys(user) {
+  if (user.role === 'master') return new Set(ALL_KEYS);
+  return new Set(await getEffectivePermissions(user));
+}
+
+// Catálogo filtrado às permissões que o ator pode gerenciar (para a matriz de overrides).
+router.get('/manage/catalog', requireAuth, companyScope(true), requirePermission('users.create'), async (req, res) => {
+  try {
+    const keys = await grantableKeys(req.user);
+    const catalog = CATALOG
+      .map((m) => ({ ...m, permissions: m.permissions.filter((p) => keys.has(p.key)) }))
+      .filter((m) => m.permissions.length > 0);
+    res.json({ catalog });
+  } catch (e) { respondError(res, e); }
+});
+
+// Só permite personalizar overrides de usuários que o ator CADASTROU (master: qualquer um).
+async function loadCustomizableUser(actor, targetId, companyId) {
+  const u = await loadManageableUser(actor, targetId, companyId);
+  if (actor.role !== 'master' && u.created_by !== actor.id) {
+    const e = new Error('Você só pode personalizar permissões de usuários que você cadastrou.');
+    e.status = 403;
+    throw e;
+  }
+  return u;
+}
+
+router.get('/manage/users/:id/overrides', requireAuth, companyScope(true), requirePermission('users.create'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'id inválido' });
+    await loadCustomizableUser(req.user, id, req.companyId);
+    const r = await query(`SELECT permission_key, allowed FROM ${SCHEMA}.user_permission_overrides WHERE user_id = $1`, [id]);
+    res.json({ overrides: r.rows });
+  } catch (e) { respondError(res, e); }
+});
+
+// Substitui os overrides SOMENTE das chaves gerenciáveis pelo ator, preservando
+// as demais (ex.: definidas pelo master fora do alcance do Administrador).
+router.put('/manage/users/:id/overrides', requireAuth, companyScope(true), requirePermission('users.create'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'id inválido' });
+    await loadCustomizableUser(req.user, id, req.companyId);
+
+    const keys = await grantableKeys(req.user);
+    const incoming = Array.isArray(req.body?.overrides) ? req.body.overrides : [];
+    const rows = incoming
+      .filter((o) => o && isValidPermission(String(o.key)) && keys.has(String(o.key)) && typeof o.allowed === 'boolean')
+      .map((o) => ({ key: String(o.key), allowed: o.allowed }));
+
+    await withClient(async (client) => {
+      await client.query('BEGIN');
+      try {
+        const managed = [...keys];
+        if (managed.length) {
+          await client.query(
+            `DELETE FROM ${SCHEMA}.user_permission_overrides WHERE user_id = $1 AND permission_key = ANY($2::text[])`,
+            [id, managed]
+          );
+        }
+        for (const o of rows) {
+          await client.query(
+            `INSERT INTO ${SCHEMA}.user_permission_overrides (user_id, permission_key, allowed)
+             VALUES ($1,$2,$3) ON CONFLICT (user_id, permission_key) DO UPDATE SET allowed = EXCLUDED.allowed`,
+            [id, o.key, o.allowed]
+          );
+        }
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      }
+    });
+    res.json({ ok: true });
+  } catch (e) { respondError(res, e); }
 });
 
 module.exports = router;

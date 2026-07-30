@@ -239,7 +239,9 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
              ct.is_recurring,
              ct.adjustment_percent,
              cms.status AS month_status,
-             cms.year, cms.month
+             cms.year, cms.month,
+             (SELECT COALESCE(NULLIF(cu.name,''), cu.email) FROM ${SCHEMA}.users cu WHERE cu.id = c.created_by) AS created_by_name,
+             (SELECT COALESCE(NULLIF(eu.name,''), eu.email) FROM ${SCHEMA}.users eu WHERE eu.id = c.updated_by) AS updated_by_name
       ${fromSql}
       ${whereSql}
       ORDER BY c.start_date DESC
@@ -267,10 +269,12 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
 router.get('/:id', requireAuth, companyScope(true), async (req, res) => {
   try {
     const r = await query(`
-      SELECT c.*, cl.name as client_name, cl.email as client_email
+      SELECT c.*, cl.name as client_name, cl.email as client_email,
+             (SELECT COALESCE(NULLIF(cu.name,''), cu.email) FROM ${SCHEMA}.users cu WHERE cu.id = c.created_by) AS created_by_name,
+             (SELECT COALESCE(NULLIF(eu.name,''), eu.email) FROM ${SCHEMA}.users eu WHERE eu.id = c.updated_by) AS updated_by_name
       FROM ${SCHEMA}.contracts c
       JOIN ${SCHEMA}.clients cl ON c.client_id = cl.id
-      WHERE c.id=$1 AND c.company_id=$2 
+      WHERE c.id=$1 AND c.company_id=$2
     `, [req.params.id, req.companyId]);
     if (!r.rows[0]) return res.status(404).json({ error: 'Contrato não encontrado' });
     res.json(r.rows[0]);
@@ -312,9 +316,9 @@ router.post('/', requireAuth, companyScope(true), requirePermission('contracts.c
     await ensureUniqueContractDescription(req.companyId, client_id, description, null);
     await assertContractLimit(req.companyId);
     const r = await query(`
-      INSERT INTO contracts (company_id, client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, billing_interval_days, billing_mode, cancellation_date)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *
-    `, [req.companyId, client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, billing_interval_days, billing_mode, cancellation_date]);
+      INSERT INTO contracts (company_id, client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, billing_interval_days, billing_mode, cancellation_date, created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *
+    `, [req.companyId, client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, billing_interval_days, billing_mode, cancellation_date, req.user.id]);
     res.status(201).json(r.rows[0]);
   } catch (err) {
     respondError(res, err);
@@ -353,9 +357,10 @@ router.put('/:id', requireAuth, companyScope(true), requirePermission('contracts
 
     const r = await query(`
       UPDATE contracts
-      SET client_id=$1, contract_type_id=$2, description=$3, value=$4, start_date=$5, end_date=$6, billing_day=$7, billing_interval_months=$8, billing_interval_days=$9, billing_mode=$10, cancellation_date=$11
-      WHERE id=$12 AND company_id=$13 RETURNING *
-    `, [client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, billing_interval_days, billing_mode, cancellation_date, req.params.id, req.companyId]);
+      SET client_id=$1, contract_type_id=$2, description=$3, value=$4, start_date=$5, end_date=$6, billing_day=$7, billing_interval_months=$8, billing_interval_days=$9, billing_mode=$10, cancellation_date=$11,
+          updated_by=$12, updated_at=now()
+      WHERE id=$13 AND company_id=$14 RETURNING *
+    `, [client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, billing_interval_days, billing_mode, cancellation_date, req.user.id, req.params.id, req.companyId]);
     if (!r.rows[0]) return res.status(404).json({ error: 'Contrato não encontrado' });
     res.json({ ok: true });
   } catch (err) {
@@ -453,7 +458,7 @@ router.patch('/:id/status', requireAuth, companyScope(true), requirePermission('
   if (typeof active !== 'boolean') return res.status(400).json({ error: 'Campo active obrigatório' });
   try {
     if (active) await assertContractLimit(req.companyId);
-    const r = await query('UPDATE contracts SET active=$1 WHERE id=$2 AND company_id=$3 RETURNING *', [active, req.params.id, req.companyId]);
+    const r = await query('UPDATE contracts SET active=$1, updated_by=$2, updated_at=now() WHERE id=$3 AND company_id=$4 RETURNING *', [active, req.user.id, req.params.id, req.companyId]);
     if (!r.rows[0]) return res.status(404).json({ error: 'Contrato não encontrado' });
     res.json(r.rows[0]);
   } catch (err) {

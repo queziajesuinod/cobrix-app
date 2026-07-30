@@ -17,10 +17,12 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
   if (!companyId) return res.status(400).json({ error: 'Selecione uma empresa' })
   try {
     const rows = await query(
-      `SELECT id, name, is_recurring, adjustment_percent
-       FROM ${SCHEMA}.contract_types
-       WHERE company_id = $1
-       ORDER BY name ASC`,
+      `SELECT ct.id, ct.name, ct.is_recurring, ct.adjustment_percent, ct.created_at, ct.updated_at,
+              (SELECT COALESCE(NULLIF(cu.name,''), cu.email) FROM ${SCHEMA}.users cu WHERE cu.id = ct.created_by) AS created_by_name,
+              (SELECT COALESCE(NULLIF(eu.name,''), eu.email) FROM ${SCHEMA}.users eu WHERE eu.id = ct.updated_by) AS updated_by_name
+       FROM ${SCHEMA}.contract_types ct
+       WHERE ct.company_id = $1
+       ORDER BY ct.name ASC`,
       [companyId]
     )
     res.json(rows.rows)
@@ -43,10 +45,10 @@ router.post('/', requireAuth, companyScope(true), requirePermission('contractTyp
   const { name, is_recurring, adjustment_percent } = parse.data
   try {
     const r = await query(
-      `INSERT INTO ${SCHEMA}.contract_types (company_id, name, is_recurring, adjustment_percent)
-       VALUES ($1,$2,$3,$4)
+      `INSERT INTO ${SCHEMA}.contract_types (company_id, name, is_recurring, adjustment_percent, created_by)
+       VALUES ($1,$2,$3,$4,$5)
        RETURNING id, name, is_recurring, adjustment_percent`,
-      [companyId, name.trim(), is_recurring, adjustment_percent]
+      [companyId, name.trim(), is_recurring, adjustment_percent, req.user.id]
     )
     res.status(201).json(r.rows[0])
   } catch (err) {
@@ -69,10 +71,10 @@ router.put('/:id', requireAuth, companyScope(true), requirePermission('contractT
   try {
     const r = await query(
       `UPDATE ${SCHEMA}.contract_types
-       SET name=$1, is_recurring=$2, adjustment_percent=$3
-       WHERE id=$4 AND company_id=$5
+       SET name=$1, is_recurring=$2, adjustment_percent=$3, updated_by=$4, updated_at=now()
+       WHERE id=$5 AND company_id=$6
        RETURNING id, name, is_recurring, adjustment_percent`,
-      [name.trim(), is_recurring, adjustment_percent, id, companyId]
+      [name.trim(), is_recurring, adjustment_percent, req.user.id, id, companyId]
     )
     if (!r.rows[0]) return res.status(404).json({ error: 'Tipo não encontrado' })
     res.json(r.rows[0])

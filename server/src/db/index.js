@@ -309,6 +309,27 @@ async function initDb() {
       );
     `);
     await c.query(`ALTER TABLE ${schema}.users ADD COLUMN IF NOT EXISTS profile_id INTEGER REFERENCES ${schema}.profiles(id) ON DELETE SET NULL;`);
+    // Quem cadastrou o usuário — permite ao Administrador personalizar permissões
+    // apenas dos usuários que ele mesmo criou.
+    await c.query(`ALTER TABLE ${schema}.users ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL;`);
+
+    // Auditoria nos cadastros principais: quem criou/editou e quando.
+    for (const t of ['clients', 'contracts', 'contract_types']) {
+      await c.query(`ALTER TABLE ${schema}.${t} ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();`);
+      await c.query(`ALTER TABLE ${schema}.${t} ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;`);
+      await c.query(`ALTER TABLE ${schema}.${t} ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL;`);
+      await c.query(`ALTER TABLE ${schema}.${t} ADD COLUMN IF NOT EXISTS updated_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL;`);
+      // Backfill: registros antigos ficam com o admin (master) da empresa como criador.
+      await c.query(`
+        UPDATE ${schema}.${t} tt SET created_by = (
+          SELECT u.id FROM ${schema}.user_companies uc
+          JOIN ${schema}.users u ON u.id = uc.user_id
+          WHERE uc.company_id = tt.company_id
+          ORDER BY (u.role = 'master') DESC, u.id ASC
+          LIMIT 1
+        ) WHERE tt.created_by IS NULL;
+      `);
+    }
   });
 }
 
