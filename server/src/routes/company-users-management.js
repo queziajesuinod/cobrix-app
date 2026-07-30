@@ -22,32 +22,33 @@ function canManageCompany(user, companyId) {
 
 // Validação simples
 function validateCreateUser(data) {
-  const { email, password, role, active } = data || {};
-  
+  const { email, password, role, active, name } = data || {};
+
   if (!email || !email.includes('@')) {
     return { error: "Email inválido" };
   }
-  
+
   if (password != null && password !== '' && password.length < 6) {
     return { error: "Senha deve ter pelo menos 6 caracteres" };
   }
-  
+
   if (!role || !['user', 'admin'].includes(role)) {
     return { error: "Role deve ser 'user' ou 'admin'" };
   }
-  
-  return { 
-    data: { 
-      email, 
-      password: password || null, 
-      role, 
-      active: active !== undefined ? active : true 
-    } 
+
+  return {
+    data: {
+      email,
+      password: password || null,
+      role,
+      active: active !== undefined ? active : true,
+      name: name != null ? (String(name).trim() || null) : null,
+    }
   };
 }
 
 function validateUpdateUser(data) {
-  const { email, password, role, active } = data || {};
+  const { email, password, role, active, name } = data || {};
   const result = {};
   
   if (email !== undefined) {
@@ -74,7 +75,11 @@ function validateUpdateUser(data) {
   if (active !== undefined) {
     result.active = active;
   }
-  
+
+  if (name !== undefined) {
+    result.name = name != null ? (String(name).trim() || null) : null;
+  }
+
   return { data: result };
 }
 
@@ -95,11 +100,12 @@ router.get("/:companyId/users", requireAuth, async (req, res) => {
 
     // Buscar usuários da empresa
     const result = await query(`
-      SELECT 
-        u.id, 
-        u.email, 
-        u.role, 
-        u.active, 
+      SELECT
+        u.id,
+        u.email,
+        u.name,
+        u.role,
+        u.active,
         u.created_at,
         c.name as company_name
       FROM users u
@@ -131,7 +137,7 @@ router.post("/:companyId/users", requireAuth, async (req, res) => {
       return res.status(400).json({ error: validation.error });
     }
 
-    const { email, password, role, active } = validation.data;
+    const { email, password, role, active, name } = validation.data;
 
     // Verificar se a empresa existe
     const companyCheck = await query("SELECT id FROM companies WHERE id = $1", [companyId]);
@@ -164,10 +170,10 @@ router.post("/:companyId/users", requireAuth, async (req, res) => {
       }
 
       const userResult = await query(`
-        INSERT INTO users (email, password_hash, role, active, created_at)
-        VALUES ($1, public.crypt($2, public.gen_salt('bf')), $3, $4, now())
-        RETURNING id, email, role, active, created_at
-      `, [email, password, role, active]);
+        INSERT INTO users (email, password_hash, role, active, name, created_at)
+        VALUES ($1, public.crypt($2, public.gen_salt('bf')), $3, $4, $5, now())
+        RETURNING id, email, name, role, active, created_at
+      `, [email, password, role, active, name]);
 
       const newUser = userResult.rows[0];
       targetUserId = newUser.id;
@@ -180,11 +186,12 @@ router.post("/:companyId/users", requireAuth, async (req, res) => {
 
     // Buscar dados completos do usuário criado
     const fullUserResult = await query(`
-      SELECT 
-        u.id, 
-        u.email, 
-        u.role, 
-        u.active, 
+      SELECT
+        u.id,
+        u.email,
+        u.name,
+        u.role,
+        u.active,
         u.created_at,
         c.name as company_name
       FROM users u
@@ -211,11 +218,12 @@ router.get("/:companyId/users/:userId", requireAuth, async (req, res) => {
     }
 
     const result = await query(`
-      SELECT 
-        u.id, 
-        u.email, 
-        u.role, 
-        u.active, 
+      SELECT
+        u.id,
+        u.email,
+        u.name,
+        u.role,
+        u.active,
         u.created_at,
         c.name as company_name
       FROM users u
@@ -301,6 +309,12 @@ router.put("/:companyId/users/:userId", requireAuth, async (req, res) => {
       paramCount++;
     }
 
+    if (updateData.name !== undefined) {
+      updateFields.push(`name = $${paramCount}`);
+      updateValues.push(updateData.name);
+      paramCount++;
+    }
+
     if (updateFields.length === 0) {
       return res.status(400).json({ error: "Nenhum campo para atualizar" });
     }
@@ -310,21 +324,22 @@ router.put("/:companyId/users/:userId", requireAuth, async (req, res) => {
     const whereClause = `$${paramCount}`;
 
     const updateQuery = `
-      UPDATE users 
+      UPDATE users
       SET ${updateFields.join(', ')}
       WHERE id = ${whereClause}
-      RETURNING id, email, role, active, created_at
+      RETURNING id, email, name, role, active, created_at
     `;
 
     const result = await query(updateQuery, updateValues);
 
     // Buscar dados completos do usuário atualizado
     const fullUserResult = await query(`
-      SELECT 
-        u.id, 
-        u.email, 
-        u.role, 
-        u.active, 
+      SELECT
+        u.id,
+        u.email,
+        u.name,
+        u.role,
+        u.active,
         u.created_at,
         c.name as company_name
       FROM users u

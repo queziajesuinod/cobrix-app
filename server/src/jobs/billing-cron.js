@@ -386,7 +386,7 @@ async function sendPreReminders(now = new Date(), companyId = null) {
       });
 
       let evo = { ok: false, error: "no-phone" };
-      try { evo = await sendWhatsapp(c.company_id, { number: c.client_phone, text }); }
+      try { evo = await sendWhatsapp(c.company_id, { number: c.client_phone, text }, { throttle: true }); }
       catch (e) { evo = { ok: false, error: e.message }; }
       const providerResponse = {
         messenger: evo.data ?? null,
@@ -498,7 +498,7 @@ async function sendDueReminders(now = new Date(), companyId = null, opts = {}) {
       });
 
       let evo = { ok: false, error: "no-phone" };
-      try { evo = await sendWhatsapp(r.company_id, { number: r.client_phone, text }); }
+      try { evo = await sendWhatsapp(r.company_id, { number: r.client_phone, text }, { throttle: true }); }
       catch (e) { evo = { ok: false, error: e.message }; }
       const providerResponse = {
         messenger: evo.data ?? null,
@@ -612,7 +612,7 @@ async function sendLateRemindersForTarget(now, target, companyId, modeFilter, op
       });
 
       let evo = { ok: false, error: "no-phone" };
-      try { evo = await sendWhatsapp(r.company_id, { number: r.client_phone, text }); }
+      try { evo = await sendWhatsapp(r.company_id, { number: r.client_phone, text }, { throttle: true }); }
       catch (e) { evo = { ok: false, error: e.message }; }
       const providerResponse = {
         messenger: evo.data ?? null,

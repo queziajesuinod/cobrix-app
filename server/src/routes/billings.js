@@ -187,10 +187,18 @@ router.get('/kpis', requireAuth, companyScope(true), async (req, res) => {
     if (!ym || !/^\d{4}-\d{2}$/.test(ym)) return res.status(400).json({ error: 'ym (YYYY-MM) obrigatório' });
     const { y, m, start, end } = monthBounds(ym);
 
+    // Dia do vencimento (opcional) — filtra contratos por billing_day.
+    const dueDayRaw = req.query.dueDay;
+    const dueDay = (dueDayRaw != null && String(dueDayRaw).trim() !== '') ? Number(dueDayRaw) : null;
+    if (dueDay != null && (Number.isNaN(dueDay) || dueDay < 1 || dueDay > 31)) {
+      return res.status(400).json({ error: 'dueDay inválido' });
+    }
+
     let condC = ['c.company_id = $1', 'c.active = true', 'c.start_date <= $2', 'c.end_date >= $3', '(c.cancellation_date IS NULL OR c.cancellation_date >= $3)'];
     let pC = [req.companyId, end, start];
     if (clientId) { pC.push(Number(clientId)); condC.push(`cl.id = $${pC.length}`); }
     if (contractId) { pC.push(Number(contractId)); condC.push(`c.id = $${pC.length}`); }
+    if (dueDay) { pC.push(dueDay); condC.push(`c.billing_day = $${pC.length}`); }
 
     const active = await query(`
       SELECT c.id
@@ -199,32 +207,25 @@ router.get('/kpis', requireAuth, companyScope(true), async (req, res) => {
     `, pC);
 
     const activeIds = active.rows.map(r => r.id);
-    const idsSql = activeIds.length ? `AND b.contract_id = ANY($4::int[])` : '';
-    const pB = [req.companyId, start, end];
-    if (activeIds.length) pB.push(activeIds);
 
+    // Todas as métricas ficam restritas ao conjunto filtrado (activeIds), então
+    // respeitam mês + cliente + contrato + dia do vencimento.
     const bills = await query(`
       SELECT LOWER(b.status) AS status, COUNT(*)::int AS cnt
       FROM ${SCHEMA}.billings b
-      JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
-      WHERE c.company_id = $1
-        AND c.active = true
+      WHERE b.company_id = $1
         AND b.billing_date >= $2 AND b.billing_date < $3
-        ${idsSql}
+        AND b.contract_id = ANY($4::int[])
       GROUP BY LOWER(b.status)
-    `, pB);
+    `, [req.companyId, start, end, activeIds]);
 
     const cms = await query(`
       SELECT LOWER(cms.status) AS status, COUNT(*)::int AS cnt
       FROM ${SCHEMA}.contract_month_status cms
-      JOIN ${SCHEMA}.contracts c ON c.id = cms.contract_id
-      WHERE cms.company_id = $1
-        AND c.company_id = $1
-        AND c.active = true
-        AND cms.year = $2
-        AND cms.month = $3
+      WHERE cms.year = $1 AND cms.month = $2
+        AND cms.contract_id = ANY($3::int[])
       GROUP BY LOWER(cms.status)
-    `, [req.companyId, y, m]);
+    `, [y, m, activeIds]);
 
     const k = {
       contractsActive: activeIds.length,

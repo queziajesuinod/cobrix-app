@@ -6,6 +6,7 @@ import AddIcon from '@mui/icons-material/Add'
 import { companyUsersService } from './company.users.service'
 
 function AddUserDialog({ open, onClose, onSubmit, loading }) {
+  const [name, setName] = React.useState('')
   const [email, setEmail] = React.useState('')
   const [password, setPassword] = React.useState('')
   const [role, setRole] = React.useState('user')
@@ -15,6 +16,7 @@ function AddUserDialog({ open, onClose, onSubmit, loading }) {
       <DialogTitle>Novo usuário</DialogTitle>
       <DialogContent dividers>
         <Stack spacing={2}>
+          <TextField label="Nome" value={name} onChange={e=>setName(e.target.value)} fullWidth />
           <TextField label="Email" value={email} onChange={e=>setEmail(e.target.value)} fullWidth />
           <TextField label="Senha" type="password" value={password} onChange={e=>setPassword(e.target.value)} fullWidth helperText="Mínimo 6 caracteres" />
           <TextField select label="Papel" value={role} onChange={e=>setRole(e.target.value)} fullWidth>
@@ -26,7 +28,7 @@ function AddUserDialog({ open, onClose, onSubmit, loading }) {
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Cancelar</Button>
-        <Button variant="contained" disabled={!can || loading} onClick={()=>onSubmit({ email, password, role })}>{loading ? 'Salvando...' : 'Criar'}</Button>
+        <Button variant="contained" disabled={!can || loading} onClick={()=>onSubmit({ name, email, password, role })}>{loading ? 'Salvando...' : 'Criar'}</Button>
       </DialogActions>
     </Dialog>
   )
@@ -52,6 +54,7 @@ export default function CompanyUsersPanel({ companyId }){
           <TableHead>
             <TableRow>
               <TableCell>ID</TableCell>
+              <TableCell>Nome</TableCell>
               <TableCell>Email</TableCell>
               <TableCell>Role</TableCell>
               <TableCell>Ativo</TableCell>
@@ -62,6 +65,18 @@ export default function CompanyUsersPanel({ companyId }){
             {(listQ.data||[]).map(u => (
               <TableRow key={u.id}>
                 <TableCell>{u.id}</TableCell>
+                <TableCell>
+                  <TextField
+                    size="small"
+                    defaultValue={u.name || ''}
+                    placeholder="—"
+                    onBlur={(e) => {
+                      const v = e.target.value.trim()
+                      if (v !== (u.name || '')) updateM.mutate({ userId: u.id, payload: { name: v || null } })
+                    }}
+                    sx={{ minWidth: 160 }}
+                  />
+                </TableCell>
                 <TableCell>{u.email}</TableCell>
                 <TableCell>
                   <TextField select size="small" value={u.role} onChange={(e)=>updateM.mutate({ userId: u.id, payload: { role: e.target.value } })} sx={{ minWidth: 140 }}>
@@ -74,7 +89,7 @@ export default function CompanyUsersPanel({ companyId }){
                 <TableCell align="right"><IconButton color="error" onClick={()=>removeM.mutate(u.id)}><DeleteIcon/></IconButton></TableCell>
               </TableRow>
             ))}
-            {!listQ.data?.length && <TableRow><TableCell colSpan={5}><i>Nenhum usuário.</i></TableCell></TableRow>}
+            {!listQ.data?.length && <TableRow><TableCell colSpan={6}><i>Nenhum usuário.</i></TableCell></TableRow>}
           </TableBody>
         </Table>
       </CardContent>

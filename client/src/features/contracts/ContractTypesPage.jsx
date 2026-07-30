@@ -11,6 +11,9 @@ import AddIcon from '@mui/icons-material/Add'
 import DescriptionIcon from '@mui/icons-material/Description'
 import PageHeader from '@/components/PageHeader'
 import PapperBlock from '@/components/PapperBlock'
+import TableToolbar from '@/components/TableToolbar'
+import TableSkeleton from '@/components/TableSkeleton'
+import EmptyState from '@/components/EmptyState'
 import { contractTypesService } from '@/features/contracts/contractTypes.service'
 import { useForm } from 'react-hook-form'
 import { useAuth } from '@/features/auth/AuthContext'
@@ -108,13 +111,14 @@ export default function ContractTypesPage() {
         <Alert severity="info">Selecione uma empresa para gerenciar os tipos de contrato.</Alert>
       )}
       <PapperBlock title="Tipos cadastrados" icon={<DescriptionIcon />} iconColor="primary.main" noPadding>
+        <TableToolbar count={rows.length} countLabel="tipos" />
         {list.isError && (
           <Alert severity="error" sx={{ m: 2 }}>
             Erro ao carregar tipos de contrato: {list.error?.message || 'tente novamente.'}
           </Alert>
         )}
-        <Box sx={{ overflowX: 'auto' }}>
-          <Table size="small">
+        <Box sx={{ overflow: 'auto', maxHeight: { xs: 460, md: 560 } }}>
+          <Table stickyHeader size="small">
             <TableHead>
               <TableRow>
                 <TableCell>Nome</TableCell>
@@ -124,19 +128,31 @@ export default function ContractTypesPage() {
               </TableRow>
             </TableHead>
             <TableBody>
-              {(rows || []).map(row => (
-                <TableRow key={row.id}>
-                  <TableCell>{row.name}</TableCell>
-                  <TableCell>{row.is_recurring ? 'Sim' : 'Não'}</TableCell>
-                  <TableCell>{Number(row.adjustment_percent || 0).toFixed(2)}</TableCell>
-                  <TableCell align="right">
-                    <IconButton size="small" onClick={() => { setEditing(row); setDialogOpen(true) }}><EditIcon fontSize="inherit" /></IconButton>
-                    <IconButton size="small" color="error" onClick={() => handleDelete(row)}><DeleteIcon fontSize="inherit" /></IconButton>
+              {enabled && list.isLoading ? (
+                <TableSkeleton rows={6} columns={4} />
+              ) : rows.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={4} sx={{ border: 0 }}>
+                    <EmptyState
+                      icon={<DescriptionIcon />}
+                      title="Nenhum tipo cadastrado"
+                      description={enabled ? 'Cadastre o primeiro tipo de contrato para começar.' : 'Selecione uma empresa para visualizar os tipos de contrato.'}
+                      action={enabled ? <Button variant="contained" startIcon={<AddIcon />} onClick={() => { setEditing(null); setDialogOpen(true) }}>Novo tipo</Button> : undefined}
+                    />
                   </TableCell>
                 </TableRow>
-              ))}
-              {!rows?.length && (
-                <TableRow><TableCell colSpan={4}>Nenhum tipo cadastrado.</TableCell></TableRow>
+              ) : (
+                rows.map(row => (
+                  <TableRow key={row.id}>
+                    <TableCell>{row.name}</TableCell>
+                    <TableCell>{row.is_recurring ? 'Sim' : 'Não'}</TableCell>
+                    <TableCell>{Number(row.adjustment_percent || 0).toFixed(2)}</TableCell>
+                    <TableCell align="right">
+                      <IconButton size="small" onClick={() => { setEditing(row); setDialogOpen(true) }}><EditIcon fontSize="inherit" /></IconButton>
+                      <IconButton size="small" color="error" onClick={() => handleDelete(row)}><DeleteIcon fontSize="inherit" /></IconButton>
+                    </TableCell>
+                  </TableRow>
+                ))
               )}
             </TableBody>
           </Table>

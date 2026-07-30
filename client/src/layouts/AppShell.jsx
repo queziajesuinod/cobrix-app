@@ -91,7 +91,9 @@ export default function AppShell({ children }) {
   const current = React.useMemo(() => findCurrent(sections, location.pathname), [sections, location.pathname])
 
   const userEmail = user?.email || ''
-  const initials = (userEmail[0] || 'U').toUpperCase()
+  const userName = user?.name || ''
+  const displayName = userName || userEmail || 'Usuário'
+  const initials = (displayName.trim()[0] || 'U').toUpperCase()
   const roleLabel = user?.role === 'master' ? 'Administrador' : 'Usuário'
 
   // Cor de destaque do item ativo (segue o tema).
@@ -121,7 +123,7 @@ export default function AppShell({ children }) {
           {initials}
         </Avatar>
         <Typography variant="subtitle1" sx={{ fontWeight: 700, wordBreak: 'break-word' }} noWrap>
-          {userEmail || 'Usuário'}
+          {displayName}
         </Typography>
         <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, mt: 0.5 }}>
           <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: '#4caf50' }} />
@@ -289,8 +291,8 @@ export default function AppShell({ children }) {
           </Tooltip>
           <Menu anchorEl={anchorEl} open={Boolean(anchorEl)} onClose={() => setAnchorEl(null)}>
             <Box sx={{ px: 2, py: 1 }}>
-              <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>{userEmail}</Typography>
-              <Typography variant="caption" color="text.secondary">{roleLabel}</Typography>
+              <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>{displayName}</Typography>
+              <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block' }}>{userEmail}</Typography>
             </Box>
             <Divider />
             <MenuItem onClick={() => { setAnchorEl(null); logout(); navigate('/login') }}>

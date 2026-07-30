@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { billingsService } from '@/features/billings/billings.service'
 import { clientsService } from '@/features/clients/clients.service'
+import ClientAutocomplete from '@/components/ClientAutocomplete'
 import { contractsService } from '@/features/contracts/contracts.service'
 import PageHeader from '@/components/PageHeader'
 import PapperBlock from '@/components/PapperBlock'
@@ -38,7 +39,7 @@ export default function AutoNotificationsPage(){
     if (!exists) setContractId('')
   }, [filteredContracts, contractId])
 
-  const kpisQ = useQuery({ queryKey:['kpis', ym, clientId, contractId], queryFn: () => billingsService.kpis(ym, { clientId: clientId || undefined, contractId: contractId || undefined }) })
+  const kpisQ = useQuery({ queryKey:['kpis', ym, clientId, contractId, dueDay], queryFn: () => billingsService.kpis(ym, { clientId: clientId || undefined, contractId: contractId || undefined, dueDay: dueDay || undefined }) })
   const run = useMutation({ mutationFn: billingsService.checkRun, onSuccess: () => { qc.invalidateQueries({ queryKey:['billings_overview'] }); qc.invalidateQueries({ queryKey:['kpis'] }); } })
 
   const onRunConfirm = async (payload) => {
@@ -84,21 +85,14 @@ export default function AutoNotificationsPage(){
                 />
               </Grid>
               <Grid item xs={12} md={3}>
-                <TextField
-                  select
-                  label="Cliente"
+                <ClientAutocomplete
+                  options={clientsQ.data || []}
                   value={clientId}
-                  onChange={(e)=>setClientId(e.target.value)}
+                  onChange={(id) => { setClientId(id); setContractId('') }}
+                  label="Cliente"
+                  placeholder="Buscar cliente…"
                   fullWidth
-                  SelectProps={{ displayEmpty: true }}
-                >
-                  <MenuItem value="">
-                    <em>Todos os clientes</em>
-                  </MenuItem>
-                  {(clientsQ.data||[]).map(c => (
-                    <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>
-                  ))}
-                </TextField>
+                />
               </Grid>
               <Grid item xs={12} md={4}>
                 <TextField
@@ -107,10 +101,12 @@ export default function AutoNotificationsPage(){
                   value={contractId}
                   onChange={(e)=>setContractId(e.target.value)}
                   fullWidth
+                  disabled={!clientId}
+                  helperText={!clientId ? 'Selecione um cliente para filtrar por contrato' : undefined}
                   SelectProps={{ displayEmpty: true }}
                 >
                   <MenuItem value="">
-                    <em>{clientId ? 'Todos os contratos do cliente' : 'Todos os contratos'}</em>
+                    <em>{clientId ? 'Todos os contratos do cliente' : 'Selecione um cliente primeiro'}</em>
                   </MenuItem>
                   {filteredContracts.map(c => (
                     <MenuItem key={c.id} value={c.id}>

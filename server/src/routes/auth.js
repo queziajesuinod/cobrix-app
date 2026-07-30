@@ -20,6 +20,7 @@ async function sign(user) {
   const tokenPayload = {
     id: user.id,
     email: user.email,
+    name: user.name ?? null,
     role: user.role,
     company_ids: companyIds,
   };
@@ -51,6 +52,7 @@ async function requireAuth(req, res, next) {
     req.user = {
       id: payload.id,
       email: payload.email,
+      name: payload.name ?? null,
       role: payload.role,
       company_ids: payload.company_ids || [], // Agora é um array
     };
@@ -98,6 +100,7 @@ async function maybeAuth(req, _res, next) {
       req.user = {
         id: payload.id,
         email: payload.email,
+        name: payload.name ?? null,
         role: payload.role,
         company_ids: payload.company_ids || [],
       };
@@ -172,7 +175,7 @@ router.post("/login", async (req, res) => {
     // pois o company_id será buscado separadamente para usuários master.
     // Para usuários não-master, ainda pode retornar um company_id principal.
     const r = await query(
-      `SELECT u.id, u.email, u.role, uc.company_id
+      `SELECT u.id, u.email, u.name, u.role, uc.company_id
        FROM users u
        LEFT JOIN user_companies uc ON u.id = uc.user_id
        WHERE u.email = $1 AND u.password_hash = public.crypt($2, u.password_hash)`,
@@ -189,6 +192,7 @@ router.post("/login", async (req, res) => {
     const user = {
       id: r.rows[0].id,
       email: r.rows[0].email,
+      name: r.rows[0].name ?? null,
       role: r.rows[0].role,
       company_ids: companyIds
     };

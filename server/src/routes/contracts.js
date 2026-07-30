@@ -135,13 +135,18 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
     const pageSize = Math.min(Math.max(parseInt(req.query.pageSize || '20', 10), 1), 100);
     const offset = (page - 1) * pageSize;
 
-    // ym=YYYY-MM (se não vier, usa mês atual)
+    // ym=YYYY-MM (se não vier, usa mês atual).
+    // active_ym=YYYY-MM filtra contratos cujo período de vigência contém esse mês;
+    // quando presente, também define o mês usado para o status (cms).
     const ym = String(req.query.ym || '').trim();
+    const activeYm = String(req.query.active_ym || '').trim();
+    const activeYmValid = /^\d{4}-\d{2}$/.test(activeYm);
+    const ymForStatus = activeYmValid ? activeYm : ym;
   // Extrai year/month diretamente da string para evitar UTC shift:
   // new Date('2024-01-01') cria UTC midnight → em UTC-3/UTC-4 vira 2023-12-31 local.
   const now = new Date();
-  const year  = ym && /^\d{4}-\d{2}$/.test(ym) ? Number(ym.split('-')[0]) : now.getFullYear();
-  const month = ym && /^\d{4}-\d{2}$/.test(ym) ? Number(ym.split('-')[1]) : now.getMonth() + 1;
+  const year  = /^\d{4}-\d{2}$/.test(ymForStatus) ? Number(ymForStatus.split('-')[0]) : now.getFullYear();
+  const month = /^\d{4}-\d{2}$/.test(ymForStatus) ? Number(ymForStatus.split('-')[1]) : now.getMonth() + 1;
   const clientIdRaw = req.query.clientId;
   const clientId = clientIdRaw != null && clientIdRaw !== '' ? Number(clientIdRaw) : null;
   const contractTypeRaw = req.query.contractTypeId;
@@ -182,6 +187,17 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
     if (req.query.active_on) {
       const activeOn = add(req.query.active_on);
       filters.push(`DATE(c.start_date) <= DATE(${activeOn}) AND DATE(c.end_date) >= DATE(${activeOn}) AND (c.cancellation_date IS NULL OR DATE(c.cancellation_date) >= DATE(${activeOn}))`);
+    }
+
+    // Vigência no mês (active_ym=YYYY-MM): período do contrato sobrepõe o mês inteiro.
+    if (activeYmValid) {
+      const [ay, am] = activeYm.split('-').map(Number);
+      const first = `${activeYm}-01`;
+      const lastDayNum = new Date(ay, am, 0).getDate();
+      const last = `${activeYm}-${String(lastDayNum).padStart(2, '0')}`;
+      const pFirst = add(first);
+      const pLast = add(last);
+      filters.push(`DATE(c.start_date) <= DATE(${pLast}) AND DATE(c.end_date) >= DATE(${pFirst}) AND (c.cancellation_date IS NULL OR DATE(c.cancellation_date) >= DATE(${pFirst}))`);
     }
 
     if (clientId) {

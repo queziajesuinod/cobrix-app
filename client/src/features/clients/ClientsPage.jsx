@@ -8,6 +8,9 @@ import {
   TablePagination, TextField, Tooltip
 } from '@mui/material'
 import PapperBlock from '@/components/PapperBlock'
+import TableToolbar from '@/components/TableToolbar'
+import TableSkeleton from '@/components/TableSkeleton'
+import EmptyState from '@/components/EmptyState'
 import AddIcon from '@mui/icons-material/Add'
 import EditIcon from '@mui/icons-material/Edit'
 import ToggleOnIcon from '@mui/icons-material/ToggleOn'
@@ -223,41 +226,45 @@ export default function ClientsPage() {
     setDialogOpen(false)
   }
 
+  const activeChips = []
+  if (searchTerm) {
+    activeChips.push({ label: `Busca: "${searchTerm}"`, onDelete: () => setSearchInput('') })
+  }
+  if (statusFilter !== 'active') {
+    const lbl = STATUS_OPTIONS.find((o) => o.value === statusFilter)?.label || statusFilter
+    activeChips.push({ label: `Status: ${lbl}`, onDelete: () => setStatusFilter('active') })
+  }
+  const handleClearFilters = () => { setSearchInput(''); setStatusFilter('active') }
+
   return (
     <Stack spacing={2}>
       <PageHeader title="Clientes" actions={<Button variant="contained" startIcon={<AddIcon />} onClick={handleCreate}>Novo</Button>} />
-      <PapperBlock title="Filtros" icon={<FilterListIcon />} iconColor="info.main">
-        <Grid container spacing={2}>
-          <Grid item xs={12} md={8}>
-            <TextField
-              fullWidth
-              label="Buscar clientes"
-              placeholder="Nome ou Responsável"
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-            />
-          </Grid>
-          <Grid item xs={12} md={4}>
+      <PapperBlock title="Clientes" icon={<PeopleIcon />} iconColor="primary.main" noPadding>
+        <TableToolbar
+          search={searchInput}
+          onSearchChange={setSearchInput}
+          searchPlaceholder="Buscar por nome ou responsável…"
+          filters={
             <TextField
               select
+              size="small"
               label="Status"
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
-              fullWidth
+              sx={{ minWidth: 160 }}
             >
               {STATUS_OPTIONS.map((opt) => (
                 <MenuItem key={opt.value} value={opt.value}>{opt.label}</MenuItem>
               ))}
             </TextField>
-          </Grid>
-        </Grid>
-      </PapperBlock>
-      <PapperBlock title="Clientes" icon={<PeopleIcon />} iconColor="primary.main" noPadding>
-        {list.isLoading ? <Box sx={{ p: 3 }}>Carregando...</Box> : list.error ? <Box sx={{ p: 3 }}><Alert severity="error">Erro ao carregar</Alert></Box> : rows.length === 0 ? (
-          <Box sx={{ p: 3 }}><Alert severity="info">Nenhum cliente encontrado.</Alert></Box>
-        ) : (
-          <Box sx={{ overflowX: 'auto' }}>
-          <Table size="small">
+          }
+          activeChips={activeChips}
+          onClear={activeChips.length ? handleClearFilters : undefined}
+          count={total}
+          countLabel="clientes"
+        />
+        <Box sx={{ overflow: 'auto', maxHeight: { xs: 460, md: 560 } }}>
+          <Table stickyHeader size="small">
             <TableHead>
               <TableRow>
                 <TableCell>ID</TableCell>
@@ -271,31 +278,55 @@ export default function ClientsPage() {
               </TableRow>
             </TableHead>
             <TableBody>
-              {rows.map(r => (
-                <TableRow key={r.id} hover sx={{ opacity: r.active ? 1 : 0.7 }}>
-                  <TableCell>{r.id}</TableCell>
-                  <TableCell>{r.name}</TableCell>
-                  <TableCell>{r.responsavel || '-'}</TableCell>
-                  <TableCell>{r.email || '-'}</TableCell>
-                  <TableCell>{r.phone || '-'}</TableCell>
-                  <TableCell>{formatDocumentValue(r.document || r.document_cpf || r.document_cnpj || '') || '-'}</TableCell>
-                  <TableCell>
-                    <Chip label={r.active ? 'Ativo' : 'Inativo'} color={r.active ? 'success' : 'default'} size="small" />
-                  </TableCell>
-                  <TableCell align="right">
-                    <IconButton size="small" onClick={() => handleEdit(r)}><EditIcon fontSize="small" /></IconButton>
-                    <Tooltip title={r.active ? 'Inativar' : 'Ativar'}>
-                      <IconButton size="small" color={r.active ? 'warning' : 'success'} onClick={() => handleToggleActive(r)}>
-                        {r.active ? <ToggleOffIcon fontSize="small" /> : <ToggleOnIcon fontSize="small" />}
-                      </IconButton>
-                    </Tooltip>
+              {list.isLoading ? (
+                <TableSkeleton rows={6} columns={8} />
+              ) : list.error ? (
+                <TableRow>
+                  <TableCell colSpan={8} sx={{ border: 0 }}>
+                    <Alert severity="error" sx={{ my: 1 }}>Erro ao carregar clientes.</Alert>
                   </TableCell>
                 </TableRow>
-              ))}
+              ) : rows.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={8} sx={{ border: 0 }}>
+                    <EmptyState
+                      icon={<PeopleIcon />}
+                      title="Nenhum cliente encontrado"
+                      description={activeChips.length ? 'Tente ajustar a busca ou os filtros aplicados.' : 'Cadastre seu primeiro cliente para começar.'}
+                      action={activeChips.length
+                        ? <Button variant="outlined" onClick={handleClearFilters}>Limpar filtros</Button>
+                        : <Button variant="contained" startIcon={<AddIcon />} onClick={handleCreate}>Novo cliente</Button>}
+                    />
+                  </TableCell>
+                </TableRow>
+              ) : (
+                rows.map(r => (
+                  <TableRow key={r.id} hover sx={{ opacity: r.active ? 1 : 0.7 }}>
+                    <TableCell>{r.id}</TableCell>
+                    <TableCell>{r.name}</TableCell>
+                    <TableCell>{r.responsavel || '-'}</TableCell>
+                    <TableCell>{r.email || '-'}</TableCell>
+                    <TableCell>{r.phone || '-'}</TableCell>
+                    <TableCell>{formatDocumentValue(r.document || r.document_cpf || r.document_cnpj || '') || '-'}</TableCell>
+                    <TableCell>
+                      <Chip label={r.active ? 'Ativo' : 'Inativo'} color={r.active ? 'success' : 'default'} size="small" />
+                    </TableCell>
+                    <TableCell align="right">
+                      <Tooltip title="Editar">
+                        <IconButton size="small" onClick={() => handleEdit(r)}><EditIcon fontSize="small" /></IconButton>
+                      </Tooltip>
+                      <Tooltip title={r.active ? 'Inativar' : 'Ativar'}>
+                        <IconButton size="small" color={r.active ? 'warning' : 'success'} onClick={() => handleToggleActive(r)}>
+                          {r.active ? <ToggleOffIcon fontSize="small" /> : <ToggleOnIcon fontSize="small" />}
+                        </IconButton>
+                      </Tooltip>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
             </TableBody>
           </Table>
-          </Box>
-        )}
+        </Box>
         <TablePagination
           component="div"
           count={total}
@@ -304,7 +335,7 @@ export default function ClientsPage() {
           rowsPerPage={rowsPerPage}
           onRowsPerPageChange={(event) => { setRowsPerPage(parseInt(event.target.value, 10)); setPage(0); }}
           rowsPerPageOptions={[10, 20, 50]}
-          sx={{ px: 2 }}
+          sx={{ px: 2, borderTop: '1px solid', borderColor: 'divider' }}
         />
       </PapperBlock>
 

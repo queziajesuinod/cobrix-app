@@ -1,9 +1,15 @@
 import React, { useMemo, useState } from 'react'
-import { Card, CardContent, Chip, Grid, Stack, Typography, Table, TableHead, TableRow, TableCell, TableBody, Button, Tooltip, Snackbar } from '@mui/material'
+import { Box, Chip, Grid, Stack, Typography, Table, TableHead, TableRow, TableCell, TableBody, Button, Tooltip, Snackbar, Accordion, AccordionSummary, AccordionDetails } from '@mui/material'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
+import ReceiptLongIcon from '@mui/icons-material/ReceiptLong'
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
+import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore'
+import UnfoldLessIcon from '@mui/icons-material/UnfoldLess'
 import { billingsService } from './billings.service'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { formatDateOnly } from '@/utils/date'
+import TableSkeleton from '@/components/TableSkeleton'
+import EmptyState from '@/components/EmptyState'
 
 const label = (t) => t === 'pre' ? 'Avisado (D-4)' : t === 'due' ? 'Vence hoje (D0)' : 'Atrasado (D+3)'
 const color = (t) => t === 'pre' ? 'info' : t === 'due' ? 'warning' : 'error'
@@ -98,6 +104,7 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
     }
   })
   const [snack, setSnack] = useState(null)
+  const [expandedIds, setExpandedIds] = useState(() => new Set())
   const today = new Date()
   today.setHours(0, 0, 0, 0)
   const forceMutation = useMutation({
@@ -129,21 +136,65 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
     })
   }, [q.data, contractId, clientId])
 
+  const toggleContract = (id) => setExpandedIds((prev) => {
+    const next = new Set(prev)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    return next
+  })
+  const expandAll = () => setExpandedIds(new Set(items.map((it) => it.contract_id)))
+  const collapseAll = () => setExpandedIds(new Set())
+
   if (!ym) return null
   if (q.isLoading) {
-    return <Typography variant="body2">Carregando visão do mês…</Typography>
+    return (
+      <Box sx={{ overflow: 'auto', maxHeight: { xs: 460, md: 560 } }}>
+        <Table stickyHeader size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell>ID</TableCell>
+              <TableCell>Data</TableCell>
+              <TableCell>Valor</TableCell>
+              <TableCell>Status</TableCell>
+              <TableCell>Criada em</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            <TableSkeleton rows={6} columns={5} />
+          </TableBody>
+        </Table>
+      </Box>
+    )
   }
   if (q.isError) {
     return <Typography variant="body2" color="error">Falha ao carregar visão do mês.</Typography>
   }
+  if (items.length === 0) {
+    return (
+      <EmptyState
+        icon={<ReceiptLongIcon />}
+        title="Sem dados para o período"
+        description={`Não há contratos ou cobranças para ${ym}.`}
+      />
+    )
+  }
+
   return (
     <>
+      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1.5, flexWrap: 'wrap', gap: 1 }}>
+        <Typography variant="body2" color="text.secondary">
+          <Box component="b" sx={{ color: 'text.primary' }}>{items.length}</Box> contratos no mês
+        </Typography>
+        <Stack direction="row" spacing={1}>
+          <Button size="small" startIcon={<UnfoldMoreIcon />} onClick={expandAll}>Expandir todos</Button>
+          <Button size="small" startIcon={<UnfoldLessIcon />} onClick={collapseAll}>Recolher todos</Button>
+        </Stack>
+      </Stack>
+
       <Stack spacing={1}>
-      {items.length === 0 ? (
-        <Typography variant="body2">Sem dados para {ym}.</Typography>
-      ) : items.map(it => {
-        const allPaid = it.month_status === 'paid'
-        const isCanceled = it.month_status === 'canceled'
+        {items.map(it => {
+          const allPaid = it.month_status === 'paid'
+          const isCanceled = it.month_status === 'canceled'
           // Usa o ano/mês selecionado (ym) — não hoje — para calcular o vencimento correto
           // quando o usuário visualiza meses anteriores ou futuros.
           const contractDueDate = dueDateForMonth(y, m - 1, it.billing_day)
@@ -152,128 +203,151 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
           const forceCandidate = findForceBillingCandidate(it.billings, today)
           const forceType = forceCandidate?.type ?? fallbackForceType
           const forceDate = forceCandidate?.dueDate ?? fallbackDueIso
+          const statusKey = String(it.month_status || 'pending').toLowerCase()
           return (
-            <Card key={it.contract_id} variant="outlined">
-              <CardContent>
-                <Grid container alignItems="center">
-                <Grid item xs={12} md={7}>
-                  <Stack spacing={0.5}>
-                    <Stack direction="row" spacing={1} alignItems="center">
-                      {allPaid ? <CheckCircleIcon color="success" /> : isCanceled ? <CheckCircleIcon color="warning" /> : <CheckCircleIcon color="disabled" />}
-                      <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                        Contrato #{it.contract_id} · {it.contract_description || '-'}
-                      </Typography>
+            <Accordion
+              key={it.contract_id}
+              disableGutters
+              expanded={expandedIds.has(it.contract_id)}
+              onChange={() => toggleContract(it.contract_id)}
+              TransitionProps={{ unmountOnExit: true }}
+              sx={{
+                border: '1px solid',
+                borderColor: 'divider',
+                borderRadius: 2,
+                overflow: 'hidden',
+                boxShadow: 'none',
+                '&:before': { display: 'none' },
+              }}
+            >
+              <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ '& .MuiAccordionSummary-content': { my: 1, alignItems: 'center' } }}>
+                <Grid container alignItems="center" spacing={1} sx={{ pr: 1 }}>
+                  <Grid item xs={12} md={7}>
+                    <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+                      {allPaid ? <CheckCircleIcon color="success" fontSize="small" /> : isCanceled ? <CheckCircleIcon color="warning" fontSize="small" /> : <CheckCircleIcon color="disabled" fontSize="small" />}
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography variant="subtitle2" sx={{ fontWeight: 700 }} noWrap>
+                          Contrato #{it.contract_id} · {it.contract_description || '-'}
+                        </Typography>
+                        {it.client_name && (
+                          <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block' }}>
+                            Cliente: {it.client_name}
+                          </Typography>
+                        )}
+                      </Box>
                     </Stack>
-                    {it.client_name && (
-                      <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-                        Cliente: {it.client_name}
-                      </Typography>
-                    )}
-                  </Stack>
-                </Grid>
-                <Grid item xs={12} md={5} sx={{ textAlign: { xs:'left', md:'right' } }}>
-                    <Stack direction="row" spacing={1} justifyContent={{ xs: 'flex-start', md: 'flex-end' }}>
-                      <Tooltip title="Marcar o mês inteiro como PAGO">
-                        <span>
-                          <Button size="small" variant="contained" disabled={allPaid || isCanceled} onClick={() => bulk.mutateAsync({ contractId: it.contract_id, y, m, status: 'paid' })}>Marcar mês PAGO</Button>
-                        </span>
-                      </Tooltip>
-                      <Tooltip title="Cancelar cobrança do mês">
-                        <span>
-                          <Button size="small" variant="outlined" color="error" disabled={allPaid || isCanceled} onClick={() => bulk.mutateAsync({ contractId: it.contract_id, y, m, status: 'canceled' })}>Cancelar cobrança</Button>
-                        </span>
-                      </Tooltip>
-                      {forceType && forceDate && (
-                        <Tooltip title={`Forçar ${typeDescription[forceType]} mesmo sem disparo automático`}>
-                          <span>
-                            <Button
-                              size="small"
-                              variant="outlined"
-                              color="info"
-                              disabled={forceMutation.isLoading}
-                              onClick={() =>
-                                forceMutation.mutate({
-                                  contractId: it.contract_id,
-                                  date: forceDate,
-                                  type: forceType,
-                                })
-                              }
-                            >
-                              Forçar message do dia -{typeDescription[forceType]}
-                            </Button>
-                          </span>
-                        </Tooltip>
+                  </Grid>
+                  <Grid item xs={12} md={5}>
+                    <Stack direction="row" spacing={0.75} justifyContent={{ xs: 'flex-start', md: 'flex-end' }} sx={{ flexWrap: 'wrap', gap: 0.5 }}>
+                      <Chip size="small" color={allPaid ? 'success' : isCanceled ? 'default' : 'warning'} label={STATUS_LABELS[statusKey]} />
+                      {Number.isInteger(it.billing_day) && (
+                        <Chip size="small" variant="outlined" color="info" label={`Dia ${String(it.billing_day).padStart(2, '0')}`} />
+                      )}
+                      {['pre', 'due', 'late'].some((t) => Number(it.notifications?.[t]?.count) > 0) && (
+                        <Chip size="small" variant="outlined" label="Notificado" />
                       )}
                     </Stack>
                   </Grid>
                 </Grid>
+              </AccordionSummary>
 
-              <Stack direction="row" spacing={1} sx={{ mt: 1, flexWrap: 'wrap' }}>
-                <Chip size="small" label={`Mês: ${ym}`} />
-                <Chip
-                  size="small"
-                  color={allPaid ? 'success' : isCanceled ? 'default' : 'warning'}
-                  label={`Status: ${STATUS_LABELS[String(it.month_status || 'pending').toLowerCase()]}`}
-                />
-                {Number.isInteger(it.billing_day) && (
-                  <Chip
-                    size="small"
-                    color="info"
-                    label={`Vencimento dia ${String(it.billing_day).padStart(2, '0')}`}
-                  />
-                )}
-                {isCanceled && it.cancellation_date && (
-                  <Chip size="small" label={`Cancelado em ${formatDateOnly(it.cancellation_date)}`} />
-                )}
-              </Stack>
-
-              <Stack direction="row" spacing={1} sx={{ mt: 1, flexWrap: 'wrap' }}>
-                {['pre', 'due', 'late'].map(t => {
-                  const n = it.notifications?.[t]
-                  const active = !!(n && Number(n.count) > 0)
-
-                  return (
-                    <Chip
-                      key={t}
-                      size="small"
-                      label={label(t)}
-                      color={active ? color(t) : 'default'}
-                      variant={active ? 'filled' : 'outlined'}
-                      sx={!active ? { opacity: 0.6 } : undefined}
-                    />
-                  )
-                })}
-              </Stack>
-              <Table size="small" sx={{ mt: 1 }}>
-                <TableHead>
-                  <TableRow>
-                    <TableCell>ID</TableCell>
-                    <TableCell>Data</TableCell>
-                    <TableCell>Valor</TableCell>
-                    <TableCell>Status</TableCell>
-                    <TableCell>Criada em</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {(it.billings || []).map(b => (
-                    <TableRow key={b.id}>
-                      <TableCell>{b.id}</TableCell>
-                      <TableCell>{formatDateOnly(b.billing_date)}</TableCell>
-                      <TableCell>R$ {Number(b.amount).toFixed(2)}</TableCell>
-                      <TableCell>{String(b.status || '').toUpperCase()}</TableCell>
-                      <TableCell>{b.created_at ? new Date(b.created_at).toLocaleString() : '-'}</TableCell>
-                    </TableRow>
-                  ))}
-                  {!it.billings?.length && (
-                    <TableRow><TableCell colSpan={5}><i>Sem cobranças registradas para o mês.</i></TableCell></TableRow>
+              <AccordionDetails sx={{ borderTop: '1px solid', borderColor: 'divider', bgcolor: 'action.hover' }}>
+                <Stack direction="row" spacing={1} sx={{ mb: 1.5, flexWrap: 'wrap', gap: 1 }}>
+                  <Tooltip title="Marcar o mês inteiro como PAGO">
+                    <span>
+                      <Button size="small" variant="contained" disabled={allPaid || isCanceled} onClick={() => bulk.mutateAsync({ contractId: it.contract_id, y, m, status: 'paid' })}>Marcar mês PAGO</Button>
+                    </span>
+                  </Tooltip>
+                  <Tooltip title="Cancelar cobrança do mês">
+                    <span>
+                      <Button size="small" variant="outlined" color="error" disabled={allPaid || isCanceled} onClick={() => bulk.mutateAsync({ contractId: it.contract_id, y, m, status: 'canceled' })}>Cancelar cobrança</Button>
+                    </span>
+                  </Tooltip>
+                  {forceType && forceDate && (
+                    <Tooltip title={`Forçar ${typeDescription[forceType]} mesmo sem disparo automático`}>
+                      <span>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          color="info"
+                          disabled={forceMutation.isLoading}
+                          onClick={() =>
+                            forceMutation.mutate({
+                              contractId: it.contract_id,
+                              date: forceDate,
+                              type: forceType,
+                            })
+                          }
+                        >
+                          Forçar message do dia -{typeDescription[forceType]}
+                        </Button>
+                      </span>
+                    </Tooltip>
                   )}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        )
-      })}
+                </Stack>
+
+                <Stack direction="row" spacing={1} sx={{ mb: 1.5, flexWrap: 'wrap', gap: 0.5 }}>
+                  <Chip size="small" label={`Mês: ${ym}`} />
+                  {isCanceled && it.cancellation_date && (
+                    <Chip size="small" label={`Cancelado em ${formatDateOnly(it.cancellation_date)}`} />
+                  )}
+                  {['pre', 'due', 'late'].map(t => {
+                    const n = it.notifications?.[t]
+                    const active = !!(n && Number(n.count) > 0)
+                    return (
+                      <Chip
+                        key={t}
+                        size="small"
+                        label={label(t)}
+                        color={active ? color(t) : 'default'}
+                        variant={active ? 'filled' : 'outlined'}
+                        sx={!active ? { opacity: 0.6 } : undefined}
+                      />
+                    )
+                  })}
+                </Stack>
+
+                <Box sx={{ overflow: 'auto', maxHeight: { xs: 360, md: 420 } }}>
+                  <Table stickyHeader size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>ID</TableCell>
+                        <TableCell>Data</TableCell>
+                        <TableCell>Valor</TableCell>
+                        <TableCell>Status</TableCell>
+                        <TableCell>Criada em</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {(it.billings || []).map(b => (
+                        <TableRow key={b.id}>
+                          <TableCell>{b.id}</TableCell>
+                          <TableCell>{formatDateOnly(b.billing_date)}</TableCell>
+                          <TableCell>R$ {Number(b.amount).toFixed(2)}</TableCell>
+                          <TableCell>{String(b.status || '').toUpperCase()}</TableCell>
+                          <TableCell>{b.created_at ? new Date(b.created_at).toLocaleString() : '-'}</TableCell>
+                        </TableRow>
+                      ))}
+                      {!it.billings?.length && (
+                        <TableRow>
+                          <TableCell colSpan={5} sx={{ border: 0 }}>
+                            <EmptyState
+                              icon={<ReceiptLongIcon />}
+                              title="Sem cobranças"
+                              description="Sem cobranças registradas para o mês."
+                            />
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </Box>
+              </AccordionDetails>
+            </Accordion>
+          )
+        })}
       </Stack>
+
       <Snackbar
         open={!!snack}
         autoHideDuration={2500}

@@ -12,103 +12,69 @@ router.get('/summary', requireAuth, companyScope(true), async (req, res) => {
 
   const today = ensureDateOnly(new Date()) || new Date()
   const todayIso = formatISODate(today)
-  const horizon = addDays(today, 30)
   const year = today.getFullYear()
   const month = today.getMonth() + 1
+  const day = today.getDate()
+  const daysInMonth = new Date(year, month, 0).getDate()
+  const mm = String(month).padStart(2, '0')
+  const monthStart = `${year}-${mm}-01`
+  const monthEnd = `${year}-${mm}-${String(daysInMonth).padStart(2, '0')}`
 
   try {
-    const [activeStats, contractValueStats, todayDue, contractRows, cmsRows] = await Promise.all([
+    const [contractStats, clientStats] = await Promise.all([
+      // "Ativos no mês" = período do contrato SOBREPÕE o mês vigente (mesma regra dos KPIs
+      // de /billings/kpis, para os números baterem). Pendentes = ativos-no-mês sem status
+      // pago/cancelado. Vence hoje = dia de cobrança == hoje E vigente hoje.
       query(
-        `SELECT
-           COUNT(*)::int AS contracts_active,
-           COUNT(DISTINCT client_id)::int AS clients_active
-         FROM ${SCHEMA}.contracts
-         WHERE company_id = $1
-           AND active = true
-           AND start_date <= $2
-           AND end_date >= $2
-           AND (cancellation_date IS NULL OR cancellation_date >= $2)`,
-        [companyId, todayIso]
-      ),
-      query(
-        `WITH active AS (
-           SELECT id, COALESCE(value, 0) AS value
-           FROM ${SCHEMA}.contracts
-           WHERE company_id = $1
-             AND active = true
-             AND start_date <= $2
-             AND end_date >= $2
-             AND (cancellation_date IS NULL OR cancellation_date >= $2)
-         ),
-         cms AS (
-           SELECT contract_id, status
-           FROM ${SCHEMA}.contract_month_status
-           WHERE company_id = $1 AND year = $3 AND month = $4
+        `WITH active_month AS (
+           SELECT c.id, c.billing_day, c.start_date, c.end_date, c.cancellation_date,
+                  LOWER(COALESCE(cms.status, 'pending')) AS mstatus
+           FROM ${SCHEMA}.contracts c
+           LEFT JOIN ${SCHEMA}.contract_month_status cms
+             ON cms.contract_id = c.id AND cms.year = $3 AND cms.month = $4
+           WHERE c.company_id = $1
+             AND c.active = true
+             AND DATE(c.start_date) <= DATE($7)
+             AND DATE(c.end_date) >= DATE($8)
+             AND (c.cancellation_date IS NULL OR DATE(c.cancellation_date) >= DATE($8))
          )
          SELECT
-           COALESCE(SUM(CASE WHEN LOWER(COALESCE(cms.status, 'pending')) = 'paid' THEN active.value ELSE 0 END), 0) AS paid_value,
-           COALESCE(SUM(CASE WHEN LOWER(COALESCE(cms.status, 'pending')) IN ('paid','canceled') THEN 0 ELSE active.value END), 0) AS pending_value,
-           COALESCE(SUM(CASE WHEN LOWER(COALESCE(cms.status, 'pending')) = 'canceled' THEN 0 ELSE active.value END), 0) AS total_value
-         FROM active
-         LEFT JOIN cms ON cms.contract_id = active.id`,
-        [companyId, todayIso, year, month]
+           COUNT(*)::int AS contracts_active,
+           COUNT(*) FILTER (WHERE mstatus NOT IN ('paid','canceled'))::int AS contracts_pending,
+           COUNT(*) FILTER (
+             WHERE mstatus NOT IN ('paid','canceled')
+               AND LEAST(billing_day, $5::int) = $6::int
+               AND DATE(start_date) <= DATE($2) AND DATE(end_date) >= DATE($2)
+               AND (cancellation_date IS NULL OR DATE(cancellation_date) >= DATE($2))
+           )::int AS contracts_due_today
+         FROM active_month`,
+        [companyId, todayIso, year, month, daysInMonth, day, monthEnd, monthStart]
       ),
+      // Clientes ativos (independe de contrato) + novos clientes criados no mês vigente.
       query(
         `SELECT
-           COUNT(*)::int AS due_count,
-           COALESCE(SUM(b.amount), 0) AS due_amount
-         FROM ${SCHEMA}.billings b
-         JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
-         WHERE b.company_id = $1
-           AND c.company_id = $1
-           AND c.active = true
-           AND (c.cancellation_date IS NULL OR c.cancellation_date >= $2)
-           AND b.billing_date = $2`,
-        [companyId, todayIso]
-      ),
-      query(
-        `SELECT id, value, billing_day, start_date, end_date, cancellation_date
-         FROM ${SCHEMA}.contracts
-         WHERE company_id = $1
-           AND active = true
-           AND start_date <= $2
-           AND end_date >= $3
-           AND (cancellation_date IS NULL OR cancellation_date >= $3)`,
-        [companyId, formatISODate(horizon), todayIso]
-      ),
-      query(
-        `SELECT contract_id, year, month, status
-         FROM ${SCHEMA}.contract_month_status
-         WHERE company_id = $1
-           AND (
-             (year > $2 OR (year = $2 AND month >= $3))
-             AND (year < $4 OR (year = $4 AND month <= $5))
-           )`,
-        [companyId, year, month, horizon.getFullYear(), horizon.getMonth() + 1]
+           COUNT(*) FILTER (WHERE active = true)::int AS clients_active,
+           COUNT(*) FILTER (
+             WHERE created_at >= $2::date AND created_at < ($2::date + INTERVAL '1 month')
+           )::int AS clients_new_month
+         FROM ${SCHEMA}.clients
+         WHERE company_id = $1`,
+        [companyId, monthStart]
       ),
     ])
 
-    const activeRow = activeStats.rows[0] || { contracts_active: 0, clients_active: 0 }
-    const contractRow = contractValueStats.rows[0] || { paid_value: 0, pending_value: 0, total_value: 0 }
-    const dueRow = todayDue.rows[0] || { due_count: 0, due_amount: 0 }
-    const futureReceivables = computeFutureReceivables(contractRows.rows || [], cmsRows.rows || [], today, horizon)
+    const c = contractStats.rows[0] || { contracts_active: 0, contracts_pending: 0, contracts_due_today: 0 }
+    const cl = clientStats.rows[0] || { clients_active: 0, clients_new_month: 0 }
 
     res.json({
       totals: {
-        contractsActive: activeRow.contracts_active,
-        clientsActive: activeRow.clients_active,
+        contractsActive: c.contracts_active,
+        clientsActive: cl.clients_active,
+        contractsPending: c.contracts_pending,
+        contractsDueToday: c.contracts_due_today,
+        clientsNewMonth: cl.clients_new_month,
       },
-      billing: {
-        paidAmount: Number(contractRow.paid_value || 0),
-        pendingAmount: Number(contractRow.pending_value || 0),
-        totalAmount: Number(contractRow.total_value || 0),
-      },
-      today: {
-        dueCount: dueRow.due_count || 0,
-        dueAmount: Number(dueRow.due_amount || 0),
-        date: todayIso,
-      },
-      futureReceivables,
+      date: todayIso,
     })
   } catch (err) {
     console.error('[dashboard] summary failed', err)

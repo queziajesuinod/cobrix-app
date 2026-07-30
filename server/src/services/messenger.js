@@ -5,6 +5,35 @@ const { buildSendUrl, baseUrl } = require('./evo-api');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 
+// Throttle de envios por empresa (instância EVO) para evitar bloqueio por flood do
+// WhatsApp. Aplicado somente quando sendWhatsapp é chamado com { throttle: true }
+// (crons de cobrança). O envio manual (sem a flag) sai na hora, sem espera.
+// Intervalo configurável via NOTIFY_DELAY_MS (ms); padrão = 2 minutos.
+const THROTTLE_MS = Number(process.env.NOTIFY_DELAY_MS ?? 120000);
+const _sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const _lastSendAt = new Map(); // companyId -> timestamp (ms) do último envio
+const _chains = new Map();     // companyId -> Promise (fila serializada por empresa)
+
+async function withThrottle(companyId, fn) {
+  const prev = _chains.get(companyId) || Promise.resolve();
+  const run = prev.then(async () => {
+    const last = _lastSendAt.get(companyId) || 0;
+    const wait = THROTTLE_MS - (Date.now() - last);
+    if (wait > 0) {
+      console.log(`[messenger] throttle: aguardando ${Math.round(wait / 1000)}s antes do envio (empresa ${companyId})`);
+      await _sleep(wait);
+    }
+    try {
+      return await fn();
+    } finally {
+      _lastSendAt.set(companyId, Date.now());
+    }
+  });
+  // Mantém a fila viva mesmo que um envio falhe.
+  _chains.set(companyId, run.then(() => {}, () => {}));
+  return run;
+}
+
 function normUrl(u) { return String(u || '').replace(/\/+$/, ''); }
 function normNumber(n, { forceCountry } = {}) {
   const digits = String(n || '').replace(/\D+/g, '');
@@ -52,44 +81,52 @@ async function sendWhatsapp(companyId, payload, options = {}) {
   if (!number) throw new Error('Número (payload.number) é obrigatório');
   if (!text) throw new Error('Texto (payload.text) é obrigatório');
 
-  try {
-    const res = await axios.post(
-      url,
-      { number, text },
-      {
-        headers: {
-          'APIKEY': cfg.key,
-          'apikey': cfg.key,
-          'Content-Type': 'application/json',
-        },
-        timeout: 20000,
-      }
-    );
+  const doSend = async () => {
+    try {
+      const res = await axios.post(
+        url,
+        { number, text },
+        {
+          headers: {
+            'APIKEY': cfg.key,
+            'apikey': cfg.key,
+            'Content-Type': 'application/json',
+          },
+          timeout: 20000,
+        }
+      );
 
-    return {
-      ok: true,
-      status: res.status,
-      data: res.data,
-      requestUrl: url,
-      payload: { number, textLen: text.length },
-    };
-  } catch (err) {
-    const status = err.response?.status ?? null;
-    const data = err.response?.data ?? null;
-    const message = err.message || 'EVO request failed';
+      return {
+        ok: true,
+        status: res.status,
+        data: res.data,
+        requestUrl: url,
+        payload: { number, textLen: text.length },
+      };
+    } catch (err) {
+      const status = err.response?.status ?? null;
+      const data = err.response?.data ?? null;
+      const message = err.message || 'EVO request failed';
 
-    console.error('[messenger] EVO error status=%s message=%s data=%j',
-      status, message, data);
+      console.error('[messenger] EVO error status=%s message=%s data=%j',
+        status, message, data);
 
-    return {
-      ok: false,
-      status,
-      data,
-      error: message,
-      requestUrl: url,
-      payload: { number, textLen: text.length },
-    };
+      return {
+        ok: false,
+        status,
+        data,
+        error: message,
+        requestUrl: url,
+        payload: { number, textLen: text.length },
+      };
+    }
+  };
+
+  // Crons de cobrança chamam com { throttle: true } → serializa e espaça por empresa.
+  if (options.throttle && THROTTLE_MS > 0) {
+    return withThrottle(cid, doSend);
   }
+  return doSend();
 }
 
 async function sendTextMessage(a, b, options = {}) {

@@ -1,4 +1,5 @@
-import { createTheme } from '@mui/material/styles'
+import { createTheme, alpha } from '@mui/material/styles'
+import { ptBR } from '@mui/material/locale'
 
 // Tokens de cor por modo. Ajuste aqui para reafinar a identidade visual.
 const tokens = {
@@ -32,9 +33,89 @@ export function createAppTheme(mode = 'light') {
       divider: t.divider,
     },
     shape: { borderRadius: 12 },
+    typography: {
+      fontSize: 14,
+      h4: { fontWeight: 700, letterSpacing: -0.3 },
+      h5: { fontWeight: 700, letterSpacing: -0.2 },
+      h6: { fontWeight: 700 },
+      subtitle1: { fontWeight: 600 },
+      subtitle2: { fontWeight: 600 },
+      body1: { lineHeight: 1.55 },
+      body2: { lineHeight: 1.55 },
+      button: { textTransform: 'none', fontWeight: 600 },
+    },
     components: {
       MuiButton: {
-        styleOverrides: { root: { textTransform: 'none', borderRadius: 10 } },
+        styleOverrides: {
+          root: { textTransform: 'none', borderRadius: 10, fontWeight: 600, minHeight: 38, paddingLeft: 16, paddingRight: 16 },
+          sizeSmall: { borderRadius: 8, minHeight: 32 },
+          contained: {
+            boxShadow: 'none',
+            '&:hover': { boxShadow: `0 6px 16px ${alpha('#000', 0.18)}` },
+          },
+        },
+      },
+      MuiIconButton: {
+        styleOverrides: { root: { borderRadius: 10 } },
+      },
+      MuiChip: {
+        styleOverrides: { root: { fontWeight: 600, borderRadius: 8 } },
+      },
+      MuiTableCell: {
+        styleOverrides: {
+          root: {
+            borderColor: t.divider,
+            padding: '10px 16px',
+            fontVariantNumeric: 'tabular-nums',
+          },
+          head: {
+            fontWeight: 700,
+            fontSize: 11.5,
+            textTransform: 'uppercase',
+            letterSpacing: 0.5,
+            whiteSpace: 'nowrap',
+            color: mode === 'dark' ? 'rgba(255,255,255,0.6)' : 'rgba(15,23,42,0.6)',
+            backgroundColor: mode === 'dark' ? 'rgba(255,255,255,0.03)' : 'rgba(15,23,42,0.02)',
+            borderBottom: `1px solid ${t.divider}`,
+          },
+        },
+      },
+      MuiTableRow: {
+        styleOverrides: {
+          root: { '&:last-of-type td': { borderBottom: 0 } },
+        },
+      },
+      MuiTableBody: {
+        styleOverrides: {
+          root: {
+            '& .MuiTableRow-root:hover': {
+              backgroundColor: mode === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(15,23,42,0.025)',
+            },
+          },
+        },
+      },
+      // Formulários: campos consistentes e legíveis (§8 Forms)
+      MuiTextField: {
+        defaultProps: { size: 'small' },
+      },
+      MuiOutlinedInput: {
+        styleOverrides: { root: { borderRadius: 10 } },
+      },
+      MuiInputLabel: {
+        styleOverrides: {
+          asterisk: { color: mode === 'dark' ? '#ff6b6b' : '#d32f2f' },
+        },
+      },
+      MuiFormHelperText: {
+        styleOverrides: { root: { marginLeft: 2 } },
+      },
+      MuiDialog: {
+        styleOverrides: { paper: { borderRadius: 16 } },
+      },
+      MuiTooltip: {
+        styleOverrides: {
+          tooltip: { fontSize: 12, borderRadius: 8, padding: '6px 10px' },
+        },
       },
       MuiCard: {
         defaultProps: { elevation: 0 },
@@ -55,7 +136,7 @@ export function createAppTheme(mode = 'light') {
         styleOverrides: { paper: { backgroundImage: 'none' } },
       },
     },
-  })
+  }, ptBR)
 }
 
 // Tema padrão (light) — mantido para imports diretos existentes.

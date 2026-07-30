@@ -45,6 +45,25 @@ async function initDb() {
     await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS efi_client_id_enc TEXT;`);
     await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS efi_client_secret_enc TEXT;`);
     await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS efi_cert_base64_enc TEXT;`);
+    // Usuários e vínculo com empresas (idempotente — a definição vivia no init legado).
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.users (
+        id SERIAL PRIMARY KEY,
+        email TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('master','admin','user')),
+        active BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    await c.query(`ALTER TABLE ${schema}.users ADD COLUMN IF NOT EXISTS name TEXT;`);
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.user_companies (
+        user_id INTEGER NOT NULL REFERENCES ${schema}.users(id) ON DELETE CASCADE,
+        company_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
+        PRIMARY KEY (user_id, company_id)
+      );
+    `);
     await c.query(`
       CREATE TABLE IF NOT EXISTS clients (
         id SERIAL PRIMARY KEY,
@@ -196,6 +215,18 @@ async function initDb() {
         ON ${schema}.billing_notifications (company_id, contract_id, kind, due_date)
         WHERE due_date IS NOT NULL;
     `);
+
+    // Limpeza de constraints/índices ÚNICOS LEGADOS divergentes.
+    // Existiam uniqueness por (contract, target_date, kind) e por (contract, type, due_month)
+    // que NÃO correspondem ao ON CONFLICT do código (por due_date). Isso causava
+    // unique_violation engolidos em cenários com múltiplas notificações. Mantemos apenas
+    // uq_bn_company_contract_kind_due. Idempotente e seguro (remover uniqueness nunca
+    // viola dados existentes).
+    await c.query(`ALTER TABLE ${schema}.billing_notifications
+      DROP CONSTRAINT IF EXISTS billing_notifications_company_id_contract_id_target_date_ki_key;`);
+    await c.query(`DROP INDEX IF EXISTS ${schema}.idx_bn_auto_one_per_day_kind;`);
+    await c.query(`DROP INDEX IF EXISTS ${schema}.billing_notifications_company_id_contract_id_type_due_month_idx;`);
+    await c.query(`DROP INDEX IF EXISTS ${schema}.uq_bn_auto_one_per_kind_month;`);
     // Índice para queries de retry
     await c.query(`
       CREATE INDEX IF NOT EXISTS idx_bn_retry

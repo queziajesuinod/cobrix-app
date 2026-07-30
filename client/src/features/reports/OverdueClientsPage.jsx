@@ -1,11 +1,15 @@
 import React, { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
   Alert,
   Box,
   Button,
   Chip,
   Grid,
+  Skeleton,
   Snackbar,
   Stack,
   Table,
@@ -22,8 +26,12 @@ import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
 import FilterListIcon from '@mui/icons-material/FilterList';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore';
+import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
 import PapperBlock from '@/components/PapperBlock';
 import PageHeader from '@/components/PageHeader';
+import EmptyState from '@/components/EmptyState';
 import CompanyRequiredAlert from '@/components/CompanyRequiredAlert';
 import { useAuth } from '@/features/auth/AuthContext';
 import { reportsService } from '@/features/reports/reports.service';
@@ -253,6 +261,41 @@ export default function OverdueClientsPage() {
   const isBillingPaying = (billingId) =>
     markBillingPaidMutation.isPending && Number(markBillingPaidMutation.variables?.billingId) === Number(billingId);
 
+  // Agrupa as cobranças da página atual por cliente.
+  const groups = useMemo(() => {
+    const map = new Map();
+    for (const row of rows) {
+      const key = row.client_id ?? `n:${row.client_name}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          client_id: row.client_id,
+          client_name: row.client_name,
+          client_document: row.client_document,
+          client_phone: row.client_phone,
+          client_email: row.client_email,
+          billings: [],
+        });
+      }
+      map.get(key).billings.push(row);
+    }
+    return Array.from(map.values()).map((g) => ({
+      ...g,
+      count: g.billings.length,
+      totalAmount: g.billings.reduce((s, b) => s + Number(b.amount || 0), 0),
+      maxDaysLate: g.billings.reduce((mx, b) => Math.max(mx, Number(b.days_late || 0)), 0),
+    }));
+  }, [rows]);
+
+  const [expandedClients, setExpandedClients] = useState(() => new Set());
+  const toggleClient = (id) => setExpandedClients((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
+  const expandAllClients = () => setExpandedClients(new Set(groups.map((g) => g.client_id)));
+  const collapseAllClients = () => setExpandedClients(new Set());
+
   return (
     <Stack spacing={2}>
       <CompanyRequiredAlert />
@@ -262,7 +305,7 @@ export default function OverdueClientsPage() {
 
       <PageHeader
         title="Cobranças em atraso"
-        subtitle="Relatório de inadimplência por cobrança. Cada linha representa uma cobrança pendente vencida."
+        subtitle="Relatório de inadimplência agrupado por cliente."
         actions={
           <>
             <Button
@@ -379,7 +422,7 @@ export default function OverdueClientsPage() {
 
       <PapperBlock
         title="Cobranças em atraso"
-        subtitle="Cada linha representa uma cobrança pendente vencida."
+        subtitle="Agrupado por cliente — expanda para ver as cobranças."
         icon={<WarningAmberIcon />}
         iconColor="error.main"
         noPadding
@@ -392,110 +435,129 @@ export default function OverdueClientsPage() {
           </Stack>
         </Box>
 
-        <Box sx={{ px: 2 }}>
+        <Box sx={{ px: 2, pb: 1 }}>
           {!enabled ? (
             <Alert severity="info">Selecione uma empresa para acessar os dados deste relatório.</Alert>
-          ) : listQuery.isLoading ? (
-            <Typography variant="body2">Carregando relatório...</Typography>
           ) : listQuery.isError ? (
             <Alert severity="error">
               {listQuery.error?.response?.data?.error || listQuery.error?.message || 'Falha ao carregar relatório'}
             </Alert>
-          ) : rows.length === 0 ? (
-            <Alert severity="info">Nenhuma cobrança em atraso encontrada para os filtros informados.</Alert>
+          ) : listQuery.isLoading ? (
+            <Stack spacing={1}>
+              {Array.from({ length: 4 }).map((_, i) => (
+                <Skeleton key={i} variant="rounded" height={60} />
+              ))}
+            </Stack>
+          ) : groups.length === 0 ? (
+            <EmptyState
+              icon={<WarningAmberIcon />}
+              title="Nenhuma cobrança em atraso"
+              description="Ajuste os filtros ou confirme o período."
+            />
           ) : (
-            <Box sx={{ overflowX: 'auto' }}>
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Cliente</TableCell>
-                  <TableCell>Contato</TableCell>
-                  <TableCell>Cobrança</TableCell>
-                  <TableCell>Contrato</TableCell>
-                  <TableCell>Vencimento</TableCell>
-                  <TableCell>Dias em atraso</TableCell>
-                  <TableCell>Valor</TableCell>
-                  <TableCell>Ações</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {rows.map((row) => {
-                  const showClientActions = Number(firstBillingByClient.get(row.client_id)) === Number(row.billing_id);
-                  return (
-                    <TableRow key={row.billing_id} hover>
-                      <TableCell>
-                        <Stack spacing={0.25}>
-                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                            {row.client_name || '-'}
+            <>
+              <Stack direction="row" justifyContent="flex-end" spacing={1} sx={{ mb: 1 }}>
+                <Button size="small" startIcon={<UnfoldMoreIcon />} onClick={expandAllClients}>Expandir todos</Button>
+                <Button size="small" startIcon={<UnfoldLessIcon />} onClick={collapseAllClients}>Recolher todos</Button>
+              </Stack>
+              <Stack spacing={1}>
+                {groups.map((g) => (
+                  <Accordion
+                    key={g.client_id}
+                    disableGutters
+                    TransitionProps={{ unmountOnExit: true }}
+                    expanded={expandedClients.has(g.client_id)}
+                    onChange={() => toggleClient(g.client_id)}
+                    sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, overflow: 'hidden', boxShadow: 'none', '&:before': { display: 'none' } }}
+                  >
+                    <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ '& .MuiAccordionSummary-content': { my: 1, alignItems: 'center' } }}>
+                      <Grid container alignItems="center" spacing={1} sx={{ pr: 1 }}>
+                        <Grid item xs={12} md={6}>
+                          <Typography variant="subtitle2" sx={{ fontWeight: 700 }} noWrap>
+                            {g.client_name || 'Cliente'}
                           </Typography>
-                          {row.client_document && (
-                            <Typography variant="caption" color="text.secondary">
-                              Doc: {row.client_document}
-                            </Typography>
+                          {g.client_document && (
+                            <Typography variant="caption" color="text.secondary">Doc: {g.client_document}</Typography>
                           )}
-                        </Stack>
-                      </TableCell>
-                      <TableCell>
-                        <Stack spacing={0.25}>
-                          <Typography variant="caption">{row.client_phone || '-'}</Typography>
-                          <Typography variant="caption">{row.client_email || '-'}</Typography>
-                        </Stack>
-                      </TableCell>
-                      <TableCell>
-                        <Typography variant="body2" sx={{ fontWeight: 600 }}>#{row.billing_id}</Typography>
-                      </TableCell>
-                      <TableCell>
-                        <Typography variant="body2">#{row.contract_id} - {row.contract_description || '-'}</Typography>
-                      </TableCell>
-                      <TableCell>{formatDateOnly(row.billing_date)}</TableCell>
-                      <TableCell>{row.days_late}</TableCell>
-                      <TableCell>{formatCurrency(row.amount)}</TableCell>
-                      <TableCell>
-                        <Stack direction={{ xs: 'column', md: 'row' }} spacing={1}>
-                          {showClientActions ? (
-                            <>
-                              <Button
-                                size="small"
-                                variant="outlined"
-                                startIcon={<NotificationsActiveIcon />}
-                                disabled={isClientNotifying(row.client_id) || isClientPaying(row.client_id)}
-                                onClick={() => notifyClient(row)}
-                              >
-                                Notificar atraso
-                              </Button>
-                              <Button
-                                size="small"
-                                variant="contained"
-                                color="success"
-                                startIcon={<TaskAltIcon />}
-                                disabled={isClientNotifying(row.client_id) || isClientPaying(row.client_id)}
-                                onClick={() => markClientPaid(row)}
-                              >
-                                Pago (todas)
-                              </Button>
-                            </>
-                          ) : (
-                            <Typography variant="caption" color="text.secondary">
-                              Ações do cliente na primeira linha.
-                            </Typography>
-                          )}
-                          <Button
-                            size="small"
-                            variant="text"
-                            color="success"
-                            disabled={isBillingPaying(row.billing_id)}
-                            onClick={() => markBillingPaid(row)}
-                          >
-                            Pago (esta)
-                          </Button>
-                        </Stack>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-            </Box>
+                        </Grid>
+                        <Grid item xs={12} md={6}>
+                          <Stack direction="row" spacing={0.5} justifyContent={{ xs: 'flex-start', md: 'flex-end' }} sx={{ flexWrap: 'wrap', gap: 0.5 }}>
+                            <Chip size="small" color="warning" label={`${g.count} cobrança${g.count > 1 ? 's' : ''}`} />
+                            <Chip size="small" color="error" label={`Total ${formatCurrency(g.totalAmount)}`} />
+                            <Chip size="small" variant="outlined" color="error" label={`Máx ${g.maxDaysLate} dias`} />
+                          </Stack>
+                        </Grid>
+                      </Grid>
+                    </AccordionSummary>
+                    <AccordionDetails sx={{ borderTop: '1px solid', borderColor: 'divider', bgcolor: 'action.hover' }}>
+                      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mb: 1.5, alignItems: { sm: 'center' } }}>
+                        <Typography variant="caption" color="text.secondary">
+                          {(g.client_phone || '—')} · {(g.client_email || '—')}
+                        </Typography>
+                        <Box sx={{ flexGrow: 1 }} />
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          startIcon={<NotificationsActiveIcon />}
+                          disabled={isClientNotifying(g.client_id) || isClientPaying(g.client_id)}
+                          onClick={() => notifyClient({ client_id: g.client_id })}
+                        >
+                          Notificar atraso
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="contained"
+                          color="success"
+                          startIcon={<TaskAltIcon />}
+                          disabled={isClientNotifying(g.client_id) || isClientPaying(g.client_id)}
+                          onClick={() => markClientPaid({ client_id: g.client_id, client_name: g.client_name })}
+                        >
+                          Pago (todas)
+                        </Button>
+                      </Stack>
+                      <Box sx={{ overflow: 'auto', maxHeight: { xs: 320, md: 400 } }}>
+                        <Table stickyHeader size="small">
+                          <TableHead>
+                            <TableRow>
+                              <TableCell>Cobrança</TableCell>
+                              <TableCell>Contrato</TableCell>
+                              <TableCell>Vencimento</TableCell>
+                              <TableCell>Dias em atraso</TableCell>
+                              <TableCell>Valor</TableCell>
+                              <TableCell align="right">Ação</TableCell>
+                            </TableRow>
+                          </TableHead>
+                          <TableBody>
+                            {g.billings.map((b) => (
+                              <TableRow key={b.billing_id} hover>
+                                <TableCell>
+                                  <Typography variant="body2" sx={{ fontWeight: 600 }}>#{b.billing_id}</Typography>
+                                </TableCell>
+                                <TableCell>#{b.contract_id} - {b.contract_description || '-'}</TableCell>
+                                <TableCell>{formatDateOnly(b.billing_date)}</TableCell>
+                                <TableCell>{b.days_late}</TableCell>
+                                <TableCell>{formatCurrency(b.amount)}</TableCell>
+                                <TableCell align="right">
+                                  <Button
+                                    size="small"
+                                    variant="text"
+                                    color="success"
+                                    disabled={isBillingPaying(b.billing_id)}
+                                    onClick={() => markBillingPaid(b)}
+                                  >
+                                    Pago (esta)
+                                  </Button>
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </Box>
+                    </AccordionDetails>
+                  </Accordion>
+                ))}
+              </Stack>
+            </>
           )}
         </Box>
 

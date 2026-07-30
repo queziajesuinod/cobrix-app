@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Box,
-  Grid,
   MenuItem,
   Stack,
   TextField,
@@ -15,11 +14,14 @@ import {
   Button,
 } from '@mui/material'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
-import FilterListIcon from '@mui/icons-material/FilterList'
 import PageHeader from '@/components/PageHeader'
 import PapperBlock from '@/components/PapperBlock'
+import TableToolbar from '@/components/TableToolbar'
+import TableSkeleton from '@/components/TableSkeleton'
+import EmptyState from '@/components/EmptyState'
 import { billingsService } from '@/features/billings/billings.service'
 import { clientsService } from '@/features/clients/clients.service'
+import ClientAutocomplete from '@/components/ClientAutocomplete'
 import { contractsService } from '@/features/contracts/contracts.service'
 
 function formatCurrency(v) {
@@ -76,6 +78,16 @@ export default function PaidContractsPage() {
     },
   })
 
+  const activeChips = []
+  if (clientId) {
+    const lbl = (clientsQ.data || []).find((c) => Number(c.id) === Number(clientId))?.name || clientId
+    activeChips.push({ label: `Cliente: ${lbl}`, onDelete: () => { setClientId(''); setContractId('') } })
+  }
+  if (contractId) {
+    activeChips.push({ label: `Contrato: #${contractId}`, onDelete: () => setContractId('') })
+  }
+  const handleClearFilters = () => { setClientId(''); setContractId('') }
+
   return (
     <Stack spacing={2}>
       <PageHeader
@@ -83,96 +95,86 @@ export default function PaidContractsPage() {
         subtitle="Lista de contratos marcados como PAGO no mês selecionado."
       />
 
-      <PapperBlock title="Filtros" icon={<FilterListIcon />} iconColor="info.main">
-        <Stack spacing={2}>
-            <Grid container spacing={2}>
-              <Grid item xs={12} md={3}>
-                <TextField
-                  label="Mês"
-                  type="month"
-                  value={ym}
-                  onChange={(e) => setYm(e.target.value)}
-                  fullWidth
-                  InputLabelProps={{ shrink: true }}
-                />
-              </Grid>
-              <Grid item xs={12} md={4}>
-                <TextField
-                  select
-                  label="Cliente"
-                  value={clientId}
-                  onChange={(e) => {
-                    setClientId(e.target.value)
-                    setContractId('')
-                  }}
-                  fullWidth
-                  SelectProps={{ displayEmpty: true }}
-                >
-                  <MenuItem value="">
-                    <em>Todos os clientes</em>
-                  </MenuItem>
-                  {(clientsQ.data || []).map((c) => (
-                    <MenuItem key={c.id} value={c.id}>
-                      {c.name}
-                    </MenuItem>
-                  ))}
-                </TextField>
-              </Grid>
-              <Grid item xs={12} md={5}>
-                <TextField
-                  select
-                  label="Contrato"
-                  value={contractId}
-                  onChange={(e) => setContractId(e.target.value)}
-                  fullWidth
-                  SelectProps={{ displayEmpty: true }}
-                >
-                  <MenuItem value="">
-                    <em>{clientId ? 'Todos os contratos do cliente' : 'Todos os contratos'}</em>
-                  </MenuItem>
-                  {filteredContracts.map((c) => (
-                    <MenuItem key={c.id} value={c.id}>
-                      #{c.id} · {c.description}
-                    </MenuItem>
-                  ))}
-                </TextField>
-              </Grid>
-            </Grid>
-            {(clientId || contractId) && (
-              <Stack direction="row" justifyContent="flex-end">
-                <Button size="small" onClick={() => { setClientId(''); setContractId('') }}>
-                  Limpar filtros
-                </Button>
-              </Stack>
-            )}
-        </Stack>
-      </PapperBlock>
-
       <PapperBlock
         title={`${total} contratos marcados como PAGO`}
         icon={<CheckCircleIcon />}
         iconColor="success.main"
         noPadding
       >
-         {paidQ.isLoading ? (
-            <Box sx={{ p: 2 }}><Typography variant="body2">Carregando…</Typography></Box>
-          ) : rows.length === 0 ? (
-            <Box sx={{ p: 2 }}><Typography variant="body2">Nenhum contrato marcado como PAGO em {ym}.</Typography></Box>
-          ) : (
-            <Box sx={{ overflowX: 'auto' }}>
-            <Table size="small">
-              <TableHead>
+        <TableToolbar
+          filters={
+            <>
+              <TextField
+                label="Mês"
+                type="month"
+                size="small"
+                value={ym}
+                onChange={(e) => setYm(e.target.value)}
+                InputLabelProps={{ shrink: true }}
+                sx={{ minWidth: 150 }}
+              />
+              <ClientAutocomplete
+                options={clientsQ.data || []}
+                value={clientId}
+                onChange={(id) => { setClientId(id); setContractId('') }}
+                label="Cliente"
+                placeholder="Buscar cliente…"
+                fullWidth={false}
+                sx={{ minWidth: 220 }}
+              />
+              <TextField
+                select
+                size="small"
+                label="Contrato"
+                value={contractId}
+                onChange={(e) => setContractId(e.target.value)}
+                disabled={!clientId}
+                SelectProps={{ displayEmpty: true }}
+                sx={{ minWidth: 220 }}
+              >
+                <MenuItem value="">
+                  <em>{clientId ? 'Todos os contratos do cliente' : 'Selecione um cliente primeiro'}</em>
+                </MenuItem>
+                {filteredContracts.map((c) => (
+                  <MenuItem key={c.id} value={c.id}>
+                    #{c.id} · {c.description}
+                  </MenuItem>
+                ))}
+              </TextField>
+            </>
+          }
+          activeChips={activeChips}
+          onClear={activeChips.length ? handleClearFilters : undefined}
+          count={total}
+          countLabel="contratos"
+        />
+        <Box sx={{ overflow: 'auto', maxHeight: { xs: 460, md: 560 } }}>
+          <Table stickyHeader size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Contrato</TableCell>
+                <TableCell>Cliente</TableCell>
+                <TableCell>Valor mensal</TableCell>
+                <TableCell>Dia cobrança</TableCell>
+                <TableCell>Mês referência</TableCell>
+                <TableCell>Marcado em</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {paidQ.isLoading ? (
+                <TableSkeleton rows={6} columns={6} />
+              ) : rows.length === 0 ? (
                 <TableRow>
-                  <TableCell>Contrato</TableCell>
-                  <TableCell>Cliente</TableCell>
-                  <TableCell>Valor mensal</TableCell>
-                  <TableCell>Dia cobrança</TableCell>
-                  <TableCell>Mês referência</TableCell>
-                  <TableCell>Marcado em</TableCell>
+                  <TableCell colSpan={6} sx={{ border: 0 }}>
+                    <EmptyState
+                      icon={<CheckCircleIcon />}
+                      title="Nenhum contrato pago"
+                      description={`Nenhum contrato marcado como PAGO em ${ym}.`}
+                    />
+                  </TableCell>
                 </TableRow>
-              </TableHead>
-              <TableBody>
-                {rows.map((row) => (
+              ) : (
+                rows.map((row) => (
                   <TableRow key={`${row.contract_id}-${row.year}-${row.month}`}>
                     <TableCell>#{row.contract_id} · {row.contract_description || '-'}</TableCell>
                     <TableCell>{row.client_name || '-'}</TableCell>
@@ -195,11 +197,11 @@ export default function PaidContractsPage() {
                       </Stack>
                     </TableCell>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-            </Box>
-          )}
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </Box>
           {totalPages > 1 && (
             <Stack direction="row" spacing={1} alignItems="center" justifyContent="flex-end" sx={{ px: 2, py: 2 }}>
               <Button size="small" disabled={page === 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>Anterior</Button>

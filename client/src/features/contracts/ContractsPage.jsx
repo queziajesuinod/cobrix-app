@@ -1,10 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { contractsService, clientsPicker } from './contracts.service'
+import ClientAutocomplete from '@/components/ClientAutocomplete'
 import { contractTypesService } from './contractTypes.service'
 import { useAuth } from '@/features/auth/AuthContext'
 import PageHeader from '@/components/PageHeader'
 import PapperBlock from '@/components/PapperBlock'
+import TableSkeleton from '@/components/TableSkeleton'
+import EmptyState from '@/components/EmptyState'
 import {
   Alert, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
   Grid, IconButton, MenuItem, Snackbar, Stack, Table, TableBody, TableCell, TableHead, TableRow,
@@ -114,6 +117,32 @@ const formatNumber = (value) => {
   return fixed.replace(/\.00$/, '').replace(/(\.\d)0$/, '$1');
 };
 
+// Contrato FIXO: calcula a data final (último dia do mês) a partir da data de início
+// + quantidade de parcelas. O mês da data de início conta como a 1ª parcela.
+// Respeita o intervalo (mensal=1, trimestral=3, anual=12).
+// Ex.: 2026-07-10 · 3 parcelas (mensal) → jul, ago, set → 2026-09-30.
+function computeEndFromInstallments(startStr, n, intervalMonths) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(startStr || '')) || !n || n < 1) return '';
+  const [sy, sm] = startStr.split('-').map(Number); // sm 1-based
+  const step = Math.max(1, Number(intervalMonths) || 1);
+  const monthIndex = (sm - 1) + (n - 1) * step; // índice de mês (0-based) a partir de sy
+  const finalYear = sy + Math.floor(monthIndex / 12);
+  const finalMonth0 = ((monthIndex % 12) + 12) % 12;
+  const lastDay = new Date(finalYear, finalMonth0 + 1, 0).getDate();
+  return `${finalYear}-${String(finalMonth0 + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+}
+
+// Inverso: deriva a quantidade de parcelas a partir de início/fim (para edição).
+function computeInstallmentsFromDates(startStr, endStr, intervalMonths) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(startStr || '')) || !/^\d{4}-\d{2}-\d{2}$/.test(String(endStr || ''))) return 0;
+  const [sy, sm] = startStr.split('-').map(Number);
+  const [ey, em] = endStr.split('-').map(Number);
+  const step = Math.max(1, Number(intervalMonths) || 1);
+  const diff = (ey - sy) * 12 + (em - sm);
+  if (diff < 0) return 0;
+  return Math.floor(diff / step) + 1;
+}
+
 const formatCurrency = (value) => {
   const num = Number(value ?? 0);
   return num.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -140,6 +169,7 @@ function ContractDialog({ open, onClose, onSubmit, defaultValues, contractTypes 
   const [customBillings, setCustomBillings] = useState([])
   const [customError, setCustomError] = useState(null)
   const [customWarning, setCustomWarning] = useState(null)
+  const [installments, setInstallments] = useState('')
   const warnedValueRef = useRef(false)
   const formDefaults = useMemo(() => ({
     client_id: defaultValues?.client_id ?? '',
@@ -155,10 +185,36 @@ function ContractDialog({ open, onClose, onSubmit, defaultValues, contractTypes 
     cancellation_date: toDateInput(defaultValues?.cancellation_date),
   }), [defaultValues])
   const { register, handleSubmit, formState:{ errors, isSubmitting, dirtyFields }, reset, watch, setValue } = useForm({ resolver: zodResolver(schema), defaultValues: formDefaults })
-  useEffect(() => { reset(formDefaults) }, [formDefaults, reset])
+  useEffect(() => { reset(formDefaults); setInstallments('') }, [formDefaults, reset])
   useEffect(() => { clientsPicker().then(setClients).catch(()=>setClients([])) }, [])
   const billingMode = watch('billing_mode')
   const selectedContractTypeId = watch('contract_type_id')
+  const billingIntervalMonths = watch('billing_interval_months')
+  const startDate = watch('start_date')
+  const selectedType = useMemo(
+    () => (contractTypes || []).find((t) => String(t.id) === String(selectedContractTypeId)),
+    [contractTypes, selectedContractTypeId]
+  )
+  const isRecurringType = !!selectedType?.is_recurring
+  // Fixo = tipo NÃO recorrente em cobrança mensal → usa "parcelas" no lugar de "Fim".
+  const showInstallments = billingMode === 'monthly' && !isRecurringType
+
+  // Parcelas → calcula a data final (último dia do mês, contando o mês de início).
+  useEffect(() => {
+    if (!showInstallments) return
+    const n = Number(installments)
+    if (!n || n < 1) return
+    const end = computeEndFromInstallments(startDate, n, billingIntervalMonths)
+    if (end) setValue('end_date', end, { shouldValidate: true, shouldDirty: true })
+  }, [showInstallments, installments, startDate, billingIntervalMonths, setValue])
+
+  // Ao editar um contrato fixo, deriva as parcelas a partir de início/fim.
+  useEffect(() => {
+    if (!showInstallments || installments !== '') return
+    const n = computeInstallmentsFromDates(startDate, watch('end_date'), billingIntervalMonths)
+    if (n) setInstallments(String(n))
+  }, [showInstallments, startDate]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const contractValue = parseNumberInput(watch('value'))
   const hasContractValue = Number.isFinite(contractValue) && contractValue > 0
   const restrictToNoAdjustment = billingMode === 'interval_days' || billingMode === 'custom_dates'
@@ -290,10 +346,14 @@ function ContractDialog({ open, onClose, onSubmit, defaultValues, contractTypes 
         )}
         <Grid container spacing={2} sx={{ mt: 0.5 }}>
           <Grid item xs={12} md={6}>
-            <TextField select fullWidth label="Cliente" defaultValue={defaultValues?.client_id ?? ''} {...register('client_id')} error={!!errors.client_id} helperText={errors.client_id?.message}>
-              <MenuItem value="">Selecione…</MenuItem>
-              {clients.map(c => <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>)}
-            </TextField>
+            <ClientAutocomplete
+              options={clients}
+              value={watch('client_id')}
+              onChange={(id) => setValue('client_id', id, { shouldValidate: true, shouldDirty: true })}
+              error={!!errors.client_id}
+              helperText={errors.client_id?.message}
+              fullWidth
+            />
           </Grid>
           <Grid item xs={12} md={6}>
             <TextField
@@ -364,16 +424,37 @@ function ContractDialog({ open, onClose, onSubmit, defaultValues, contractTypes 
             />
           </Grid>
           <Grid item xs={12} md={4}>
-            <TextField
-              fullWidth
-              label="Fim"
-              type="date"
-              InputLabelProps={{ shrink: true }}
-              {...register('end_date')}
-              error={!!errors.end_date}
-              helperText={billingMode === 'custom_dates' ? 'Gerado pelas datas personalizadas' : errors.end_date?.message}
-              disabled={billingMode === 'custom_dates'}
-            />
+            {showInstallments ? (
+              <TextField
+                fullWidth
+                label="Quantidade de parcelas"
+                type="number"
+                inputProps={{ min: 1, step: 1 }}
+                value={installments}
+                onChange={(e) => setInstallments(e.target.value.replace(/\D/g, ''))}
+                error={!!errors.end_date && !installments}
+                helperText={
+                  (installments && /^\d{4}-\d{2}-\d{2}$/.test(startDate || ''))
+                    ? `Termina em ${formatDateOnly(computeEndFromInstallments(startDate, Number(installments), billingIntervalMonths))} (último dia do mês)`
+                    : (errors.end_date?.message || 'Conta o mês da data de início (ex.: 10/07 · 3 parcelas → jul/ago/set).')
+                }
+              />
+            ) : (
+              <TextField
+                fullWidth
+                label="Fim"
+                type="date"
+                InputLabelProps={{ shrink: true }}
+                {...register('end_date')}
+                error={!!errors.end_date}
+                helperText={
+                  billingMode === 'custom_dates'
+                    ? 'Gerado pelas datas personalizadas'
+                    : (errors.end_date?.message || (isRecurringType ? 'A partir dessa data as cobranças são renovadas.' : undefined))
+                }
+                disabled={billingMode === 'custom_dates'}
+              />
+            )}
           </Grid>
           <Grid item xs={12} md={4}>
             <TextField fullWidth label="Dia de cobrança" type="number" inputProps={{ min:1, max:31 }} {...register('billing_day')} error={!!errors.billing_day} helperText={errors.billing_day?.message} disabled={billingMode !== 'monthly'} />
@@ -482,6 +563,7 @@ export default function ContractsPage() {
   const [clientFilter, setClientFilter] = useState('')
   const [contractTypeFilter, setContractTypeFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('active')
+  const [activeYm, setActiveYm] = useState('')
   const [errorToast, setErrorToast] = useState(null)
 
   useEffect(() => {
@@ -491,11 +573,11 @@ export default function ContractsPage() {
     return () => clearTimeout(handle)
   }, [searchInput])
 
-  useEffect(() => { setPage(0) }, [searchTerm, clientFilter, contractTypeFilter, statusFilter])
+  useEffect(() => { setPage(0) }, [searchTerm, clientFilter, contractTypeFilter, statusFilter, activeYm])
 
   const contractsQueryKey = useMemo(
-    () => ['contracts-paginated', selectedCompanyId, { page, rowsPerPage, searchTerm, clientFilter, contractTypeFilter, statusFilter }],
-    [selectedCompanyId, page, rowsPerPage, searchTerm, clientFilter, contractTypeFilter, statusFilter]
+    () => ['contracts-paginated', selectedCompanyId, { page, rowsPerPage, searchTerm, clientFilter, contractTypeFilter, statusFilter, activeYm }],
+    [selectedCompanyId, page, rowsPerPage, searchTerm, clientFilter, contractTypeFilter, statusFilter, activeYm]
   )
 
   const list = useQuery({
@@ -507,6 +589,7 @@ export default function ContractsPage() {
       clientId: clientFilter || undefined,
       contractTypeId: contractTypeFilter || undefined,
       status: statusFilter || undefined,
+      active_ym: activeYm || undefined,
     }),
     keepPreviousData: true,
     enabled,
@@ -669,20 +752,15 @@ export default function ContractsPage() {
               />
             </Grid>
             <Grid item xs={12} md={3}>
-              <TextField
-                select
-                label="Cliente"
+              <ClientAutocomplete
+                options={clientsOptions.data || []}
                 value={clientFilter}
-                onChange={(e) => setClientFilter(e.target.value)}
-                fullWidth
-               
+                onChange={(id) => setClientFilter(id)}
+                label="Cliente"
+                placeholder="Buscar cliente…"
                 disabled={!enabled}
-              >
-                <MenuItem value=""><em>Todos os clientes</em></MenuItem>
-                {(clientsOptions.data || []).map((c) => (
-                  <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>
-                ))}
-              </TextField>
+                fullWidth
+              />
             </Grid>
             <Grid item xs={12} md={3}>
               <TextField
@@ -714,12 +792,25 @@ export default function ContractsPage() {
                 ))}
               </TextField>
             </Grid>
-            <Grid item xs={12} md={1} sx={{ display: 'flex', alignItems: 'center' }}>
+            <Grid item xs={12} md={2}>
+              <TextField
+                type="month"
+                label="Vigência (mês)"
+                value={activeYm}
+                onChange={(e) => setActiveYm(e.target.value)}
+                fullWidth
+                InputLabelProps={{ shrink: true }}
+                disabled={!enabled}
+                helperText="Ativos no mês/ano"
+              />
+            </Grid>
+            <Grid item xs={12} md={2} sx={{ display: 'flex', alignItems: 'flex-start' }}>
               <Button
                 fullWidth
                 variant="outlined"
-                onClick={() => { setSearchInput(''); setClientFilter(''); setContractTypeFilter(''); setStatusFilter('active'); }}
-                disabled={!enabled || (!searchTerm && !clientFilter && !contractTypeFilter && statusFilter === 'active')}
+                sx={{ mt: 0.5 }}
+                onClick={() => { setSearchInput(''); setClientFilter(''); setContractTypeFilter(''); setStatusFilter('active'); setActiveYm(''); }}
+                disabled={!enabled || (!searchTerm && !clientFilter && !contractTypeFilter && statusFilter === 'active' && !activeYm)}
               >
                 Limpar filtros
               </Button>
@@ -734,59 +825,89 @@ export default function ContractsPage() {
       <PapperBlock title="Contratos" icon={<DescriptionIcon />} iconColor="primary.main" noPadding>
         {!enabled ? (
           <Box sx={{ p: 3 }}><Alert severity="info">Selecione uma empresa para acessar os dados desta página.</Alert></Box>
-        ) : list.isLoading ? <Box sx={{ p: 3 }}>Carregando…</Box> : list.error ? <Box sx={{ p: 3 }}><Alert severity="error">Erro ao carregar contratos: {list.error?.message || 'tente novamente.'}</Alert></Box> : rows.length === 0 ? (
-          <Box sx={{ p: 3 }}><Alert severity="info">Nenhum contrato encontrado.</Alert></Box>
         ) : (
-          <Box sx={{ overflowX: 'auto' }}>
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>ID</TableCell>
-                <TableCell>Cliente</TableCell>
-                <TableCell>Descrição</TableCell>
-                <TableCell>Tipo</TableCell>
-                <TableCell>Periodicidade</TableCell>
-                <TableCell>Valor</TableCell>
-                <TableCell>Período</TableCell>
-                <TableCell>Dia</TableCell>
-                <TableCell>Status</TableCell>
-                <TableCell>última cobrança</TableCell>
-                <TableCell align="right">Ações</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {rows.map(r => (
-                <TableRow key={r.id} hover sx={{ opacity: r.active ? 1 : 0.7 }}>
-                  <TableCell>{r.id}</TableCell>
-                  <TableCell>{r.client_name}</TableCell>
-                  <TableCell>{r.description}</TableCell>
-                  <TableCell>{r.contract_type_name || '-'}</TableCell>
-                  <TableCell>{formatBillingMode(r.billing_mode, r.billing_interval_months, r.billing_interval_days)}</TableCell>
-                  <TableCell>{Number(r.value).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</TableCell>
-                  <TableCell>{formatDateOnly(r.start_date)} ? {formatDateOnly(r.end_date)}</TableCell>
-                  <TableCell>{r.billing_day}</TableCell>
-                  <TableCell>
-                    <Stack spacing={0.5}>
-                      <Chip label={r.active ? 'Ativo' : 'Inativo'} color={r.active ? 'success' : 'default'} size="small" />
-                      {r.cancellation_date ? <small style={{ color: 'rgba(0,0,0,0.6)' }}>Cancelado em {formatDateOnly(r.cancellation_date)}</small> : null}
-                    </Stack>
-                  </TableCell>
-                  <TableCell>{formatDateOnly(r.last_billed_date)}</TableCell>
-                  <TableCell align="right">
-                    <IconButton size="small" onClick={() => handleEdit(r)} disabled={!enabled}><EditIcon fontSize="small" /></IconButton>
-                    <Tooltip title={r.active ? 'Inativar' : 'Ativar'}>
-                      <span>
-                        <IconButton size="small" color={r.active ? 'warning' : 'success'} onClick={() => handleToggleActive(r)} disabled={!enabled}>
-                          {r.active ? <ToggleOffIcon fontSize="small" /> : <ToggleOnIcon fontSize="small" />}
-                        </IconButton>
-                      </span>
-                    </Tooltip>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-          </Box>
+          <>
+            <Box sx={{ px: 2, py: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
+              <Typography variant="body2" color="text.secondary">
+                {total} {total === 1 ? 'contrato' : 'contratos'}
+              </Typography>
+            </Box>
+            <Box sx={{ overflow: 'auto', maxHeight: { xs: 460, md: 560 } }}>
+              <Table stickyHeader size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>ID</TableCell>
+                    <TableCell>Cliente</TableCell>
+                    <TableCell>Descrição</TableCell>
+                    <TableCell>Tipo</TableCell>
+                    <TableCell>Periodicidade</TableCell>
+                    <TableCell>Valor</TableCell>
+                    <TableCell>Período</TableCell>
+                    <TableCell>Dia</TableCell>
+                    <TableCell>Status</TableCell>
+                    <TableCell>última cobrança</TableCell>
+                    <TableCell align="right">Ações</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {list.isLoading ? (
+                    <TableSkeleton rows={6} columns={11} />
+                  ) : list.error ? (
+                    <TableRow>
+                      <TableCell colSpan={11} sx={{ border: 0 }}>
+                        <Alert severity="error" sx={{ my: 1 }}>Erro ao carregar contratos: {list.error?.message || 'tente novamente.'}</Alert>
+                      </TableCell>
+                    </TableRow>
+                  ) : rows.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={11} sx={{ border: 0 }}>
+                        <EmptyState
+                          icon={<DescriptionIcon />}
+                          title="Nenhum contrato encontrado"
+                          description={(searchTerm || clientFilter || contractTypeFilter || statusFilter !== 'active' || activeYm)
+                            ? 'Tente ajustar a busca ou os filtros aplicados.'
+                            : 'Cadastre seu primeiro contrato para começar.'}
+                          action={(searchTerm || clientFilter || contractTypeFilter || statusFilter !== 'active' || activeYm)
+                            ? <Button variant="outlined" onClick={() => { setSearchInput(''); setClientFilter(''); setContractTypeFilter(''); setStatusFilter('active'); setActiveYm(''); }}>Limpar filtros</Button>
+                            : <Button variant="contained" startIcon={<AddIcon />} onClick={handleCreate} disabled={!enabled}>Novo contrato</Button>}
+                        />
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    rows.map(r => (
+                      <TableRow key={r.id} hover sx={{ opacity: r.active ? 1 : 0.7 }}>
+                        <TableCell>{r.id}</TableCell>
+                        <TableCell>{r.client_name}</TableCell>
+                        <TableCell>{r.description}</TableCell>
+                        <TableCell>{r.contract_type_name || '-'}</TableCell>
+                        <TableCell>{formatBillingMode(r.billing_mode, r.billing_interval_months, r.billing_interval_days)}</TableCell>
+                        <TableCell>{Number(r.value).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</TableCell>
+                        <TableCell>{formatDateOnly(r.start_date)} ? {formatDateOnly(r.end_date)}</TableCell>
+                        <TableCell>{r.billing_day}</TableCell>
+                        <TableCell>
+                          <Stack spacing={0.5}>
+                            <Chip label={r.active ? 'Ativo' : 'Inativo'} color={r.active ? 'success' : 'default'} size="small" />
+                            {r.cancellation_date ? <small style={{ color: 'rgba(0,0,0,0.6)' }}>Cancelado em {formatDateOnly(r.cancellation_date)}</small> : null}
+                          </Stack>
+                        </TableCell>
+                        <TableCell>{formatDateOnly(r.last_billed_date)}</TableCell>
+                        <TableCell align="right">
+                          <IconButton size="small" onClick={() => handleEdit(r)} disabled={!enabled}><EditIcon fontSize="small" /></IconButton>
+                          <Tooltip title={r.active ? 'Inativar' : 'Ativar'}>
+                            <span>
+                              <IconButton size="small" color={r.active ? 'warning' : 'success'} onClick={() => handleToggleActive(r)} disabled={!enabled}>
+                                {r.active ? <ToggleOffIcon fontSize="small" /> : <ToggleOnIcon fontSize="small" />}
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </Box>
+          </>
         )}
         {enabled && (
           <TablePagination
@@ -797,7 +918,7 @@ export default function ContractsPage() {
             rowsPerPage={rowsPerPage}
             onRowsPerPageChange={(event) => { setRowsPerPage(parseInt(event.target.value, 10)); setPage(0); }}
             rowsPerPageOptions={[10, 20, 50]}
-            sx={{ px: 2 }}
+            sx={{ px: 2, borderTop: '1px solid', borderColor: 'divider' }}
           />
         )}
       </PapperBlock>
