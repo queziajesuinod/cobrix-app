@@ -3,6 +3,7 @@ const { query } = require('../db');
 const { requireAuth, companyScope } = require('./auth');
 const { ensureDateOnly, formatISODate } = require('../utils/date-only');
 const { sendWhatsapp } = require('../services/messenger');
+const { computeRiskScore } = require('../services/risk');
 
 const router = express.Router();
 const SCHEMA = process.env.DB_SCHEMA || 'public';
@@ -127,14 +128,17 @@ function formatDateBr(value) {
   return dt.toLocaleDateString('pt-BR');
 }
 
-function buildOverdueWhere({ companyId, todayIso, filters, clientId = null, billingIds = null }) {
-  const params = [companyId, todayIso];
+function buildOverdueWhere({ companyId, todayIso, filters, clientId = null, billingIds = null, minDaysOverdue = 30 }) {
+  // minDaysOverdue: dias mínimos de atraso para entrar na lista. Default 30
+  // (comportamento da tela "Clientes em atraso"); a Carteira em risco passa 0
+  // para cobrar qualquer cobrança vencida.
+  const params = [companyId, todayIso, minDaysOverdue];
   const where = [
     'b.company_id = $1',
     'c.company_id = $1',
     "LOWER(COALESCE(b.status, 'pending')) = 'pending'",
     'b.billing_date < $2::date',
-    '($2::date - b.billing_date) > 30',
+    '($2::date - b.billing_date) > $3',
   ];
 
   if (clientId != null) {
@@ -232,11 +236,12 @@ async function listOverdueBillings({
   all = false,
   page = 1,
   pageSize = 20,
+  minDaysOverdue = 30,
 }) {
   const today = ensureDateOnly(new Date()) || new Date();
   const todayIso = formatISODate(today);
 
-  const base = buildOverdueWhere({ companyId, todayIso, filters, clientId, billingIds });
+  const base = buildOverdueWhere({ companyId, todayIso, filters, clientId, billingIds, minDaysOverdue });
   const countParams = [...base.params];
   const countPostWhere = appendPostFilters(countParams, filters);
 
@@ -402,6 +407,8 @@ router.post('/overdue-clients/client/:clientId/notify', requireAuth, companyScop
     const clientId = parseClientId(req.params.clientId);
     const filters = parseFilters(req.body || {});
     const billingIds = parseBillingIds(req.body?.billingIds);
+    const parsedMinDays = parseNumberParam(req.body?.minDaysOverdue, 'minDaysOverdue', { integer: true, min: 0 });
+    const minDaysOverdue = parsedMinDays == null ? 30 : parsedMinDays;
 
     const report = await listOverdueBillings({
       companyId,
@@ -410,6 +417,7 @@ router.post('/overdue-clients/client/:clientId/notify', requireAuth, companyScop
       billingIds,
       all: true,
       pageSize: 5000,
+      minDaysOverdue,
     });
 
     if (!report.data.length) {
@@ -529,6 +537,95 @@ router.post('/overdue-clients/billing/:billingId/mark-paid', requireAuth, compan
         name: row.client_name,
       },
     });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Score de risco de inadimplência por cliente (priorização de cobrança).
+router.get('/risk', requireAuth, companyScope(true), async (req, res) => {
+  try {
+    const companyId = req.companyId;
+    if (!companyId) return res.status(400).json({ error: 'Selecione uma empresa' });
+    const todayIso = formatISODate(ensureDateOnly(new Date()) || new Date());
+
+    const agg = await query(
+      `SELECT
+         cl.id AS client_id,
+         cl.name AS client_name,
+         cl.responsavel AS client_responsavel,
+         cl.phone AS client_phone,
+         COALESCE(cl.document_cpf, cl.document_cnpj) AS client_document,
+         COUNT(b.id)::int AS total_billings,
+         COUNT(b.id) FILTER (WHERE LOWER(b.status) = 'paid')::int AS total_paid,
+         COUNT(b.id) FILTER (
+           WHERE LOWER(b.status) = 'paid'
+             AND b.gateway_paid_at IS NOT NULL
+             AND b.gateway_paid_at::date > b.billing_date
+         )::int AS paid_late,
+         COALESCE(AVG( (b.gateway_paid_at::date - b.billing_date) ) FILTER (
+           WHERE LOWER(b.status) = 'paid'
+             AND b.gateway_paid_at IS NOT NULL
+             AND b.gateway_paid_at::date > b.billing_date
+         ), 0)::float AS avg_days_late,
+         COUNT(b.id) FILTER (
+           WHERE LOWER(COALESCE(b.status,'pending')) = 'pending' AND b.billing_date < $2::date
+         )::int AS open_overdue_count,
+         COALESCE(MAX( ($2::date - b.billing_date) ) FILTER (
+           WHERE LOWER(COALESCE(b.status,'pending')) = 'pending' AND b.billing_date < $2::date
+         ), 0)::int AS max_open_days,
+         COALESCE(SUM(b.amount) FILTER (
+           WHERE LOWER(COALESCE(b.status,'pending')) = 'pending' AND b.billing_date < $2::date
+         ), 0)::numeric(14,2) AS open_overdue_amount
+       FROM ${SCHEMA}.clients cl
+       JOIN ${SCHEMA}.contracts c ON c.client_id = cl.id AND c.company_id = $1
+       JOIN ${SCHEMA}.billings b ON b.contract_id = c.id AND b.company_id = $1
+       WHERE cl.company_id = $1 AND cl.active = true
+       GROUP BY cl.id, cl.name, cl.responsavel, cl.phone, cl.document_cpf, cl.document_cnpj`,
+      [companyId, todayIso]
+    );
+
+    const data = agg.rows
+      .map((row) => {
+        const risk = computeRiskScore(row);
+        return {
+          client_id: row.client_id,
+          client_name: row.client_name,
+          client_responsavel: row.client_responsavel,
+          client_phone: row.client_phone,
+          client_document: row.client_document,
+          score: risk.score,
+          band: risk.band,
+          factors: risk.factors,
+          open_overdue_amount: Number(row.open_overdue_amount || 0),
+          open_overdue_count: Number(row.open_overdue_count || 0),
+          max_open_days: Number(row.max_open_days || 0),
+          metrics: {
+            total_billings: Number(row.total_billings || 0),
+            total_paid: Number(row.total_paid || 0),
+            paid_late: Number(row.paid_late || 0),
+            avg_days_late: Number(row.avg_days_late || 0),
+          },
+        };
+      })
+      .sort((a, b) => {
+        // Maior risco primeiro; sem histórico por último; empate → maior valor em aberto.
+        const sa = a.score == null ? -1 : a.score;
+        const sb = b.score == null ? -1 : b.score;
+        if (sb !== sa) return sb - sa;
+        return b.open_overdue_amount - a.open_overdue_amount;
+      });
+
+    const summary = {
+      totalClients: data.length,
+      alto: data.filter((d) => d.band === 'alto').length,
+      medio: data.filter((d) => d.band === 'medio').length,
+      baixo: data.filter((d) => d.band === 'baixo').length,
+      semHistorico: data.filter((d) => d.band === 'sem_historico').length,
+      totalOpenOverdueAmount: data.reduce((s, d) => s + Number(d.open_overdue_amount || 0), 0),
+    };
+
+    res.json({ generatedAt: todayIso, summary, data });
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
   }

@@ -31,6 +31,7 @@ import LightModeOutlinedIcon from '@mui/icons-material/LightModeOutlined'
 import NotificationsNoneIcon from '@mui/icons-material/NotificationsNone'
 import PersonAddAlt1Icon from '@mui/icons-material/PersonAddAlt1'
 import PostAddIcon from '@mui/icons-material/PostAdd'
+import InsightsIcon from '@mui/icons-material/Insights'
 
 const drawerWidth = 268
 
@@ -59,6 +60,12 @@ const buildSections = (role) => [
       { to: '/notifications/templates', label: 'Modelos', icon: <EditNoteIcon /> },
       { to: '/billings/paid', label: 'Contratos pagos', icon: <CheckCircleIcon /> },
       { to: '/reports/overdue-clients', label: 'Clientes em atraso', icon: <WarningAmberIcon /> },
+    ],
+  },
+  {
+    label: 'Inteligência',
+    items: [
+      { to: '/reports/risk', label: 'Carteira em risco', icon: <InsightsIcon /> },
     ],
   },
   ...(role === 'master'

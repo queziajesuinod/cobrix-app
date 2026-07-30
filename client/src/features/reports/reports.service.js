@@ -1,6 +1,7 @@
 import { api } from '@/lib/api-client';
 
 export const reportsService = {
+  risk: async () => (await api.get('/reports/risk')).data,
   overdueClients: async (params = {}) => (await api.get('/reports/overdue-clients', { params })).data,
   notifyOverdueClient: async (clientId, payload = {}) =>
     (await api.post(`/reports/overdue-clients/client/${clientId}/notify`, payload)).data,
