@@ -199,6 +199,15 @@ router.get('/kpis', requireAuth, companyScope(true), async (req, res) => {
     if (clientId) { pC.push(Number(clientId)); condC.push(`cl.id = $${pC.length}`); }
     if (contractId) { pC.push(Number(contractId)); condC.push(`c.id = $${pC.length}`); }
     if (dueDay) { pC.push(dueDay); condC.push(`c.billing_day = $${pC.length}`); }
+    // Contratos mensais iniciados depois do vencimento efetivo do mês não geram
+    // cobrança/notificação neste mês, então não contam no indicador (mesma regra
+    // aplicada ao resumo em /overview).
+    pC.push(y); const pKpiY = pC.length;
+    pC.push(m); const pKpiM = pC.length;
+    condC.push(`(LOWER(COALESCE(c.billing_mode, 'monthly')) <> 'monthly'
+      OR c.start_date <= make_date($${pKpiY}::int, $${pKpiM}::int,
+           LEAST(COALESCE(c.billing_day, 1),
+                 EXTRACT(DAY FROM (make_date($${pKpiY}::int, $${pKpiM}::int, 1) + INTERVAL '1 month' - INTERVAL '1 day'))::int)))`);
 
     const active = await query(`
       SELECT c.id
