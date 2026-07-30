@@ -27,6 +27,7 @@ export const contractsService = {
     return unwrap(await api.get('/contracts', { params: requestParams }));
   }, // deve retornar client_name
   paginate: async (params = {}) => (await api.get('/contracts', { params })).data,
+  get: async (id) => (await api.get(`/contracts/${id}`)).data,
   create: async (payload) => (await api.post('/contracts', payload)).data,
   update: async (id, payload) => (await api.put(`/contracts/${id}`, payload)).data,
   remove: async (id) => (await api.delete(`/contracts/${id}`)).data,

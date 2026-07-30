@@ -10,7 +10,10 @@ import CompanyCreatePage from '@/features/companies/CompanyCreatePage'
 const LoginPage = lazy(() => import('@/features/auth/LoginPage'))
 const DashboardPage = lazy(() => import('@/features/dashboard/DashboardPage'))
 const ClientsPage = lazy(() => import('@/features/clients/ClientsPage'))
+const ClientFormPage = lazy(() => import('@/features/clients/ClientFormPage'))
+const CadastroPage = lazy(() => import('@/features/cadastro/CadastroPage'))
 const ContractsPage = lazy(() => import('@/features/contracts/ContractsPage'))
+const ContractFormPage = lazy(() => import('@/features/contracts/ContractFormPage'))
 const ContractTypesPage = lazy(() => import('@/features/contracts/ContractTypesPage'))
 const PaidContractsPage = lazy(() => import('@/features/billings/PaidContractsPage'))
 const OverdueClientsPage = lazy(() => import('@/features/reports/OverdueClientsPage'))
@@ -29,8 +32,13 @@ export default function AppRouter() {
         <Route path="/companies/new" element={<ProtectedRoute><AppShell><CompanyCreatePage /></AppShell></ProtectedRoute>} />
 
         <Route path="/companies/:id/settings" element={<ProtectedRoute><AppShell><CompanySettingsPage /></AppShell></ProtectedRoute>} />
+        <Route path="/cadastro" element={<ProtectedRoute><AppShell><CadastroPage /></AppShell></ProtectedRoute>} />
         <Route path="/clients" element={<ProtectedRoute><AppShell><ClientsPage /></AppShell></ProtectedRoute>} />
+        <Route path="/clients/new" element={<ProtectedRoute><AppShell><ClientFormPage /></AppShell></ProtectedRoute>} />
+        <Route path="/clients/:id/edit" element={<ProtectedRoute><AppShell><ClientFormPage /></AppShell></ProtectedRoute>} />
         <Route path="/contracts" element={<ProtectedRoute><AppShell><ContractsPage /></AppShell></ProtectedRoute>} />
+        <Route path="/contracts/new" element={<ProtectedRoute><AppShell><ContractFormPage /></AppShell></ProtectedRoute>} />
+        <Route path="/contracts/:id/edit" element={<ProtectedRoute><AppShell><ContractFormPage /></AppShell></ProtectedRoute>} />
         <Route path="/contracts/types" element={<ProtectedRoute><AppShell><ContractTypesPage /></AppShell></ProtectedRoute>} />
         <Route path="/notifications/auto" element={<ProtectedRoute><AppShell><AutoNotificationsPage /></AppShell></ProtectedRoute>} />
         <Route path="/notifications/templates" element={<ProtectedRoute><AppShell><MessageTemplatesPage /></AppShell></ProtectedRoute>} />

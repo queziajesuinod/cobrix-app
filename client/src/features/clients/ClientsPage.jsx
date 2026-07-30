@@ -2,9 +2,10 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { clientsService } from './clients.service'
 import PageHeader from '@/components/PageHeader'
+import { useNavigate } from 'react-router-dom'
 import {
-  Alert, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
-  Grid, IconButton, MenuItem, Snackbar, Stack, Table, TableBody, TableCell, TableHead, TableRow,
+  Alert, Box, Button, Chip,
+  IconButton, MenuItem, Snackbar, Stack, Table, TableBody, TableCell, TableHead, TableRow,
   TablePagination, TextField, Tooltip
 } from '@mui/material'
 import PapperBlock from '@/components/PapperBlock'
@@ -17,60 +18,7 @@ import ToggleOnIcon from '@mui/icons-material/ToggleOn'
 import ToggleOffIcon from '@mui/icons-material/ToggleOff'
 import FilterListIcon from '@mui/icons-material/FilterList'
 import PeopleIcon from '@mui/icons-material/People'
-import { useForm, Controller } from 'react-hook-form'
-import { z } from 'zod'
-import { zodResolver } from '@hookform/resolvers/zod'
-
-const digitsOnly = (value = '') => String(value).replace(/\D+/g, '')
-
-const formatCpf = (digits) => {
-  const clean = digits.slice(0, 11)
-  return clean
-    .replace(/(\d{3})(\d)/, '$1.$2')
-    .replace(/(\d{3})(\d)/, '$1.$2')
-    .replace(/(\d{3})(\d{1,2})$/, '$1-$2')
-}
-
-const formatCnpj = (digits) => {
-  const clean = digits.slice(0, 14)
-  return clean
-    .replace(/(\d{2})(\d)/, '$1.$2')
-    .replace(/(\d{3})(\d)/, '$1.$2')
-    .replace(/(\d{3})(\d{4})/, '$1/$2')
-    .replace(/(\d{4})(\d{1,2})$/, '$1-$2')
-}
-
-const formatDocumentValue = (value) => {
-  const digits = digitsOnly(value).slice(0, 14)
-  if (!digits) return ''
-  if (digits.length <= 11) return formatCpf(digits)
-  return formatCnpj(digits)
-}
-const formatPhoneValue = (value = '') => {
-  const digits = digitsOnly(value).slice(0, 11)
-  if (!digits) return ''
-  if (digits.length <= 10) {
-    return digits.replace(/(\d{2})(\d{4})(\d{0,4})/, (_, a, b, c) => {
-      const partC = c ? `-${c}` : ''
-      return `(${a}) ${b}${partC}`
-    })
-  }
-  return digits.replace(/(\d{2})(\d{5})(\d{0,4})/, (_, a, b, c) => {
-    const partC = c ? `-${c}` : ''
-    return `(${a}) ${b}${partC}`
-  })
-}
-const schema = z.object({
-  name: z.string().trim().min(2, 'Nome obrigatório'),
-  email: z.string().trim().email('Email inválido').optional().nullable(),
-  phone: z.string().trim().min(8, 'Telefone inválido').optional().nullable(),
-  responsavel: z.string().trim().min(2, 'Responsável obrigatório'),
-  document: z.string().trim().optional().nullable().refine((value) => {
-    if (!value) return true;
-    const digits = digitsOnly(value);
-    return digits.length === 11 || digits.length === 14;
-  }, { message: 'Documento deve ter 11 (CPF) ou 14 (CNPJ) dígitos' }),
-});
+import { formatDocumentValue } from './ClientForm'
 
 const STATUS_OPTIONS = [
   { value: 'active', label: 'Ativos' },
@@ -78,66 +26,9 @@ const STATUS_OPTIONS = [
   { value: 'all', label: 'Todos' },
 ]
 
-function ClientDialog({ open, onClose, onSubmit, defaultValues }) {
-  const formDefaults = React.useMemo(() => ({
-    name: defaultValues?.name ?? '',
-    email: defaultValues?.email ?? '',
-    phone: formatPhoneValue(defaultValues?.phone ?? ''),
-    responsavel: defaultValues?.responsavel ?? '',
-    document: formatDocumentValue(defaultValues?.document ?? defaultValues?.document_cpf ?? defaultValues?.document_cnpj ?? ''),
-  }), [defaultValues])
-  const { register, handleSubmit, formState: { errors, isSubmitting }, reset, control } = useForm({ resolver: zodResolver(schema), defaultValues: formDefaults })
-  React.useEffect(() => { reset(formDefaults) }, [formDefaults, reset])
-  return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
-      <DialogTitle>{defaultValues?.id ? 'Editar cliente' : 'Novo cliente'}</DialogTitle>
-      <DialogContent dividers>
-        <Stack spacing={2} sx={{ mt: 1 }}>
-          <TextField label="Nome" required {...register('name')} error={!!errors.name} helperText={errors.name?.message} />
-          <TextField label="Email" {...register('email')} error={!!errors.email} helperText={errors.email?.message} />
-          <Controller
-            name="phone"
-            control={control}
-            render={({ field }) => (
-              <TextField
-                label="Telefone"
-                value={field.value ?? ''}
-                onChange={(event) => field.onChange(formatPhoneValue(event.target.value))}
-                error={!!errors.phone}
-                helperText={errors.phone?.message}
-                inputProps={{ inputMode: 'tel' }}
-              />
-            )}
-          />
-          <Controller
-            name="document"
-            control={control}
-            render={({ field }) => (
-              <TextField
-                label="CPF/CNPJ"
-                value={field.value ?? ''}
-                onChange={(event) => field.onChange(formatDocumentValue(event.target.value))}
-                placeholder="Informe o CPF ou CNPJ"
-                inputProps={{ inputMode: 'numeric' }}
-                error={!!errors.document}
-                helperText={errors.document?.message}
-              />
-            )}
-          />
-          <TextField label="Responsável" required {...register('responsavel')} error={!!errors.responsavel} helperText={errors.responsavel?.message || 'Pessoa Responsável pelo contrato/pagamento'} />
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose}>Cancelar</Button>
-        <Button variant="contained" disabled={isSubmitting} onClick={handleSubmit(onSubmit)}>
-          {defaultValues?.id ? 'Salvar' : 'Criar'}
-        </Button>
-      </DialogActions>
-    </Dialog>
-  )
-}
 export default function ClientsPage() {
   const qc = useQueryClient()
+  const navigate = useNavigate()
   const [page, setPage] = useState(0)
   const [rowsPerPage, setRowsPerPage] = useState(20)
   const [searchInput, setSearchInput] = useState('')
@@ -180,50 +71,22 @@ export default function ClientsPage() {
     setErrorToast(message)
   }
 
-  const create = useMutation({
-    mutationFn: clientsService.create,
-    onSuccess: invalidateClients,
-    onError: showError,
-  })
-  const update = useMutation({
-    mutationFn: ({ id, payload }) => clientsService.update(id, payload),
-    onSuccess: invalidateClients,
-    onError: showError,
-  })
   const setStatus = useMutation({
     mutationFn: ({ id, active }) => clientsService.setStatus(id, { active }),
     onSuccess: invalidateClients,
     onError: showError,
   })
 
-  const [dialogOpen, setDialogOpen] = useState(false)
-  const [editing, setEditing] = useState(null)
   const rows = useMemo(() => list.data?.data || [], [list.data])
   const total = list.data?.total || 0
 
-  const handleCreate = () => { setEditing(null); setDialogOpen(true) }
-  const handleEdit = (row) => { setEditing(row); setDialogOpen(true) }
+  const handleCreate = () => navigate('/clients/new')
+  const handleEdit = (row) => navigate(`/clients/${row.id}/edit`)
   const handleToggleActive = (row) => {
     const next = !row.active
     const action = next ? 'Ativar' : 'Inativar'
     if (!confirm(`${action} este cliente?`)) return
     setStatus.mutate({ id: row.id, active: next })
-  }
-  const onSubmit = async (form) => {
-    const payload = {
-      ...form,
-      document: (() => {
-        const digits = digitsOnly(form.document || '').slice(0, 14)
-        return digits || null
-      })(),
-      phone: (() => {
-        const digits = digitsOnly(form.phone || '').slice(0, 11)
-        return digits || null
-      })(),
-    }
-    if (editing?.id) await update.mutateAsync({ id: editing.id, payload })
-    else await create.mutateAsync(payload)
-    setDialogOpen(false)
   }
 
   const activeChips = []
@@ -238,7 +101,7 @@ export default function ClientsPage() {
 
   return (
     <Stack spacing={2}>
-      <PageHeader title="Clientes" actions={<Button variant="contained" startIcon={<AddIcon />} onClick={handleCreate}>Novo</Button>} />
+      <PageHeader title="Clientes" subtitle="Use o menu “Cadastros › Novo cliente” para cadastrar." />
       <PapperBlock title="Clientes" icon={<PeopleIcon />} iconColor="primary.main" noPadding>
         <TableToolbar
           search={searchInput}
@@ -292,10 +155,10 @@ export default function ClientsPage() {
                     <EmptyState
                       icon={<PeopleIcon />}
                       title="Nenhum cliente encontrado"
-                      description={activeChips.length ? 'Tente ajustar a busca ou os filtros aplicados.' : 'Cadastre seu primeiro cliente para começar.'}
+                      description={activeChips.length ? 'Tente ajustar a busca ou os filtros aplicados.' : 'Cadastre um cliente pelo menu “Cadastros › Novo cliente”.'}
                       action={activeChips.length
                         ? <Button variant="outlined" onClick={handleClearFilters}>Limpar filtros</Button>
-                        : <Button variant="contained" startIcon={<AddIcon />} onClick={handleCreate}>Novo cliente</Button>}
+                        : undefined}
                     />
                   </TableCell>
                 </TableRow>
@@ -339,7 +202,6 @@ export default function ClientsPage() {
         />
       </PapperBlock>
 
-      <ClientDialog open={dialogOpen} onClose={() => setDialogOpen(false)} onSubmit={onSubmit} defaultValues={editing} />
       <Snackbar open={!!errorToast} autoHideDuration={4000} onClose={() => setErrorToast(null)}>
         <Alert severity="error" variant="filled" onClose={() => setErrorToast(null)}>
           {errorToast}

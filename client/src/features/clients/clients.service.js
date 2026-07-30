@@ -13,6 +13,7 @@ export const clientsService = {
     return unwrap(await api.get('/clients', { params: requestParams }));
   },
   paginate: async (params = {}) => (await api.get('/clients', { params })).data,
+  get: async (id) => (await api.get(`/clients/${id}`)).data,
   create: async (payload) => (await api.post('/clients', payload)).data,
   update: async (id, payload) => (await api.put(`/clients/${id}`, payload)).data,
   remove: async (id) => (await api.delete(`/clients/${id}`)).data,

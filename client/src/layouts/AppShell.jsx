@@ -28,6 +28,8 @@ import DarkModeOutlinedIcon from '@mui/icons-material/DarkModeOutlined'
 import LightModeOutlinedIcon from '@mui/icons-material/LightModeOutlined'
 import SearchIcon from '@mui/icons-material/Search'
 import NotificationsNoneIcon from '@mui/icons-material/NotificationsNone'
+import PersonAddAlt1Icon from '@mui/icons-material/PersonAddAlt1'
+import PostAddIcon from '@mui/icons-material/PostAdd'
 
 const drawerWidth = 268
 
@@ -41,6 +43,12 @@ const buildSections = (role) => [
       { to: '/contracts', label: 'Contratos', icon: <AssignmentIcon /> },
       { to: '/contracts/types', label: 'Tipos de contrato', icon: <CategoryIcon /> },
       { to: '/integration/evo', label: 'Integração', icon: <QrCodeIcon /> },
+    ],
+  },
+  {
+    label: 'Cadastros',
+    items: [
+      { to: '/cadastro', label: 'Novo cadastro', icon: <PersonAddAlt1Icon /> },
     ],
   },
   {

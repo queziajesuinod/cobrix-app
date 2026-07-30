@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { contractsService, clientsPicker } from './contracts.service'
 import ClientAutocomplete from '@/components/ClientAutocomplete'
@@ -92,7 +93,7 @@ const STATUS_OPTIONS = [
 ];
 
 
-const toDateInput = (value) => {
+export const toDateInput = (value) => {
   if (!value) return '';
   if (typeof value === 'string') {
     if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
@@ -104,7 +105,7 @@ const toDateInput = (value) => {
   return d.toISOString().slice(0, 10);
 };
 
-const parseNumberInput = (value) => {
+export const parseNumberInput = (value) => {
   if (value === '' || value == null) return null;
   const normalized = String(value).replace(',', '.');
   const num = Number(normalized);
@@ -143,12 +144,33 @@ function computeInstallmentsFromDates(startStr, endStr, intervalMonths) {
   return Math.floor(diff / step) + 1;
 }
 
+// Semanal (interval_days): fim = data de início + (parcelas - 1) × intervalo (em dias).
+// Ex.: 10/07 · 3 parcelas semanais (7 dias) → 10/07, 17/07, 24/07 → fim 24/07.
+function computeEndFromWeeklyInstallments(startStr, n, intervalDays) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(startStr || '')) || !n || n < 1) return '';
+  const [y, m, d] = startStr.split('-').map(Number);
+  const step = Math.max(1, Number(intervalDays) || 7);
+  const base = new Date(y, m - 1, d);
+  base.setDate(base.getDate() + (n - 1) * step);
+  return `${base.getFullYear()}-${String(base.getMonth() + 1).padStart(2, '0')}-${String(base.getDate()).padStart(2, '0')}`;
+}
+
+function computeWeeklyInstallmentsFromDates(startStr, endStr, intervalDays) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(startStr || '')) || !/^\d{4}-\d{2}-\d{2}$/.test(String(endStr || ''))) return 0;
+  const [sy, sm, sd] = startStr.split('-').map(Number);
+  const [ey, em, ed] = endStr.split('-').map(Number);
+  const step = Math.max(1, Number(intervalDays) || 7);
+  const diffDays = Math.round((new Date(ey, em - 1, ed) - new Date(sy, sm - 1, sd)) / 86400000);
+  if (diffDays < 0) return 0;
+  return Math.floor(diffDays / step) + 1;
+}
+
 const formatCurrency = (value) => {
   const num = Number(value ?? 0);
   return num.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 };
 
-const normalizePayloadDates = (form) => {
+export const normalizePayloadDates = (form) => {
   const billingMode = String(form.billing_mode || 'monthly').toLowerCase();
   return {
     ...form,
@@ -164,7 +186,7 @@ const normalizePayloadDates = (form) => {
   };
 };
 
-function ContractDialog({ open, onClose, onSubmit, defaultValues, contractTypes = [] }) {
+export function ContractDialog({ open, onClose, onSubmit, defaultValues, contractTypes = [], inline = false, hideClient = false }) {
   const [clients, setClients] = useState([])
   const [customBillings, setCustomBillings] = useState([])
   const [customError, setCustomError] = useState(null)
@@ -190,30 +212,36 @@ function ContractDialog({ open, onClose, onSubmit, defaultValues, contractTypes 
   const billingMode = watch('billing_mode')
   const selectedContractTypeId = watch('contract_type_id')
   const billingIntervalMonths = watch('billing_interval_months')
+  const billingIntervalDays = watch('billing_interval_days')
   const startDate = watch('start_date')
   const selectedType = useMemo(
     () => (contractTypes || []).find((t) => String(t.id) === String(selectedContractTypeId)),
     [contractTypes, selectedContractTypeId]
   )
   const isRecurringType = !!selectedType?.is_recurring
-  // Fixo = tipo NÃO recorrente em cobrança mensal → usa "parcelas" no lugar de "Fim".
-  const showInstallments = billingMode === 'monthly' && !isRecurringType
+  const isWeekly = billingMode === 'interval_days'
+  // "Parcelas" (no lugar de "Fim") para: fixo mensal (não recorrente) OU semanal.
+  const showInstallments = (billingMode === 'monthly' && !isRecurringType) || isWeekly
 
   // Parcelas → calcula a data final (último dia do mês, contando o mês de início).
   useEffect(() => {
     if (!showInstallments) return
     const n = Number(installments)
     if (!n || n < 1) return
-    const end = computeEndFromInstallments(startDate, n, billingIntervalMonths)
+    const end = isWeekly
+      ? computeEndFromWeeklyInstallments(startDate, n, billingIntervalDays)
+      : computeEndFromInstallments(startDate, n, billingIntervalMonths)
     if (end) setValue('end_date', end, { shouldValidate: true, shouldDirty: true })
-  }, [showInstallments, installments, startDate, billingIntervalMonths, setValue])
+  }, [showInstallments, isWeekly, installments, startDate, billingIntervalMonths, billingIntervalDays, setValue])
 
   // Ao editar um contrato fixo, deriva as parcelas a partir de início/fim.
   useEffect(() => {
     if (!showInstallments || installments !== '') return
-    const n = computeInstallmentsFromDates(startDate, watch('end_date'), billingIntervalMonths)
+    const n = isWeekly
+      ? computeWeeklyInstallmentsFromDates(startDate, watch('end_date'), billingIntervalDays)
+      : computeInstallmentsFromDates(startDate, watch('end_date'), billingIntervalMonths)
     if (n) setInstallments(String(n))
-  }, [showInstallments, startDate]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [showInstallments, isWeekly, startDate]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const contractValue = parseNumberInput(watch('value'))
   const hasContractValue = Number.isFinite(contractValue) && contractValue > 0
@@ -335,16 +363,15 @@ function ContractDialog({ open, onClose, onSubmit, defaultValues, contractTypes 
 
   const submitForm = handleSubmit((form) => onSubmit(form, customBillings, setCustomError))
 
-  return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
-      <DialogTitle>{defaultValues?.id ? 'Editar contrato' : 'Novo contrato'}</DialogTitle>
-      <DialogContent dividers>
+  const formBody = (
+    <>
         {customError && (
           <Alert severity="warning" sx={{ mb: 2 }}>
             {customError}
           </Alert>
         )}
         <Grid container spacing={2} sx={{ mt: 0.5 }}>
+          {!hideClient && (
           <Grid item xs={12} md={6}>
             <ClientAutocomplete
               options={clients}
@@ -355,6 +382,7 @@ function ContractDialog({ open, onClose, onSubmit, defaultValues, contractTypes 
               fullWidth
             />
           </Grid>
+          )}
           <Grid item xs={12} md={6}>
             <TextField
               select
@@ -427,7 +455,7 @@ function ContractDialog({ open, onClose, onSubmit, defaultValues, contractTypes 
             {showInstallments ? (
               <TextField
                 fullWidth
-                label="Quantidade de parcelas"
+                label={isWeekly ? 'Quantidade de parcelas (semanas)' : 'Quantidade de parcelas'}
                 type="number"
                 inputProps={{ min: 1, step: 1 }}
                 value={installments}
@@ -435,8 +463,12 @@ function ContractDialog({ open, onClose, onSubmit, defaultValues, contractTypes 
                 error={!!errors.end_date && !installments}
                 helperText={
                   (installments && /^\d{4}-\d{2}-\d{2}$/.test(startDate || ''))
-                    ? `Termina em ${formatDateOnly(computeEndFromInstallments(startDate, Number(installments), billingIntervalMonths))} (último dia do mês)`
-                    : (errors.end_date?.message || 'Conta o mês da data de início (ex.: 10/07 · 3 parcelas → jul/ago/set).')
+                    ? (isWeekly
+                        ? `Última cobrança em ${formatDateOnly(computeEndFromWeeklyInstallments(startDate, Number(installments), billingIntervalDays))} (a cada ${Number(billingIntervalDays) || 7} dias).`
+                        : `Termina em ${formatDateOnly(computeEndFromInstallments(startDate, Number(installments), billingIntervalMonths))} (último dia do mês).`)
+                    : (errors.end_date?.message || (isWeekly
+                        ? 'Conta a semana da data de início (ex.: 10/07 · 3 parcelas → 10, 17, 24/07).'
+                        : 'Conta o mês da data de início (ex.: 10/07 · 3 parcelas → jul/ago/set).'))
                 }
               />
             ) : (
@@ -540,7 +572,27 @@ function ContractDialog({ open, onClose, onSubmit, defaultValues, contractTypes 
             </Grid>
           )}
         </Grid>
-      </DialogContent>
+    </>
+  )
+
+  if (inline) {
+    return (
+      <Box>
+        {formBody}
+        <Stack direction="row" spacing={1} justifyContent="flex-end" sx={{ mt: 3 }}>
+          <Button onClick={onClose}>Cancelar</Button>
+          <Button variant="contained" disabled={isSubmitting} onClick={submitForm}>
+            {defaultValues?.id ? 'Salvar' : 'Criar'}
+          </Button>
+        </Stack>
+      </Box>
+    )
+  }
+
+  return (
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
+      <DialogTitle>{defaultValues?.id ? 'Editar contrato' : 'Novo contrato'}</DialogTitle>
+      <DialogContent dividers>{formBody}</DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Cancelar</Button>
         <Button variant="contained" disabled={isSubmitting} onClick={submitForm}>
@@ -553,6 +605,7 @@ function ContractDialog({ open, onClose, onSubmit, defaultValues, contractTypes 
 
 export default function ContractsPage() {
   const qc = useQueryClient()
+  const navigate = useNavigate()
   const { selectedCompanyId } = useAuth()
   const enabled = Number.isInteger(selectedCompanyId)
 
@@ -613,22 +666,6 @@ export default function ContractsPage() {
     setErrorToast(message)
   }
 
-  const create = useMutation({
-    mutationFn: contractsService.create,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['contracts-paginated'] })
-      qc.invalidateQueries({ queryKey: ['contracts'] })
-    },
-    onError: showError,
-  })
-  const update = useMutation({
-    mutationFn: ({ id, payload }) => contractsService.update(id, payload),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['contracts-paginated'] })
-      qc.invalidateQueries({ queryKey: ['contracts'] })
-    },
-    onError: showError,
-  })
   const setStatus = useMutation({
     mutationFn: ({ id, active }) => contractsService.setStatus(id, { active }),
     onSuccess: () => {
@@ -638,20 +675,16 @@ export default function ContractsPage() {
     onError: showError,
   })
 
-  const [dialogOpen, setDialogOpen] = useState(false)
-  const [editing, setEditing] = useState(null)
   const rows = useMemo(() => list.data?.data || [], [list.data])
   const total = list.data?.total || 0
 
   const handleCreate = () => {
     if (!enabled) return
-    setEditing(null)
-    setDialogOpen(true)
+    navigate('/contracts/new')
   }
   const handleEdit = (row) => {
     if (!enabled) return
-    setEditing(row)
-    setDialogOpen(true)
+    navigate(`/contracts/${row.id}/edit`)
   }
   const handleToggleActive = (row) => {
     if (!enabled) return
@@ -660,82 +693,10 @@ export default function ContractsPage() {
     if (!confirm(`${action} este contrato?`)) return
     setStatus.mutate({ id: row.id, active: next })
   }
-  const onSubmit = async (form, customBillings = [], setCustomError) => {
-    try {
-      if (setCustomError) setCustomError(null)
-      const mode = String(form.billing_mode || 'monthly').toLowerCase()
-      let customPayload = null
-      if (mode === 'custom_dates') {
-        const contractValueInput = parseNumberInput(form.value)
-        if (!Number.isFinite(contractValueInput) || contractValueInput <= 0) {
-          if (setCustomError) setCustomError('Informe o valor do contrato para usar datas personalizadas.')
-          return
-        }
-        const normalized = (customBillings || [])
-          .map((item) => ({
-            billing_date: toDateInput(item.billing_date),
-            amount: item.amount !== '' && item.amount != null ? Number(item.amount) : null,
-            percentage: item.percentage !== '' && item.percentage != null ? Number(item.percentage) : null,
-          }))
-          .filter((item) => item.billing_date)
-
-        if (!normalized.length) {
-          if (setCustomError) setCustomError('Informe ao menos uma data personalizada.')
-          return
-        }
-        const dateSet = new Set()
-        for (const item of normalized) {
-          if (!item.billing_date) {
-            if (setCustomError) setCustomError('Todas as datas personalizadas devem ter data.')
-            return
-          }
-          if (dateSet.has(item.billing_date)) {
-            if (setCustomError) setCustomError('Existem datas personalizadas duplicadas.')
-            return
-          }
-          dateSet.add(item.billing_date)
-          const amountOk = item.amount != null && Number(item.amount) > 0
-          const percOk = item.percentage != null && Number(item.percentage) > 0
-          if (!amountOk && !percOk) {
-            if (setCustomError) setCustomError('Informe valor ou percentual maior que zero.')
-            return
-          }
-        }
-        const datesSorted = normalized.map((item) => item.billing_date).sort()
-        form.start_date = datesSorted[0]
-        form.end_date = datesSorted[datesSorted.length - 1]
-        form.billing_day = 1
-        form.billing_interval_months = 1
-        customPayload = normalized
-      }
-
-      const payload = normalizePayloadDates(form)
-      let contractId = editing?.id
-      if (editing?.id) {
-        await update.mutateAsync({ id: editing.id, payload })
-      } else {
-        const created = await create.mutateAsync(payload)
-        contractId = created?.id
-      }
-      if (customPayload && contractId) {
-        await contractsService.setCustomBillings(contractId, customPayload)
-      }
-      setDialogOpen(false)
-    } catch (err) {
-      showError(err)
-    }
-  }
 
   return (
     <Stack spacing={2}>
-      <PageHeader
-        title="Contratos"
-        actions={
-          <Button variant="contained" startIcon={<AddIcon />} onClick={handleCreate} disabled={!enabled}>
-            Novo
-          </Button>
-        }
-      />
+      <PageHeader title="Contratos" subtitle="Use o menu “Cadastros” para cadastrar." />
       {!enabled && (
         <Alert severity="info">Selecione uma empresa para visualizar e gerenciar os contratos.</Alert>
       )}
@@ -866,10 +827,10 @@ export default function ContractsPage() {
                           title="Nenhum contrato encontrado"
                           description={(searchTerm || clientFilter || contractTypeFilter || statusFilter !== 'active' || activeYm)
                             ? 'Tente ajustar a busca ou os filtros aplicados.'
-                            : 'Cadastre seu primeiro contrato para começar.'}
+                            : 'Cadastre um contrato pelo menu “Cadastros”.'}
                           action={(searchTerm || clientFilter || contractTypeFilter || statusFilter !== 'active' || activeYm)
                             ? <Button variant="outlined" onClick={() => { setSearchInput(''); setClientFilter(''); setContractTypeFilter(''); setStatusFilter('active'); setActiveYm(''); }}>Limpar filtros</Button>
-                            : <Button variant="contained" startIcon={<AddIcon />} onClick={handleCreate} disabled={!enabled}>Novo contrato</Button>}
+                            : undefined}
                         />
                       </TableCell>
                     </TableRow>
@@ -923,13 +884,6 @@ export default function ContractsPage() {
         )}
       </PapperBlock>
 
-      <ContractDialog
-        open={dialogOpen}
-        onClose={() => setDialogOpen(false)}
-        onSubmit={onSubmit}
-        defaultValues={editing || { client_id:'', contract_type_id:'', description:'', value:0, start_date:'', end_date:'', billing_mode:'monthly', billing_day:1, billing_interval_months:1, billing_interval_days:7, cancellation_date:'' }}
-        contractTypes={contractTypes}
-      />
       <Snackbar open={!!errorToast} autoHideDuration={4000} onClose={() => setErrorToast(null)}>
         <Alert severity="error" variant="filled" onClose={() => setErrorToast(null)}>
           {errorToast}
