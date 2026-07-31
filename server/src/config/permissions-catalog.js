@@ -66,6 +66,8 @@ const CATALOG = [
     { key: 'finance.revenues.manage', label: 'Receitas: lançar / editar / importar / estornar', type: 'action' },
     { key: 'finance.expenses.view', label: 'Despesas: acessar', type: 'view' },
     { key: 'finance.expenses.manage', label: 'Despesas: lançar / editar / importar', type: 'action' },
+    { key: 'finance.dashboard.view', label: 'Dashboard: acessar (visão consolidada)', type: 'view' },
+    { key: 'finance.metas.manage', label: 'Metas: definir orçado anual', type: 'action' },
   ] },
 ];
 

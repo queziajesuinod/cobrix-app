@@ -38,6 +38,7 @@ import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings'
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined'
 import GroupIcon from '@mui/icons-material/Group'
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance'
+import QueryStatsIcon from '@mui/icons-material/QueryStats'
 
 const drawerWidth = 268
 
@@ -98,6 +99,7 @@ const buildSections = (role) => [
   {
     label: 'Financeiro',
     items: [
+      { to: '/finance/dashboard', label: 'Dashboard Financeiro', icon: <QueryStatsIcon />, perm: 'finance.dashboard.view', since: '2026-07-30' },
       { to: '/finance', label: 'Gerenciador Financeiro', icon: <AccountBalanceIcon />, perms: ['finance.revenues.view', 'finance.expenses.view'], since: '2026-07-30' },
     ],
   },

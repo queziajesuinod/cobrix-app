@@ -4,6 +4,7 @@ const { requireAuth, companyScope } = require('./auth');
 const { requirePermission, requireAnyPermission, getEffectivePermissions } = require('../services/permissions');
 const { respondError } = require('../utils/http-error');
 const { ensureDateOnly, formatISODate } = require('../utils/date-only');
+const { r2, r4, buildKpis, evolucaoPonto, computeProjecao, computeInsights } = require('../services/finance-dashboard');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 const router = express.Router();
@@ -515,5 +516,412 @@ router.get('/summary/annual', requireAuth, companyScope(true),
       res.json({ fromYm: `${from.y}-${String(from.m).padStart(2, '0')}`, toYm: `${to.y}-${String(to.m).padStart(2, '0')}`, currentYm: curYm, months });
     } catch (e) { respondError(res, e); }
   });
+
+// ===================== DASHBOARD FINANCEIRO =====================
+// Fuso usado para derivar o "mês corrente" (competência aberta). As colunas de data
+// no banco são DATE (sem hora), então só o "agora" precisa do fuso.
+const TZ = 'America/Campo_Grande';
+
+function parseAno(v) {
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 2000 || n > 2100) { const e = new Error('ano inválido'); e.status = 400; throw e; }
+  return n;
+}
+function parseMes(v) {
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 1 || n > 12) { const e = new Error('mês inválido (use 1..12)'); e.status = 400; throw e; }
+  return n;
+}
+const ymOf = (ano, mes) => `${ano}-${String(mes).padStart(2, '0')}`;
+const isoFirst = (ano, mes) => formatISODate(new Date(ano, mes - 1, 1));
+const wantsPrevisto = (q) => String(q.base || '').toUpperCase() === 'REALIZADO_E_PREVISTO';
+
+// Agrega EM SQL os valores-base de cada mês em [fromDate, toDate] (datas no dia 1):
+// receitas lançadas, contratos pagos, contratos previstos (a vencer), contratos ativos
+// (snapshot no fim do mês), despesas fixas/variáveis e contadores de lançamento.
+async function monthlyFinanceBase(companyId, fromDate, toDate) {
+  const r = await query(
+    `WITH months AS (
+       SELECT gs::date AS som, (gs + INTERVAL '1 month')::date AS nextm, (gs + INTERVAL '1 month - 1 day')::date AS eom
+         FROM generate_series($2::date, $3::date, INTERVAL '1 month') gs
+     )
+     SELECT to_char(m.som, 'YYYY-MM') AS ym,
+            EXTRACT(MONTH FROM m.som)::int AS mes,
+            (m.som < date_trunc('month', (now() AT TIME ZONE '${TZ}'))) AS closed,
+            COALESCE(rev.total, 0) AS rev_manual, COALESCE(rev.n, 0) AS n_rev,
+            COALESCE(paid.total, 0) AS con_paid, COALESCE(paid.n, 0) AS n_paid,
+            COALESCE(prev.total, 0) AS con_previsto, COALESCE(prev.n, 0) AS n_previsto,
+            COALESCE(ct.n, 0) AS contratos_ativos,
+            COALESCE(e.fixed, 0) AS despesas_fixas, COALESCE(e.variable, 0) AS despesas_variaveis, COALESCE(e.n, 0) AS n_exp
+       FROM months m
+       LEFT JOIN LATERAL (
+         SELECT SUM(fr.amount) total, COUNT(*) n FROM ${SCHEMA}.finance_revenues fr
+          WHERE fr.company_id = $1 AND fr.received_at >= m.som AND fr.received_at < m.nextm
+       ) rev ON true
+       LEFT JOIN LATERAL (
+         SELECT SUM(b.amount) total, COUNT(*) n FROM ${SCHEMA}.billings b
+          WHERE b.company_id = $1 AND LOWER(b.status) = 'paid'
+            AND COALESCE(b.gateway_paid_at::date, b.billing_date) >= m.som
+            AND COALESCE(b.gateway_paid_at::date, b.billing_date) < m.nextm
+       ) paid ON true
+       LEFT JOIN LATERAL (
+         SELECT SUM(b.amount) total, COUNT(*) n FROM ${SCHEMA}.billings b
+          WHERE b.company_id = $1 AND LOWER(b.status) NOT IN ('paid', 'canceled')
+            AND b.billing_date >= m.som AND b.billing_date < m.nextm
+       ) prev ON true
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*) n FROM ${SCHEMA}.contracts c
+          WHERE c.company_id = $1 AND c.start_date <= m.eom AND c.end_date >= m.som
+            AND (c.cancellation_date IS NULL OR c.cancellation_date >= m.som)
+       ) ct ON true
+       LEFT JOIN LATERAL (
+         SELECT COALESCE(SUM(fe.amount) FILTER (WHERE fe.expense_type = 'fixed'), 0) fixed,
+                COALESCE(SUM(fe.amount) FILTER (WHERE fe.expense_type <> 'fixed'), 0) variable, COUNT(*) n
+           FROM ${SCHEMA}.finance_expenses fe
+          WHERE fe.company_id = $1 AND fe.paid_at >= m.som AND fe.paid_at < m.nextm
+       ) e ON true
+       ORDER BY m.som`,
+    [companyId, fromDate, toDate]
+  );
+  return r.rows.map((row) => ({
+    ym: row.ym,
+    mes: Number(row.mes),
+    closed: Boolean(row.closed),
+    revManual: Number(row.rev_manual || 0),
+    conPaid: Number(row.con_paid || 0),
+    conPrevisto: Number(row.con_previsto || 0),
+    contratosAtivos: Number(row.contratos_ativos || 0),
+    despesasFixas: Number(row.despesas_fixas || 0),
+    despesasVariaveis: Number(row.despesas_variaveis || 0),
+    nRealizado: Number(row.n_rev || 0) + Number(row.n_paid || 0) + Number(row.n_exp || 0),
+    nPrevisto: Number(row.n_previsto || 0),
+  }));
+}
+
+// O Dashboard é uma visão consolidada (DRE) com permissão própria.
+const dashGuard = [requireAuth, companyScope(true), requirePermission('finance.dashboard.view')];
+
+// GET /dashboard/kpis?ano=&mes=&base= — os 8 indicadores do mês + variação vs. mês anterior.
+router.get('/dashboard/kpis', ...dashGuard, async (req, res) => {
+  try {
+    const ano = parseAno(req.query.ano);
+    const mes = parseMes(req.query.mes);
+    const includePrevisto = wantsPrevisto(req.query);
+    const prev = mes === 1 ? { ano: ano - 1, mes: 12 } : { ano, mes: mes - 1 };
+    const rows = await monthlyFinanceBase(req.companyId, isoFirst(prev.ano, prev.mes), isoFirst(ano, mes));
+    const empty = { ym: ymOf(ano, mes), mes, closed: false, revManual: 0, conPaid: 0, conPrevisto: 0, contratosAtivos: 0, despesasFixas: 0, despesasVariaveis: 0, nRealizado: 0, nPrevisto: 0 };
+    const curRow = rows.find((r) => r.ym === ymOf(ano, mes)) || empty;
+    const prevRow = rows.find((r) => r.ym === ymOf(prev.ano, prev.mes));
+    res.json({ competencia: ymOf(ano, mes), ...buildKpis(curRow, prevRow, includePrevisto) });
+  } catch (e) { respondError(res, e); }
+});
+
+// GET /dashboard/despesas-categoria?ano=&mes= — uma linha por categoria (label+tipo), dinâmico.
+router.get('/dashboard/despesas-categoria', ...dashGuard, async (req, res) => {
+  try {
+    const ano = parseAno(req.query.ano);
+    const mes = parseMes(req.query.mes);
+    const from = isoFirst(ano, mes);
+    const to = isoFirst(mes === 12 ? ano + 1 : ano, mes === 12 ? 1 : mes + 1);
+    const cat = await query(
+      `SELECT fe.label AS nome, fe.expense_type,
+              SUM(fe.amount)::numeric(14,2) AS valor
+         FROM ${SCHEMA}.finance_expenses fe
+        WHERE fe.company_id = $1 AND fe.paid_at >= $2::date AND fe.paid_at < $3::date
+        GROUP BY fe.label, fe.expense_type
+       HAVING SUM(fe.amount) <> 0
+        ORDER BY SUM(fe.amount) DESC`,
+      [req.companyId, from, to]
+    );
+    const [monthRow] = await monthlyFinanceBase(req.companyId, from, from);
+    const honorarios = monthRow ? r2(monthRow.revManual + monthRow.conPaid) : 0;
+    const total = r2(cat.rows.reduce((a, c) => a + Number(c.valor || 0), 0));
+    const itens = cat.rows.map((c) => {
+      const valor = r2(Number(c.valor || 0));
+      return {
+        categoria_id: null, // não há catálogo de categorias nesta fase; agrupado por label
+        categoria_nome: c.nome,
+        tipo: c.expense_type === 'fixed' ? 'FIXA' : 'VARIAVEL',
+        valor,
+        av_sobre_receita: honorarios ? r4(valor / honorarios) : null,
+        participacao_na_despesa: total ? r4(valor / total) : null,
+      };
+    });
+    res.json({ competencia: ymOf(ano, mes), total, itens });
+  } catch (e) { respondError(res, e); }
+});
+
+// GET /dashboard/evolucao?ano=&base= — série SEMPRE com 12 pontos (jan..dez).
+router.get('/dashboard/evolucao', ...dashGuard, async (req, res) => {
+  try {
+    const ano = parseAno(req.query.ano);
+    const includePrevisto = wantsPrevisto(req.query);
+    const rows = await monthlyFinanceBase(req.companyId, isoFirst(ano, 1), isoFirst(ano, 12));
+    res.json({ ano, pontos: rows.map((row) => evolucaoPonto(row, includePrevisto)) });
+  } catch (e) { respondError(res, e); }
+});
+
+// GET /dashboard/projecao?ano= — faturamento/despesa/lucro estimados a partir dos meses fechados.
+router.get('/dashboard/projecao', ...dashGuard, async (req, res) => {
+  try {
+    const ano = parseAno(req.query.ano);
+    const rows = await monthlyFinanceBase(req.companyId, isoFirst(ano, 1), isoFirst(ano, 12));
+    res.json({ ano, ...computeProjecao(rows) });
+  } catch (e) { respondError(res, e); }
+});
+
+// GET /dashboard/inadimplencia?ano= — cobranças de contrato (billings) por competência
+// de vencimento: faturado × recebido × vencido × a vencer; + aging da carteira em aberto
+// hoje. Só receitas de contrato (não há "inadimplência" de despesa), então basta a view
+// de receitas — mas mantemos o guard comum do dashboard por coesão.
+router.get('/dashboard/inadimplencia', ...dashGuard, async (req, res) => {
+  try {
+    const ano = parseAno(req.query.ano);
+    const HOJE = `(now() AT TIME ZONE '${TZ}')::date`;
+    // Coorte mensal pela data de vencimento (billing_date).
+    const coh = await query(
+      `WITH months AS (
+         SELECT gs::date AS som, (gs + INTERVAL '1 month')::date AS nextm
+           FROM generate_series($2::date, $3::date, INTERVAL '1 month') gs
+       )
+       SELECT to_char(m.som,'YYYY-MM') AS ym, EXTRACT(MONTH FROM m.som)::int AS mes,
+              COALESCE(b.faturado,0) AS faturado, COALESCE(b.recebido,0) AS recebido,
+              COALESCE(b.vencido,0) AS vencido, COALESCE(b.a_vencer,0) AS a_vencer
+         FROM months m
+         LEFT JOIN LATERAL (
+           SELECT
+             SUM(bi.amount) FILTER (WHERE LOWER(bi.status) <> 'canceled') AS faturado,
+             SUM(bi.amount) FILTER (WHERE LOWER(bi.status) = 'paid') AS recebido,
+             SUM(bi.amount) FILTER (WHERE LOWER(bi.status) NOT IN ('paid','canceled') AND bi.billing_date <  ${HOJE}) AS vencido,
+             SUM(bi.amount) FILTER (WHERE LOWER(bi.status) NOT IN ('paid','canceled') AND bi.billing_date >= ${HOJE}) AS a_vencer
+           FROM ${SCHEMA}.billings bi
+           WHERE bi.company_id = $1 AND bi.billing_date >= m.som AND bi.billing_date < m.nextm
+         ) b ON true
+         ORDER BY m.som`,
+      [req.companyId, isoFirst(ano, 1), isoFirst(ano, 12)]
+    );
+    // Aging da carteira em aberto HOJE (independente do ano), por dias de atraso.
+    const ag = await query(
+      `SELECT
+         COALESCE(SUM(amount) FILTER (WHERE d BETWEEN 1 AND 30),0) AS b1,
+         COALESCE(SUM(amount) FILTER (WHERE d BETWEEN 31 AND 60),0) AS b2,
+         COALESCE(SUM(amount) FILTER (WHERE d BETWEEN 61 AND 90),0) AS b3,
+         COALESCE(SUM(amount) FILTER (WHERE d > 90),0) AS b4,
+         COALESCE(SUM(amount),0) AS total, COUNT(*) AS n
+       FROM (
+         SELECT amount, (${HOJE} - billing_date) AS d
+           FROM ${SCHEMA}.billings
+          WHERE company_id = $1 AND LOWER(status) NOT IN ('paid','canceled') AND billing_date < ${HOJE}
+       ) x`,
+      [req.companyId]
+    );
+    const meses = coh.rows.map((r) => {
+      const faturado = Number(r.faturado || 0);
+      const vencido = Number(r.vencido || 0);
+      return {
+        mes: Number(r.mes),
+        competencia: r.ym,
+        faturado: r2(faturado),
+        recebido: r2(Number(r.recebido || 0)),
+        vencido: r2(vencido),
+        a_vencer: r2(Number(r.a_vencer || 0)),
+        inadimplencia: faturado ? r4(vencido / faturado) : null,
+      };
+    });
+    const a = ag.rows[0];
+    res.json({
+      ano,
+      meses,
+      aging: {
+        b0_30: r2(Number(a.b1 || 0)),
+        b31_60: r2(Number(a.b2 || 0)),
+        b61_90: r2(Number(a.b3 || 0)),
+        b90_plus: r2(Number(a.b4 || 0)),
+        total: r2(Number(a.total || 0)),
+        titulos: Number(a.n || 0),
+      },
+    });
+  } catch (e) { respondError(res, e); }
+});
+
+// GET /dashboard/receita-tipo-contrato?ano=&mes= — receita por tipo de contrato,
+// no mês selecionado (donut) e ao longo do ano (evolução empilhada). Junta contratos
+// pagos + receitas manuais vinculadas a contrato; receita sem contrato = "Avulso".
+router.get('/dashboard/receita-tipo-contrato', ...dashGuard, async (req, res) => {
+  try {
+    const ano = parseAno(req.query.ano);
+    const mes = parseMes(req.query.mes);
+    const from = isoFirst(ano, 1);
+    const toEnd = isoFirst(ano + 1, 1); // exclusivo: 1º de janeiro do ano seguinte
+    const r = await query(
+      `WITH src AS (
+         SELECT to_char(COALESCE(b.gateway_paid_at::date, b.billing_date), 'YYYY-MM') AS ym,
+                COALESCE(ct.name, 'Sem tipo') AS tipo_nome, b.amount AS valor
+           FROM ${SCHEMA}.billings b
+           JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
+           LEFT JOIN ${SCHEMA}.contract_types ct ON ct.id = c.contract_type_id
+          WHERE b.company_id = $1 AND LOWER(b.status) = 'paid'
+            AND COALESCE(b.gateway_paid_at::date, b.billing_date) >= $2::date
+            AND COALESCE(b.gateway_paid_at::date, b.billing_date) <  $3::date
+         UNION ALL
+         SELECT to_char(fr.received_at, 'YYYY-MM') AS ym,
+                COALESCE(ct.name, CASE WHEN fr.contract_id IS NULL THEN 'Avulso' ELSE 'Sem tipo' END) AS tipo_nome,
+                fr.amount AS valor
+           FROM ${SCHEMA}.finance_revenues fr
+           LEFT JOIN ${SCHEMA}.contracts c ON c.id = fr.contract_id
+           LEFT JOIN ${SCHEMA}.contract_types ct ON ct.id = c.contract_type_id
+          WHERE fr.company_id = $1 AND fr.received_at >= $2::date AND fr.received_at < $3::date
+       )
+       SELECT ym, tipo_nome, SUM(valor)::numeric(14,2) AS valor
+         FROM src GROUP BY ym, tipo_nome ORDER BY ym`,
+      [req.companyId, from, toEnd]
+    );
+
+    const alvoYm = ymOf(ano, mes);
+    // Tipos ordenados por total anual (desc) — define a ordem das séries/fatias.
+    const totalPorTipo = new Map();
+    for (const row of r.rows) totalPorTipo.set(row.tipo_nome, (totalPorTipo.get(row.tipo_nome) || 0) + Number(row.valor || 0));
+    const tipos = [...totalPorTipo.entries()].sort((a, b) => b[1] - a[1]).map(([nome]) => nome);
+
+    // Donut do mês selecionado.
+    const mesRows = r.rows.filter((row) => row.ym === alvoYm);
+    const totalMes = r2(mesRows.reduce((a, row) => a + Number(row.valor || 0), 0));
+    const itensMes = mesRows
+      .map((row) => ({ tipo_nome: row.tipo_nome, valor: r2(Number(row.valor || 0)) }))
+      .sort((a, b) => b.valor - a.valor)
+      .map((it) => ({ ...it, participacao: totalMes ? r4(it.valor / totalMes) : null }));
+
+    // Evolução anual: 12 meses, cada um com o valor por tipo.
+    const byYm = new Map();
+    for (const row of r.rows) {
+      if (!byYm.has(row.ym)) byYm.set(row.ym, {});
+      byYm.get(row.ym)[row.tipo_nome] = r2(Number(row.valor || 0));
+    }
+    const meses = Array.from({ length: 12 }, (_, i) => {
+      const ym = ymOf(ano, i + 1);
+      return { mes: i + 1, competencia: ym, valores: byYm.get(ym) || {} };
+    });
+
+    res.json({ competencia: alvoYm, tipos, mes: { total: totalMes, itens: itensMes }, anual: { ano, tipos, meses } });
+  } catch (e) { respondError(res, e); }
+});
+
+// GET /dashboard/metas?ano= — orçado anual vs. realizado (YTD) e projeção.
+router.get('/dashboard/metas', ...dashGuard, async (req, res) => {
+  try {
+    const ano = parseAno(req.query.ano);
+    const metaRow = await query(
+      `SELECT meta_honorarios, meta_despesas FROM ${SCHEMA}.finance_metas WHERE company_id = $1 AND ano = $2`,
+      [req.companyId, ano]
+    );
+    const rows = await monthlyFinanceBase(req.companyId, isoFirst(ano, 1), isoFirst(ano, 12));
+    // Realizado do ano (YTD) = soma de todos os meses com lançamento realizado.
+    const realizados = rows.filter((m) => m.nRealizado > 0);
+    const realHon = r2(realizados.reduce((a, m) => a + m.revManual + m.conPaid, 0));
+    const realDesp = r2(realizados.reduce((a, m) => a + m.despesasFixas + m.despesasVariaveis, 0));
+    const proj = computeProjecao(rows).projecao;
+    const meta = metaRow.rows[0]
+      ? { honorarios: Number(metaRow.rows[0].meta_honorarios || 0), despesas: Number(metaRow.rows[0].meta_despesas || 0) }
+      : null;
+    res.json({
+      ano,
+      definida: Boolean(metaRow.rows[0]),
+      meta: meta ? { ...meta, lucro: r2(meta.honorarios - meta.despesas) } : null,
+      realizado: { honorarios: realHon, total_despesas: realDesp, lucro_operacional: r2(realHon - realDesp) },
+      projecao: proj,
+    });
+  } catch (e) { respondError(res, e); }
+});
+
+// GET /dashboard/insights?ano=&mes= — alertas automáticos do período.
+router.get('/dashboard/insights', ...dashGuard, async (req, res) => {
+  try {
+    const ano = parseAno(req.query.ano);
+    const mes = parseMes(req.query.mes);
+    const prev = mes === 1 ? { ano: ano - 1, mes: 12 } : { ano, mes: mes - 1 };
+
+    const yearRows = await monthlyFinanceBase(req.companyId, isoFirst(ano, 1), isoFirst(ano, 12));
+    const cur = yearRows.find((m) => m.ym === ymOf(ano, mes));
+    let prevRow = yearRows.find((m) => m.ym === ymOf(prev.ano, prev.mes));
+    if (!prevRow && prev.ano !== ano) {
+      const pr = await monthlyFinanceBase(req.companyId, isoFirst(prev.ano, prev.mes), isoFirst(prev.ano, prev.mes));
+      prevRow = pr[0];
+    }
+    const curK = cur ? buildKpis(cur, prevRow, false) : null;
+    const prevK = prevRow ? buildKpis(prevRow, undefined, false) : null;
+
+    // Média de despesas fixas dos meses fechados com lançamento.
+    const fechados = yearRows.filter((m) => m.closed && m.nRealizado > 0);
+    const mediaDespFixas = fechados.length ? fechados.reduce((a, m) => a + m.despesasFixas, 0) / fechados.length : null;
+
+    // Aging da carteira vencida em aberto hoje.
+    const HOJE = `(now() AT TIME ZONE '${TZ}')::date`;
+    const ag = await query(
+      `SELECT COALESCE(SUM(amount),0) total, COUNT(*) n FROM ${SCHEMA}.billings
+        WHERE company_id = $1 AND LOWER(status) NOT IN ('paid','canceled') AND billing_date < ${HOJE}`,
+      [req.companyId]
+    );
+    // Contratos ativos vencendo nos próximos 30/60 dias.
+    const venc = await query(
+      `SELECT
+         COUNT(*) FILTER (WHERE end_date <= ${HOJE} + 30) AS v30,
+         COUNT(*) FILTER (WHERE end_date <= ${HOJE} + 60) AS v60
+       FROM ${SCHEMA}.contracts
+        WHERE company_id = $1 AND active = true AND cancellation_date IS NULL
+          AND end_date >= ${HOJE}`,
+      [req.companyId]
+    );
+    // Meta + projeção do ano.
+    const metaRow = await query(`SELECT meta_honorarios FROM ${SCHEMA}.finance_metas WHERE company_id = $1 AND ano = $2`, [req.companyId, ano]);
+    const realHon = r2(yearRows.filter((m) => m.nRealizado > 0).reduce((a, m) => a + m.revManual + m.conPaid, 0));
+    const projHon = computeProjecao(yearRows).projecao.honorarios;
+
+    const itens = computeInsights({
+      lucro_operacional: curK ? curK.lucro_operacional : null,
+      margem_operacional: curK ? curK.margem_operacional : null,
+      margem_anterior: prevK ? prevK.margem_operacional : null,
+      despesas_fixas: cur ? r2(cur.despesasFixas) : 0,
+      media_despesas_fixas: mediaDespFixas != null ? r2(mediaDespFixas) : null,
+      aging_total: Number(ag.rows[0].total || 0),
+      aging_titulos: Number(ag.rows[0].n || 0),
+      contratos_vencendo_30: Number(venc.rows[0].v30 || 0),
+      contratos_vencendo_60: Number(venc.rows[0].v60 || 0),
+      meta_honorarios: metaRow.rows[0] ? Number(metaRow.rows[0].meta_honorarios || 0) : null,
+      realizado_honorarios: realHon,
+      projecao_honorarios: projHon,
+    });
+    res.json({ competencia: ymOf(ano, mes), itens });
+  } catch (e) { respondError(res, e); }
+});
+
+// ===================== METAS (orçado anual) =====================
+router.get('/metas', requireAuth, companyScope(true), requirePermission('finance.dashboard.view'), async (req, res) => {
+  try {
+    const ano = parseAno(req.query.ano);
+    const r = await query(
+      `SELECT ano, meta_honorarios, meta_despesas FROM ${SCHEMA}.finance_metas WHERE company_id = $1 AND ano = $2`,
+      [req.companyId, ano]
+    );
+    const row = r.rows[0];
+    res.json({ ano, meta_honorarios: row ? Number(row.meta_honorarios) : null, meta_despesas: row ? Number(row.meta_despesas) : null });
+  } catch (e) { respondError(res, e); }
+});
+
+router.put('/metas/:ano', requireAuth, companyScope(true), requirePermission('finance.metas.manage'), async (req, res) => {
+  try {
+    const ano = parseAno(req.params.ano);
+    const metaHon = parseAmount(req.body?.meta_honorarios);
+    const metaDesp = parseAmount(req.body?.meta_despesas);
+    await query(
+      `INSERT INTO ${SCHEMA}.finance_metas (company_id, ano, meta_honorarios, meta_despesas, created_by, updated_by, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$5, now())
+       ON CONFLICT (company_id, ano)
+       DO UPDATE SET meta_honorarios = EXCLUDED.meta_honorarios, meta_despesas = EXCLUDED.meta_despesas,
+                     updated_by = EXCLUDED.updated_by, updated_at = now()`,
+      [req.companyId, ano, metaHon, metaDesp, req.user.id]
+    );
+    res.json({ ok: true, ano, meta_honorarios: metaHon, meta_despesas: metaDesp });
+  } catch (e) { respondError(res, e); }
+});
 
 module.exports = router;

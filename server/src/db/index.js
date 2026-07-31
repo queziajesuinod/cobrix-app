@@ -369,6 +369,22 @@ async function initDb() {
     // Tipo de despesa: 'fixed' (fixa) ou 'variable' (variável) — para diferenciar em gráfico.
     await c.query(`ALTER TABLE ${schema}.finance_expenses ADD COLUMN IF NOT EXISTS expense_type TEXT NOT NULL DEFAULT 'variable';`);
 
+    // Metas financeiras anuais (orçado) por empresa: 1 linha por ano.
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.finance_metas (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
+        ano SMALLINT NOT NULL,
+        meta_honorarios NUMERIC(14,2) NOT NULL DEFAULT 0,
+        meta_despesas NUMERIC(14,2) NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ,
+        created_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        updated_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        UNIQUE (company_id, ano)
+      );
+    `);
+
     // Itens de menu "Novo" já vistos por cada usuário (esconde a etiqueta ao abrir).
     await c.query(`
       CREATE TABLE IF NOT EXISTS ${schema}.user_seen_menu (

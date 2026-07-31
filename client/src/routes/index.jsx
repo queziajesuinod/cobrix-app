@@ -20,6 +20,7 @@ const RiskPortfolioPage = lazy(() => import('@/features/reports/RiskPortfolioPag
 const PermissionsAdminPage = lazy(() => import('@/features/admin/PermissionsAdminPage'))
 const UsersPage = lazy(() => import('@/features/admin/UsersPage'))
 const FinancePage = lazy(() => import('@/features/finance/FinancePage'))
+const FinanceDashboardPage = lazy(() => import('@/features/finance/FinanceDashboardPage'))
 const SystemHealthPage = lazy(() => import('@/features/system/SystemHealthPage'))
 const CompanyListPage = lazy(() => import('@/features/companies/CompanyListPage'))
 const CompanyFormPage = lazy(() => import('@/features/companies/CompanyFormPage'))
@@ -52,6 +53,7 @@ export default function AppRouter() {
         <Route path="/admin/permissions" element={<ProtectedRoute><AppShell><PermissionsAdminPage /></AppShell></ProtectedRoute>} />
         <Route path="/admin/users" element={<ProtectedRoute><AppShell><UsersPage /></AppShell></ProtectedRoute>} />
         <Route path="/finance" element={<ProtectedRoute><AppShell><FinancePage /></AppShell></ProtectedRoute>} />
+        <Route path="/finance/dashboard" element={<ProtectedRoute><AppShell><FinanceDashboardPage /></AppShell></ProtectedRoute>} />
         <Route path="/integration/evo" element={<ProtectedRoute><AppShell><EvoConnectionPage /></AppShell></ProtectedRoute>} />
 
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
