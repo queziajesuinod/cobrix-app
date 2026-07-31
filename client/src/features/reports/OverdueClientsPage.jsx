@@ -323,7 +323,7 @@ export default function OverdueClientsPage() {
       )}
 
       <PageHeader
-        title="Cobranças em atraso"
+        title="Inadimplentes"
         subtitle="Relatório de inadimplência agrupado por cliente."
         actions={canExport ? (
           <>
@@ -346,6 +346,11 @@ export default function OverdueClientsPage() {
           </>
         ) : null}
       />
+
+      <Alert severity="info" icon={<WarningAmberIcon />}>
+        Esta tela lista os <strong>inadimplentes</strong>: clientes com cobranças pendentes vencidas há <strong>mais de 30 dias</strong>.
+        Cobranças com menos de 30 dias de atraso ainda não aparecem aqui.
+      </Alert>
 
       <PapperBlock title="Filtros" icon={<FilterListIcon />} iconColor="info.main">
         <Grid container spacing={2}>
@@ -507,7 +512,7 @@ export default function OverdueClientsPage() {
                           <Stack direction="row" spacing={0.5} justifyContent={{ xs: 'flex-start', md: 'flex-end' }} sx={{ flexWrap: 'wrap', gap: 0.5 }}>
                             <Chip size="small" color="warning" label={`${g.count} cobrança${g.count > 1 ? 's' : ''}`} />
                             <Chip size="small" color="error" label={`Total ${money(g.totalAmount)}`} />
-                            <Chip size="small" variant="outlined" color="error" label={`Máx ${g.maxDaysLate} dias`} />
+                            <Chip size="small" variant="outlined" color="error" label={`${g.maxDaysLate} dias de inadimplência`} />
                           </Stack>
                         </Grid>
                       </Grid>

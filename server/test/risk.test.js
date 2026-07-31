@@ -8,14 +8,23 @@ test('sem cobranças → sem histórico (score null)', () => {
   assert.equal(r.band, 'sem_historico');
 });
 
-test('bom pagador → risco baixo', () => {
+test('pagador impecável (score 0) → bom pagador', () => {
   const r = computeRiskScore({
     total_billings: 12, total_paid: 12, paid_late: 0, avg_days_late: 0,
     open_overdue_count: 0, max_open_days: 0, open_overdue_amount: 0,
   });
-  assert.equal(r.band, 'baixo');
-  assert.ok(r.score <= 33);
+  assert.equal(r.score, 0);
+  assert.equal(r.band, 'bom_pagador');
   assert.deepEqual(r.factors.map((f) => f.key), ['ok']);
+});
+
+test('risco baixo mas existente (1-33) → baixo', () => {
+  const r = computeRiskScore({
+    total_billings: 10, total_paid: 10, paid_late: 0, avg_days_late: 0,
+    open_overdue_count: 1, max_open_days: 5, open_overdue_amount: 100,
+  });
+  assert.ok(r.score >= 1 && r.score <= 33, `score=${r.score}`);
+  assert.equal(r.band, 'baixo');
 });
 
 test('inadimplente crônico → risco alto', () => {

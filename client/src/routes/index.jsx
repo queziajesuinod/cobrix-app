@@ -5,6 +5,7 @@ import AppShell from '@/layouts/AppShell'
 const AutoNotificationsPage = lazy(() => import('@/features/notifications/AutoNotificationsPage'))
 const MessageTemplatesPage = lazy(() => import('@/features/notifications/MessageTemplatesPage'))
 const EvoConnectionPage = lazy(() => import('@/features/integration/EvoConnectionPage'))
+const IntegrationsHubPage = lazy(() => import('@/features/integration/IntegrationsHubPage'))
 const CompanyCreatePage = lazy(() => import('@/features/companies/CompanyCreatePage'))
 const LoginPage = lazy(() => import('@/features/auth/LoginPage'))
 const DashboardPage = lazy(() => import('@/features/dashboard/DashboardPage'))
@@ -54,6 +55,7 @@ export default function AppRouter() {
         <Route path="/admin/users" element={<ProtectedRoute><AppShell><UsersPage /></AppShell></ProtectedRoute>} />
         <Route path="/finance" element={<ProtectedRoute><AppShell><FinancePage /></AppShell></ProtectedRoute>} />
         <Route path="/finance/dashboard" element={<ProtectedRoute><AppShell><FinanceDashboardPage /></AppShell></ProtectedRoute>} />
+        <Route path="/integrations" element={<ProtectedRoute><AppShell><IntegrationsHubPage /></AppShell></ProtectedRoute>} />
         <Route path="/integration/evo" element={<ProtectedRoute><AppShell><EvoConnectionPage /></AppShell></ProtectedRoute>} />
 
         <Route path="*" element={<Navigate to="/dashboard" replace />} />

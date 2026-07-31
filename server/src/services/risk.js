@@ -56,7 +56,9 @@ function computeRiskScore(metrics = {}) {
     WEIGHTS.openCount * s.openCount;
 
   const score = Math.round(clamp01(raw) * 100);
-  const band = bandForScore(score);
+  // Score 0 = risco nulo (sem atrasos e nada em aberto) → faixa própria "bom
+  // pagador", distinta de "baixo" (1-33, risco pequeno mas existente).
+  const band = score === 0 ? 'bom_pagador' : bandForScore(score);
 
   // Fatores explicáveis para exibir na UI ("por que este score?").
   const factors = [];

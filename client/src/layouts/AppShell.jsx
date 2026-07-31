@@ -24,6 +24,7 @@ import BusinessIcon from '@mui/icons-material/Business'
 import LogoutIcon from '@mui/icons-material/Logout'
 import AutorenewIcon from '@mui/icons-material/Autorenew'
 import QrCodeIcon from '@mui/icons-material/QrCode'
+import ExtensionIcon from '@mui/icons-material/Extension'
 import EditNoteIcon from '@mui/icons-material/EditNote'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import WarningAmberIcon from '@mui/icons-material/WarningAmber'
@@ -66,7 +67,7 @@ const buildSections = (role) => [
       { to: '/clients', label: 'Clientes', icon: <PeopleIcon />, perm: 'clients.view' },
       { to: '/contracts', label: 'Contratos', icon: <AssignmentIcon />, perm: 'contracts.view' },
       { to: '/contracts/types', label: 'Tipos de contrato', icon: <CategoryIcon />, perm: 'contractTypes.view' },
-      { to: '/integration/evo', label: 'Integração', icon: <QrCodeIcon />, perm: 'integration.view' },
+      { to: '/integrations', label: 'Integrações', icon: <ExtensionIcon />, perm: 'integration.view' },
     ],
   },
   {
@@ -81,7 +82,7 @@ const buildSections = (role) => [
       { to: '/notifications/auto', label: 'Automático', icon: <AutorenewIcon />, perm: 'notifications.auto.view' },
       { to: '/notifications/templates', label: 'Modelos', icon: <EditNoteIcon />, perm: 'notifications.templates.view' },
       { to: '/billings/paid', label: 'Contratos pagos', icon: <CheckCircleIcon />, perm: 'billings.paid.view' },
-      { to: '/reports/overdue-clients', label: 'Clientes em atraso', icon: <WarningAmberIcon />, perm: 'reports.overdue.view' },
+      { to: '/reports/overdue-clients', label: 'Inadimplentes', icon: <WarningAmberIcon />, perm: 'reports.overdue.view' },
     ],
   },
   {

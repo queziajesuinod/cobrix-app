@@ -642,6 +642,7 @@ router.get('/risk', requireAuth, companyScope(true), async (req, res) => {
       alto: data.filter((d) => d.band === 'alto').length,
       medio: data.filter((d) => d.band === 'medio').length,
       baixo: data.filter((d) => d.band === 'baixo').length,
+      bomPagador: data.filter((d) => d.band === 'bom_pagador').length,
       semHistorico: data.filter((d) => d.band === 'sem_historico').length,
       totalOpenOverdueAmount: data.reduce((s, d) => s + Number(d.open_overdue_amount || 0), 0),
     };

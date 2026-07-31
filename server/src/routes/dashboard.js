@@ -144,4 +144,146 @@ function computeFutureReceivables(contracts, cmsRows, today, horizon) {
   return buckets
 }
 
+// Vencimentos próximos: projeta o próximo vencimento de cada contrato ativo a
+// partir do `billing_day` (as cobranças só entram na tabela `billings` no dia do
+// vencimento, então não dá para lê-las com antecedência). Mesma lógica usada em
+// `computeFutureReceivables`/`findNextDueDate`. Janela: hoje até hoje+N dias
+// (padrão 7). Alimenta o widget "Vencem em breve" da tela inicial.
+router.get('/upcoming', requireAuth, companyScope(true), async (req, res) => {
+  const companyId = req.companyId
+  if (!companyId) return res.status(400).json({ error: 'Selecione uma empresa' })
+
+  const today = ensureDateOnly(new Date()) || new Date()
+  const todayIso = formatISODate(today)
+  let days = Number.parseInt(req.query.days, 10)
+  if (!Number.isInteger(days) || days < 1 || days > 60) days = 7
+  const horizon = addDays(today, days)
+  const horizonIso = formatISODate(horizon)
+
+  try {
+    // Contratos ativos cujo período sobrepõe a janela [hoje, horizonte].
+    const contractsResult = await query(
+      `SELECT c.id, c.client_id, c.description, c.value, c.billing_day,
+              c.start_date, c.end_date, c.cancellation_date,
+              cl.name AS client_name
+       FROM ${SCHEMA}.contracts c
+       JOIN ${SCHEMA}.clients cl ON cl.id = c.client_id
+       WHERE c.company_id = $1
+         AND c.active = true
+         AND DATE(c.start_date) <= DATE($3)
+         AND DATE(c.end_date) >= DATE($2)
+         AND (c.cancellation_date IS NULL OR DATE(c.cancellation_date) >= DATE($2))`,
+      [companyId, todayIso, horizonIso]
+    )
+    const contracts = contractsResult.rows
+
+    // Status por mês dos contratos, para excluir os já pagos/cancelados.
+    const cmsMap = new Map()
+    if (contracts.length) {
+      const ids = contracts.map((c) => c.id)
+      const cmsResult = await query(
+        `SELECT contract_id, year, month, status
+         FROM ${SCHEMA}.contract_month_status
+         WHERE company_id = $1 AND contract_id = ANY($2::int[])`,
+        [companyId, ids]
+      )
+      for (const row of cmsResult.rows) {
+        cmsMap.set(`${row.contract_id}:${row.year}:${row.month}`, String(row.status || '').toLowerCase())
+      }
+    }
+
+    const items = []
+    for (const c of contracts) {
+      const dueDate = findNextDueDate(c, today, horizon)
+      if (!dueDate) continue
+      const status = cmsMap.get(`${c.id}:${dueDate.getFullYear()}:${dueDate.getMonth() + 1}`)
+      if (status === 'paid' || status === 'canceled') continue
+      const daysUntil = Math.round((dueDate - today) / 86400000)
+      items.push({
+        contractId: c.id,
+        contractDescription: c.description,
+        clientId: c.client_id,
+        clientName: c.client_name,
+        dueDate: formatISODate(dueDate),
+        daysUntil,
+        amount: Number(c.value || 0),
+      })
+    }
+
+    items.sort((a, b) => (a.dueDate < b.dueDate ? -1 : a.dueDate > b.dueDate ? 1 : a.contractId - b.contractId))
+    const limited = items.slice(0, 50)
+
+    res.json({
+      days,
+      total: limited.length,
+      totalAmount: limited.reduce((s, i) => s + i.amount, 0),
+      items: limited,
+    })
+  } catch (err) {
+    console.error('[dashboard] upcoming failed', err)
+    res.status(500).json({ error: 'Falha ao carregar vencimentos', details: err.message })
+  }
+})
+
+// Top clientes em atraso: agrupa cobranças pendentes já vencidas por cliente,
+// ordenado pelo maior atraso. Alimenta o widget "Clientes em atraso" da inicial.
+router.get('/overdue-top', requireAuth, companyScope(true), async (req, res) => {
+  const companyId = req.companyId
+  if (!companyId) return res.status(400).json({ error: 'Selecione uma empresa' })
+
+  const today = ensureDateOnly(new Date()) || new Date()
+  const todayIso = formatISODate(today)
+  let limit = Number.parseInt(req.query.limit, 10)
+  if (!Number.isInteger(limit) || limit < 1 || limit > 20) limit = 5
+
+  try {
+    const result = await query(
+      `WITH overdue AS (
+         SELECT
+           cl.id AS client_id,
+           cl.name AS client_name,
+           COALESCE(b.amount, c.value, 0)::numeric(14,2) AS amount,
+           ($2::date - b.billing_date)::int AS days_late
+         FROM ${SCHEMA}.billings b
+         JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
+         JOIN ${SCHEMA}.clients cl ON cl.id = c.client_id
+         LEFT JOIN ${SCHEMA}.contract_month_status cms
+           ON cms.contract_id = b.contract_id
+           AND cms.year = EXTRACT(YEAR FROM b.billing_date)::int
+           AND cms.month = EXTRACT(MONTH FROM b.billing_date)::int
+         WHERE b.company_id = $1
+           AND LOWER(COALESCE(b.status, 'pending')) = 'pending'
+           -- Mesmo critério do relatório /reports/overdue-clients (minDaysOverdue=30):
+           -- inadimplente = cobrança pendente vencida há MAIS de 30 dias.
+           AND ($2::date - b.billing_date) > 30
+           AND LOWER(COALESCE(cms.status, 'pending')) NOT IN ('paid', 'canceled')
+       )
+       SELECT
+         client_id,
+         client_name,
+         COUNT(*)::int AS overdue_count,
+         COALESCE(SUM(amount), 0)::numeric(14,2) AS total_amount,
+         MAX(days_late)::int AS max_days_late
+       FROM overdue
+       GROUP BY client_id, client_name
+       ORDER BY max_days_late DESC, total_amount DESC
+       LIMIT $3`,
+      [companyId, todayIso, limit]
+    )
+
+    const items = result.rows.map((r) => ({
+      clientId: r.client_id,
+      clientName: r.client_name,
+      overdueCount: Number(r.overdue_count || 0),
+      totalAmount: Number(r.total_amount || 0),
+      maxDaysLate: Number(r.max_days_late || 0),
+    }))
+
+    res.json({ total: items.length, items })
+  } catch (err) {
+    console.error('[dashboard] overdue-top failed', err)
+    res.status(500).json({ error: 'Falha ao carregar clientes em atraso', details: err.message })
+  }
+})
+
 module.exports = router

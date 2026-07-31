@@ -31,7 +31,10 @@ const BANDS = [
   { key: 'alto', label: 'Alto', color: 'error' },
   { key: 'medio', label: 'Médio', color: 'warning' },
   { key: 'baixo', label: 'Baixo', color: 'success' },
+  { key: 'bom_pagador', label: 'Bons pagadores', color: 'success' },
 ]
+
+const PAGE_SIZE = 20
 
 // Cartão de KPI no padrão do app (Card outlined) + badge de ícone colorido.
 function StatTile({ label, value, icon, color }) {
@@ -196,12 +199,24 @@ export default function RiskPortfolioPage() {
       setToast({ severity: 'error', msg: err?.response?.data?.error || 'Falha ao enviar a cobrança.' }),
   })
 
+  const [visible, setVisible] = React.useState(PAGE_SIZE)
+
   const summary = data?.summary
-  const counts = { todos: summary?.totalClients ?? 0, alto: summary?.alto ?? 0, medio: summary?.medio ?? 0, baixo: summary?.baixo ?? 0 }
+  const counts = {
+    todos: summary?.totalClients ?? 0,
+    alto: summary?.alto ?? 0,
+    medio: summary?.medio ?? 0,
+    baixo: summary?.baixo ?? 0,
+    bom_pagador: summary?.bomPagador ?? 0,
+  }
   const rows = React.useMemo(() => {
     const list = data?.data || []
     return band === 'todos' ? list : list.filter((r) => r.band === band)
   }, [data, band])
+
+  // Ao trocar de faixa (ou recarregar), volta a mostrar só a primeira página.
+  React.useEffect(() => { setVisible(PAGE_SIZE) }, [band, data])
+  const visibleRows = rows.slice(0, visible)
 
   const handleCobrar = async (row) => {
     const ok = await confirm({
@@ -297,7 +312,7 @@ export default function RiskPortfolioPage() {
           </Box>
         )}
 
-        {!isLoading && rows.map((row, idx) => (
+        {!isLoading && visibleRows.map((row, idx) => (
           <React.Fragment key={row.client_id}>
             {idx > 0 && <Divider />}
             <RiskRow
@@ -311,6 +326,17 @@ export default function RiskPortfolioPage() {
             />
           </React.Fragment>
         ))}
+
+        {!isLoading && rows.length > visible && (
+          <>
+            <Divider />
+            <Box sx={{ p: 2, display: 'flex', justifyContent: 'center' }}>
+              <Button variant="outlined" onClick={() => setVisible((v) => v + PAGE_SIZE)}>
+                Ver mais ({visible} de {rows.length})
+              </Button>
+            </Box>
+          </>
+        )}
       </PapperBlock>
 
       <Snackbar

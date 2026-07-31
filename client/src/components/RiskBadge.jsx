@@ -6,6 +6,7 @@ const CFG = {
   alto: { color: 'error', label: 'Alto' },
   medio: { color: 'warning', label: 'Médio' },
   baixo: { color: 'success', label: 'Baixo' },
+  bom_pagador: { color: 'success', label: 'Bom pagador' },
   sem_historico: { color: 'grey', label: 'Sem histórico' },
 }
 
