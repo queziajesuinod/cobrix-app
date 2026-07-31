@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { deriveMonth, buildKpis, computeProjecao, computeInsights } = require('../src/services/finance-dashboard');
+const { deriveMonth, buildKpis, computeProjecao, computeInsights, computeHealthScore } = require('../src/services/finance-dashboard');
 
 // Linha-base de conveniência com zeros por padrão.
 const row = (o = {}) => ({
@@ -166,4 +166,34 @@ test('insights: meta anual — atingida, em risco e no caminho', () => {
   assert.ok(codigos(computeInsights({ meta_honorarios: 100000, realizado_honorarios: 100000, projecao_honorarios: 120000 })).includes('meta_ok'));
   assert.ok(codigos(computeInsights({ meta_honorarios: 100000, realizado_honorarios: 40000, projecao_honorarios: 80000 })).includes('meta_risco'));
   assert.ok(codigos(computeInsights({ meta_honorarios: 100000, realizado_honorarios: 40000, projecao_honorarios: 95000 })).includes('meta_no_caminho'));
+});
+
+// ---------------------------------------------------------------------------
+// Score de saúde financeira.
+// ---------------------------------------------------------------------------
+test('saúde: negócio excelente => score alto, banda excelente', () => {
+  const r = computeHealthScore({ margem: 0.45, inadimplencia: 0.02, crescimento: 0.25, concentracao: 0.15, estrutura_custo: 0.25 });
+  assert.ok(r.score >= 90, `score=${r.score}`);
+  assert.equal(r.band, 'excelente');
+});
+
+test('saúde: negócio crítico => score baixo, banda crítica', () => {
+  const r = computeHealthScore({ margem: -0.10, inadimplencia: 0.45, crescimento: -0.30, concentracao: 0.70, estrutura_custo: 0.75 });
+  assert.ok(r.score <= 15, `score=${r.score}`);
+  assert.equal(r.band, 'critico');
+});
+
+test('saúde: dimensões ausentes são descartadas e pesos renormalizados', () => {
+  // Só margem e inadimplência disponíveis, ambas máximas → score 100.
+  const r = computeHealthScore({ margem: 0.40, inadimplencia: 0 });
+  assert.equal(r.score, 100);
+  assert.equal(r.fatores.length, 2);
+  assert.equal(computeHealthScore({}).score, null);
+  assert.equal(computeHealthScore({}).band, 'sem_dados');
+});
+
+test('saúde: fatores vêm ordenados do pior para o melhor', () => {
+  const r = computeHealthScore({ margem: 0.40, inadimplencia: 0.40 }); // margem ótima (100), inadimplência péssima (0)
+  assert.equal(r.fatores[0].key, 'inadimplencia');
+  assert.ok(r.fatores[0].subscore < r.fatores[1].subscore);
 });

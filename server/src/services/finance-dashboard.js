@@ -192,4 +192,44 @@ function computeInsights(ctx = {}) {
   return out
 }
 
-module.exports = { r2, r4, deriveMonth, computeVariacao, buildKpis, evolucaoPonto, computeProjecao, computeInsights };
+// ---------------------------------------------------------------------------
+// Score de saúde financeira (0–100): índice ponderado de 5 dimensões, cada uma
+// mapeada para 0–100 por faixas (pior→melhor). Dimensões sem dado são descartadas
+// e os pesos renormalizados. Função pura (testável).
+// ---------------------------------------------------------------------------
+// worst→best: quando worst > best, a dimensão é "invertida" (menor é melhor).
+function _sub(value, worst, best) {
+  if (value == null || Number.isNaN(Number(value))) return null;
+  const t = (Number(value) - worst) / (best - worst);
+  return Math.max(0, Math.min(100, Math.round(t * 100)));
+}
+
+const HEALTH_DIMS = [
+  { key: 'margem', label: 'Rentabilidade (margem operacional)', peso: 0.30, worst: 0, best: 0.40 },
+  { key: 'inadimplencia', label: 'Inadimplência', peso: 0.25, worst: 0.40, best: 0 },
+  { key: 'crescimento', label: 'Crescimento de receita', peso: 0.20, worst: -0.20, best: 0.20 },
+  { key: 'concentracao', label: 'Concentração de clientes', peso: 0.15, worst: 0.60, best: 0.20 },
+  { key: 'estrutura_custo', label: 'Peso do custo fixo', peso: 0.10, worst: 0.70, best: 0.30 },
+];
+
+function computeHealthScore(m = {}) {
+  const fatores = [];
+  let somaPeso = 0, somaPond = 0;
+  for (const d of HEALTH_DIMS) {
+    const subscore = _sub(m[d.key], d.worst, d.best);
+    if (subscore == null) continue;
+    somaPeso += d.peso;
+    somaPond += subscore * d.peso;
+    fatores.push({ key: d.key, label: d.label, subscore, peso: d.peso, valor: m[d.key] == null ? null : Number(m[d.key]) });
+  }
+  const score = somaPeso > 0 ? Math.round(somaPond / somaPeso) : null;
+  const band = score == null ? 'sem_dados'
+    : score < 40 ? 'critico'
+    : score < 60 ? 'atencao'
+    : score < 80 ? 'saudavel'
+    : 'excelente';
+  fatores.sort((a, b) => a.subscore - b.subscore); // pior primeiro (o que puxa o score pra baixo)
+  return { score, band, fatores };
+}
+
+module.exports = { r2, r4, deriveMonth, computeVariacao, buildKpis, evolucaoPonto, computeProjecao, computeInsights, computeHealthScore };

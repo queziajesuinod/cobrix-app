@@ -2,13 +2,16 @@ import React from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Alert, AlertTitle, Box, Button, Card, CardContent, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
-  Divider, Grid, LinearProgress, MenuItem, Stack, Table, TableBody,
+  Divider, Grid, LinearProgress, MenuItem, Slider, Stack, Table, TableBody,
   TableCell, TableHead, TableRow, TextField, Tooltip, Typography, Skeleton,
 } from '@mui/material'
+import { Gauge, gaugeClasses } from '@mui/x-charts/Gauge'
 import EditIcon from '@mui/icons-material/Edit'
 import FlagIcon from '@mui/icons-material/Flag'
 import PieChartIcon from '@mui/icons-material/PieChart'
 import LightbulbIcon from '@mui/icons-material/Lightbulb'
+import SpeedIcon from '@mui/icons-material/Speed'
+import TuneIcon from '@mui/icons-material/Tune'
 import { alpha } from '@mui/material/styles'
 import { BarChart } from '@mui/x-charts/BarChart'
 import { PieChart } from '@mui/x-charts/PieChart'
@@ -161,6 +164,135 @@ function AgingBar({ aging }) {
   )
 }
 
+// ---- Score de saúde financeira: gauge + fatores ----
+const BAND = {
+  excelente: { label: 'Excelente', color: '#10b981' },
+  saudavel: { label: 'Saudável', color: '#3b82f6' },
+  atencao: { label: 'Atenção', color: '#f59e0b' },
+  critico: { label: 'Crítico', color: '#ef4444' },
+  sem_dados: { label: 'Sem dados', color: '#94a3b8' },
+}
+const FATOR_FMT = {
+  margem: (v) => fmtPct(v),
+  inadimplencia: (v) => fmtPct(v),
+  crescimento: (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${pctFmt.format(v)}`),
+  concentracao: (v) => (v == null ? '—' : `maior cliente = ${pctFmt.format(v)}`),
+  estrutura_custo: (v) => (v == null ? '—' : `${pctFmt.format(v)} da receita`),
+}
+function SaudeBlock({ data }) {
+  if (!data) return <Skeleton variant="rounded" height={200} />
+  const band = BAND[data.band] || BAND.sem_dados
+  return (
+    <Grid container spacing={2} alignItems="center">
+      <Grid item xs={12} sm={4} md={3}>
+        <Box sx={{ display: 'grid', placeItems: 'center' }}>
+          <Gauge
+            height={170} value={data.score ?? 0} valueMin={0} valueMax={100}
+            startAngle={-110} endAngle={110} cornerRadius="50%"
+            text={() => (data.score == null ? '—' : `${data.score}`)}
+            sx={{ [`& .${gaugeClasses.valueText}`]: { fontSize: 34, fontWeight: 800 }, [`& .${gaugeClasses.valueArc}`]: { fill: band.color } }}
+          />
+          <Chip label={band.label} sx={{ mt: -1, fontWeight: 700, bgcolor: alpha(band.color, 0.15), color: band.color }} />
+        </Box>
+      </Grid>
+      <Grid item xs={12} sm={8} md={9}>
+        <Typography variant="subtitle2" color="text.secondary" gutterBottom>O que pesa no score (do pior ao melhor)</Typography>
+        <Stack spacing={1}>
+          {data.fatores.map((f) => {
+            const c = f.subscore < 40 ? '#ef4444' : f.subscore < 60 ? '#f59e0b' : f.subscore < 80 ? '#3b82f6' : '#10b981'
+            return (
+              <Box key={f.key}>
+                <Stack direction="row" justifyContent="space-between" alignItems="baseline">
+                  <Typography variant="body2" sx={{ fontWeight: 600 }}>{f.label}</Typography>
+                  <Typography variant="caption" color="text.secondary">{(FATOR_FMT[f.key] || ((v) => v))(f.valor)} · {f.subscore}/100</Typography>
+                </Stack>
+                <LinearProgress variant="determinate" value={f.subscore} sx={{ height: 7, borderRadius: 5, mt: 0.25, '& .MuiLinearProgress-bar': { bgcolor: c } }} />
+              </Box>
+            )
+          })}
+          {data.fatores.length === 0 && <Alert severity="info">Sem dados suficientes para calcular o score.</Alert>}
+        </Stack>
+      </Grid>
+    </Grid>
+  )
+}
+
+// ---- Simulador de cenários "e se" ----
+function SimSlider({ label, value, onChange, min, max, suffix = '%', color }) {
+  return (
+    <Box>
+      <Stack direction="row" justifyContent="space-between">
+        <Typography variant="body2" sx={{ fontWeight: 600 }}>{label}</Typography>
+        <Typography variant="body2" sx={{ fontWeight: 700, color: color || 'text.primary' }}>{value > 0 && suffix === '%' ? '+' : ''}{value}{suffix}</Typography>
+      </Stack>
+      <Slider value={value} onChange={(_e, v) => onChange(v)} min={min} max={max} size="small" sx={{ color }} />
+    </Box>
+  )
+}
+function SimuladorBlock({ baseReceita, baseFixa, baseVar, vencido }) {
+  const [dRec, setDRec] = React.useState(0)
+  const [dFix, setDFix] = React.useState(0)
+  const [dVar, setDVar] = React.useState(0)
+  const [rec, setRec] = React.useState(0)
+  const reset = () => { setDRec(0); setDFix(0); setDVar(0); setRec(0) }
+
+  if (!baseReceita) return <Alert severity="info">Sem base para simular ainda — é preciso ter meses fechados com lançamento no ano.</Alert>
+
+  const receita = baseReceita * (1 + dRec / 100) + vencido * (rec / 100)
+  const fixa = baseFixa * (1 + dFix / 100)
+  const variavel = baseVar * (1 + dVar / 100)
+  const desp = fixa + variavel
+  const lucro = receita - desp
+  const margem = receita ? lucro / receita : null
+  const baseLucro = baseReceita - (baseFixa + baseVar)
+  const baseMargem = baseReceita ? baseLucro / baseReceita : null
+  const deltaLucro = lucro - baseLucro
+  const deltaMargem = (margem != null && baseMargem != null) ? (margem - baseMargem) * 100 : null
+
+  const Comp = ({ label, base, sim, money = true }) => (
+    <Stack direction="row" justifyContent="space-between" sx={{ py: 0.5 }}>
+      <Typography variant="body2">{label}</Typography>
+      <Typography variant="body2" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+        <Box component="span" sx={{ color: 'text.disabled', mr: 1 }}>{money ? fmtMoney(base) : fmtPct(base)}</Box>
+        →<Box component="span" sx={{ fontWeight: 700, ml: 1 }}>{money ? fmtMoney(sim) : fmtPct(sim)}</Box>
+      </Typography>
+    </Stack>
+  )
+
+  return (
+    <Grid container spacing={3}>
+      <Grid item xs={12} md={6}>
+        <Stack spacing={2}>
+          <SimSlider label="Receita (honorários)" value={dRec} onChange={setDRec} min={-30} max={50} color="#10b981" />
+          <SimSlider label="Despesa fixa" value={dFix} onChange={setDFix} min={-40} max={40} color="#ef4444" />
+          <SimSlider label="Despesa variável" value={dVar} onChange={setDVar} min={-40} max={40} color="#f59e0b" />
+          <SimSlider label="Recuperar da carteira vencida" value={rec} onChange={setRec} min={0} max={100} color="#3b82f6" />
+          <Button size="small" onClick={reset} sx={{ alignSelf: 'flex-start' }}>Zerar cenário</Button>
+        </Stack>
+      </Grid>
+      <Grid item xs={12} md={6}>
+        <Card variant="outlined" sx={{ borderRadius: 3 }}>
+          <CardContent>
+            <Comp label="Receita" base={baseReceita} sim={receita} />
+            <Comp label="Despesas" base={baseFixa + baseVar} sim={desp} />
+            <Divider sx={{ my: 0.5 }} />
+            <Comp label="Lucro" base={baseLucro} sim={lucro} />
+            <Comp label="Margem" base={baseMargem} sim={margem} money={false} />
+            <Divider sx={{ my: 1 }} />
+            <Stack direction="row" justifyContent="space-between" alignItems="center">
+              <Typography variant="body2" color="text.secondary">Impacto no lucro</Typography>
+              <Chip color={deltaLucro >= 0 ? 'success' : 'error'} label={`${deltaLucro >= 0 ? '+' : ''}${fmtMoney(deltaLucro)}${deltaMargem != null ? ` · ${num2.format(deltaMargem)} p.p.` : ''}`} sx={{ fontWeight: 700 }} />
+            </Stack>
+          </CardContent>
+        </Card>
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+          Base = projeção anual (média dos meses fechados × 12). Recuperação da carteira vencida entra como receita única.
+        </Typography>
+      </Grid>
+    </Grid>
+  )
+}
+
 // Barra de progresso orçado × realizado, com marcador de projeção.
 function MetaProgress({ label, realizado, meta, projecao, invertido = false }) {
   const pctReal = meta ? Math.min((realizado / meta) * 100, 100) : 0
@@ -236,6 +368,7 @@ export default function FinanceDashboardPage() {
   const tipoQ = useQuery({ queryKey: ['fin-dash-tipo', ano, mes], queryFn: () => financeService.dashboardReceitaTipoContrato({ ano, mes }), enabled: on, placeholderData: (p) => p })
   const metasQ = useQuery({ queryKey: ['fin-dash-metas', ano], queryFn: () => financeService.dashboardMetas({ ano }), enabled: on, placeholderData: (p) => p })
   const metaEditQ = useQuery({ queryKey: ['fin-metas-edit', ano], queryFn: () => financeService.getMetas(ano), enabled: on })
+  const saudeQ = useQuery({ queryKey: ['fin-dash-saude', ano], queryFn: () => financeService.dashboardSaude({ ano }), enabled: on, placeholderData: (p) => p })
   const canManageMetas = can('finance.metas.manage')
   const [metasOpen, setMetasOpen] = React.useState(false)
   const qc = useQueryClient()
@@ -264,6 +397,14 @@ export default function FinanceDashboardPage() {
   const evo = evoQ.data?.pontos || []
   // Meses sem lançamento entram como null → o gráfico interrompe a barra (não plota zero).
   const serie = (get) => evo.map((p) => (p.tem_lancamento ? get(p) : null))
+
+  // Base do simulador: projeção anual + proporção fixa/variável do realizado.
+  const evoR = evo.filter((p) => p.tem_lancamento)
+  const sumFix = evoR.reduce((a, p) => a + p.despesas_fixas, 0)
+  const sumVar = evoR.reduce((a, p) => a + p.despesas_variaveis, 0)
+  const propFixa = sumFix + sumVar > 0 ? sumFix / (sumFix + sumVar) : 0.5
+  const baseReceita = projQ.data?.projecao.honorarios || 0
+  const baseDesp = projQ.data?.projecao.total_despesas || 0
 
   const controls = (
     <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1 }}>
@@ -308,6 +449,10 @@ export default function FinanceDashboardPage() {
           ))}
         </Grid>
       )}
+
+      <PapperBlock title="Saúde financeira" subtitle={`${ano} · índice 0–100 do negócio`} icon={<SpeedIcon />} iconColor="linear-gradient(135deg,#3b82f6,#8b5cf6)">
+        {saudeQ.isError ? <Alert severity="error">Não foi possível calcular o score.</Alert> : <SaudeBlock data={saudeQ.data} />}
+      </PapperBlock>
 
       {kpisQ.isError && <Alert severity="error">Não foi possível carregar os indicadores.</Alert>}
 
@@ -542,6 +687,10 @@ export default function FinanceDashboardPage() {
 
       <PapperBlock title="Projeção anual" subtitle="Estimativa a partir dos meses fechados (previsto não entra)" icon={<QueryStatsIcon />} iconColor="linear-gradient(135deg,#8b5cf6,#a78bfa)">
         {projQ.isError ? <Alert severity="error">Não foi possível carregar a projeção.</Alert> : <ProjecaoBlock p={projQ.data} />}
+      </PapperBlock>
+
+      <PapperBlock title="Simulador de cenários" subtitle="Ajuste as variáveis e veja o impacto no lucro anual" icon={<TuneIcon />} iconColor="linear-gradient(135deg,#0ea5e9,#22d3ee)">
+        <SimuladorBlock baseReceita={baseReceita} baseFixa={baseDesp * propFixa} baseVar={baseDesp * (1 - propFixa)} vencido={inadQ.data?.aging.total || 0} />
       </PapperBlock>
 
       <MetasDialog ano={ano} open={metasOpen} onClose={() => setMetasOpen(false)} initial={metaEditQ.data} onSaved={onMetasSaved} />

@@ -128,6 +128,26 @@ export const insightsSchema = z.object({
   })),
 })
 
+export const saudeSchema = z.object({
+  ano: z.number(),
+  score: z.number().nullable(),
+  band: z.enum(['sem_dados', 'critico', 'atencao', 'saudavel', 'excelente']),
+  fatores: z.array(z.object({
+    key: z.string(),
+    label: z.string(),
+    subscore: z.number(),
+    peso: z.number(),
+    valor: z.number().nullable(),
+  })),
+  metrics: z.object({
+    margem: Percentual,
+    inadimplencia: Percentual,
+    crescimento: Percentual,
+    concentracao: Percentual,
+    estrutura_custo: Percentual,
+  }),
+})
+
 export const inadimplenciaSchema = z.object({
   ano: z.number(),
   meses: z.array(

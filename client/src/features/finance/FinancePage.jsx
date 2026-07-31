@@ -753,7 +753,8 @@ export default function FinancePage() {
   const canRevManage = can('finance.revenues.manage')
   const canExpView = can('finance.expenses.view')
   const canExpManage = can('finance.expenses.manage')
-  const canView = canRevView || canExpView
+  const canResumoView = can('finance.resumo.view')
+  const canView = canRevView || canExpView || canResumoView
   const enabled = Number.isInteger(selectedCompanyId)
   const [tab, setTab] = React.useState(0)
   const [toast, setToast] = React.useState(null)
@@ -768,7 +769,7 @@ export default function FinancePage() {
   const summaryQ = useQuery({
     queryKey: ['finance-summary', range.from, range.to],
     queryFn: () => financeService.summary(range),
-    enabled: enabled && canView,
+    enabled: enabled && (canRevView || canExpView),
   })
 
   if (!canView) {
@@ -795,7 +796,7 @@ export default function FinancePage() {
   if (canRevView) tabDefs.push({ key: 'rev', label: 'Receitas', render: () => <RevenuesTab notify={notify} range={range} canManage={canRevManage} /> })
   if (canExpView) tabDefs.push({ key: 'exp', label: 'Despesas', render: () => <ExpensesTab notify={notify} range={range} canManage={canExpManage} /> })
   if (canRevView) tabDefs.push({ key: 'paid', label: 'Contratos pagos', render: () => <PaidContractsTab notify={notify} range={range} canManage={canRevManage} /> })
-  if (canRevView && canExpView) tabDefs.push({ key: 'resumo', label: 'Resumo', render: () => <ResumoTab /> })
+  if (canResumoView) tabDefs.push({ key: 'resumo', label: 'Resumo', render: () => <ResumoTab /> })
   const activeTab = Math.min(tab, Math.max(tabDefs.length - 1, 0))
   const years = Array.from({ length: 5 }, (_, i) => nowYear - i)
   const periodControl = (

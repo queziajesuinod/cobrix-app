@@ -1,5 +1,5 @@
 import { api } from '@/lib/api-client'
-import { kpisSchema, despesasCategoriaSchema, evolucaoSchema, projecaoSchema, inadimplenciaSchema, receitaTipoContratoSchema, metaSchema, metasDashboardSchema, insightsSchema } from './dashboard.types'
+import { kpisSchema, despesasCategoriaSchema, evolucaoSchema, projecaoSchema, inadimplenciaSchema, receitaTipoContratoSchema, metaSchema, metasDashboardSchema, insightsSchema, saudeSchema } from './dashboard.types'
 
 export const financeService = {
   revenues: async (params = {}) => (await api.get('/finance/revenues', { params })).data,
@@ -22,6 +22,7 @@ export const financeService = {
   dashboardReceitaTipoContrato: async (params = {}) => receitaTipoContratoSchema.parse((await api.get('/finance/dashboard/receita-tipo-contrato', { params })).data),
   dashboardMetas: async (params = {}) => metasDashboardSchema.parse((await api.get('/finance/dashboard/metas', { params })).data),
   dashboardInsights: async (params = {}) => insightsSchema.parse((await api.get('/finance/dashboard/insights', { params })).data),
+  dashboardSaude: async (params = {}) => saudeSchema.parse((await api.get('/finance/dashboard/saude', { params })).data),
   // Metas (orçado anual)
   getMetas: async (ano) => metaSchema.parse((await api.get('/finance/metas', { params: { ano } })).data),
   saveMetas: async (ano, payload) => (await api.put(`/finance/metas/${ano}`, payload)).data,

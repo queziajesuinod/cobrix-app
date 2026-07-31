@@ -4,7 +4,7 @@ const { requireAuth, companyScope } = require('./auth');
 const { requirePermission, requireAnyPermission, getEffectivePermissions } = require('../services/permissions');
 const { respondError } = require('../utils/http-error');
 const { ensureDateOnly, formatISODate } = require('../utils/date-only');
-const { r2, r4, buildKpis, evolucaoPonto, computeProjecao, computeInsights } = require('../services/finance-dashboard');
+const { r2, r4, buildKpis, evolucaoPonto, computeProjecao, computeInsights, computeHealthScore } = require('../services/finance-dashboard');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 const router = express.Router();
@@ -438,10 +438,10 @@ function parseYm(value, name) {
 // honorários (receitas manuais + contratos pagos), contratos ativos (snapshot no
 // fim do mês), despesas fixas e variáveis. As métricas derivadas (honorário médio,
 // lucro, margem, AV%) e as colunas transversais (Total/Média/Projeção) são
-// calculadas no cliente a partir destes valores-base. Exige ver receitas E
-// despesas (é um DRE — mistura as duas áreas em lucro/margem).
+// calculadas no cliente a partir destes valores-base. O Resumo é um DRE
+// consolidado com permissão própria.
 router.get('/summary/annual', requireAuth, companyScope(true),
-  requirePermission('finance.revenues.view'), requirePermission('finance.expenses.view'),
+  requirePermission('finance.resumo.view'),
   async (req, res) => {
     try {
       // Garante que as ocorrências das despesas recorrentes já existam até hoje.
@@ -891,6 +891,77 @@ router.get('/dashboard/insights', ...dashGuard, async (req, res) => {
       projecao_honorarios: projHon,
     });
     res.json({ competencia: ymOf(ano, mes), itens });
+  } catch (e) { respondError(res, e); }
+});
+
+// GET /dashboard/saude?ano= — score de saúde financeira (0–100) e seus fatores.
+router.get('/dashboard/saude', ...dashGuard, async (req, res) => {
+  try {
+    const ano = parseAno(req.query.ano);
+    const from = isoFirst(ano, 1);
+    const toEnd = isoFirst(ano + 1, 1);
+    const yearRows = await monthlyFinanceBase(req.companyId, from, isoFirst(ano, 12));
+
+    const realizados = yearRows.filter((m) => m.nRealizado > 0);
+    const honYTD = realizados.reduce((a, m) => a + m.revManual + m.conPaid, 0);
+    const despFixaYTD = realizados.reduce((a, m) => a + m.despesasFixas, 0);
+    const despVarYTD = realizados.reduce((a, m) => a + m.despesasVariaveis, 0);
+    const lucroYTD = honYTD - (despFixaYTD + despVarYTD);
+    const margem = honYTD ? lucroYTD / honYTD : null;
+    const estrutura_custo = honYTD ? despFixaYTD / honYTD : null;
+
+    // Crescimento: metade recente vs. metade anterior dos meses fechados com lançamento.
+    const closed = yearRows.filter((m) => m.closed && m.nRealizado > 0);
+    let crescimento = null;
+    if (closed.length >= 2) {
+      const half = Math.floor(closed.length / 2);
+      const first = closed.slice(0, half);
+      const second = closed.slice(closed.length - half);
+      const avg = (arr) => arr.reduce((a, m) => a + m.revManual + m.conPaid, 0) / arr.length;
+      const a0 = avg(first);
+      if (a0 > 0) crescimento = (avg(second) - a0) / a0;
+    }
+
+    // Inadimplência: carteira vencida em aberto hoje ÷ receita realizada no ano.
+    const HOJE = `(now() AT TIME ZONE '${TZ}')::date`;
+    const ag = await query(
+      `SELECT COALESCE(SUM(amount),0) total FROM ${SCHEMA}.billings
+        WHERE company_id = $1 AND LOWER(status) NOT IN ('paid','canceled') AND billing_date < ${HOJE}`,
+      [req.companyId]
+    );
+    const vencido = Number(ag.rows[0].total || 0);
+    const inadimplencia = honYTD ? vencido / honYTD : null;
+
+    // Concentração: participação do maior cliente na receita do ano.
+    const conc = await query(
+      `WITH rc AS (
+         SELECT cid, SUM(v) AS total FROM (
+           SELECT c.client_id AS cid, b.amount AS v
+             FROM ${SCHEMA}.billings b JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
+            WHERE b.company_id = $1 AND LOWER(b.status) = 'paid'
+              AND COALESCE(b.gateway_paid_at::date, b.billing_date) >= $2::date
+              AND COALESCE(b.gateway_paid_at::date, b.billing_date) <  $3::date
+           UNION ALL
+           SELECT fr.client_id AS cid, fr.amount AS v
+             FROM ${SCHEMA}.finance_revenues fr
+            WHERE fr.company_id = $1 AND fr.client_id IS NOT NULL
+              AND fr.received_at >= $2::date AND fr.received_at < $3::date
+         ) x WHERE cid IS NOT NULL GROUP BY cid
+       )
+       SELECT COALESCE(MAX(total),0) AS maior, COALESCE(SUM(total),0) AS total FROM rc`,
+      [req.companyId, from, toEnd]
+    );
+    const totalCli = Number(conc.rows[0].total || 0);
+    const concentracao = totalCli ? Number(conc.rows[0].maior || 0) / totalCli : null;
+
+    const metrics = {
+      margem: margem == null ? null : r4(margem),
+      inadimplencia: inadimplencia == null ? null : r4(inadimplencia),
+      crescimento: crescimento == null ? null : r4(crescimento),
+      concentracao: concentracao == null ? null : r4(concentracao),
+      estrutura_custo: estrutura_custo == null ? null : r4(estrutura_custo),
+    };
+    res.json({ ano, ...computeHealthScore(metrics), metrics });
   } catch (e) { respondError(res, e); }
 });
 
