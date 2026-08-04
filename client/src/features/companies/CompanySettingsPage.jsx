@@ -3,6 +3,8 @@ import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Box, Tabs, Tab, Card, CardContent, Snackbar, Alert, Stack, Typography, Button } from '@mui/material'
 import { companyService } from './company.service'
+import { plansService } from '@/features/admin/plans.service'
+import { useAuth } from '@/features/auth/AuthContext'
 import CompanyDataForm from './CompanyDataForm'
 import CompanyUsersPanel from './CompanyUsersPanel'
 import { companyIntegrationService } from './company.integration.service'
@@ -17,10 +19,13 @@ export default function CompanySettingsPage(){
   const { id } = useParams()
   const navigate = useNavigate()
   const qc = useQueryClient()
+  const { user } = useAuth()
+  const isMaster = user?.role === 'master'
   const [tab, setTab] = React.useState(0)
   const [toast, setToast] = React.useState(null)
 
   const qCompany = useQuery({ queryKey: ['company', id], queryFn: ()=>companyService.get(id), enabled: !!id })
+  const qPlans = useQuery({ queryKey: ['plans'], queryFn: plansService.list, enabled: isMaster })
   const mUpdate = useMutation({ mutationFn: (payload)=>companyService.update(id, payload), onSuccess: ()=>{ qc.invalidateQueries({queryKey:['company', id]}); setToast({severity:'success', msg:'Empresa atualizada.'}) } })
 
   // EVO integration status
@@ -44,6 +49,7 @@ export default function CompanySettingsPage(){
             defaultValues={qCompany.data}
             submitting={mUpdate.isPending}
             onSubmit={(payload)=>mUpdate.mutate(payload)}
+            plans={isMaster ? (qPlans.data?.plans || []) : undefined}
           />
         </PapperBlock>
       )}

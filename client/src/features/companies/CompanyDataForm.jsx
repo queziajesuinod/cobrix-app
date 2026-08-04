@@ -1,10 +1,15 @@
 ﻿import React from 'react'
-import { Stack, TextField, Button, Typography } from '@mui/material'
+import { Stack, TextField, Button, Typography, MenuItem, FormControlLabel, Switch } from '@mui/material'
 
-export default function CompanyDataForm({ defaultValues, onSubmit, submitting }){
+export default function CompanyDataForm({ defaultValues, onSubmit, submitting, plans }){
   const formatLimit = (value) => (value === undefined || value === null ? '' : String(value))
+  const showPlan = Array.isArray(plans)
   const [name, setName] = React.useState(defaultValues?.name || '')
   const [pix, setPix] = React.useState(defaultValues?.pix_key || '')
+  const [planId, setPlanId] = React.useState(defaultValues?.plan_id == null ? '' : String(defaultValues.plan_id))
+  React.useEffect(()=>{ setPlanId(defaultValues?.plan_id == null ? '' : String(defaultValues.plan_id)) }, [defaultValues?.plan_id])
+  const [isOwner, setIsOwner] = React.useState(Boolean(defaultValues?.is_saas_owner))
+  React.useEffect(()=>{ setIsOwner(Boolean(defaultValues?.is_saas_owner)) }, [defaultValues?.is_saas_owner])
   const [gatewayClientId, setGatewayClientId] = React.useState(defaultValues?.gateway_client_id || '')
   const [gatewayClientSecret, setGatewayClientSecret] = React.useState('')
   const [gatewayCert, setGatewayCert] = React.useState({ value: null, name: '' })
@@ -60,6 +65,10 @@ export default function CompanyDataForm({ defaultValues, onSubmit, submitting })
     if (gatewayCert.value !== null) {
       payload.gateway_cert_base64 = gatewayCert.value || null
     }
+    if (showPlan) {
+      payload.plan_id = planId === '' ? null : Number(planId)
+      payload.is_saas_owner = isOwner
+    }
     onSubmit?.(payload)
   }
   const certLabel = gatewayCert.name || (hasExistingCert && gatewayCert.value === null ? 'Certificado já enviado' : 'Nenhum arquivo selecionado')
@@ -67,6 +76,33 @@ export default function CompanyDataForm({ defaultValues, onSubmit, submitting })
     <form onSubmit={handleSubmit}>
       <Stack spacing={2}>
         <TextField label="Nome da empresa" value={name} onChange={(e)=>setName(e.target.value)} fullWidth />
+        {showPlan && (
+          <TextField
+            select
+            label="Plano"
+            value={planId}
+            onChange={(e)=>setPlanId(e.target.value)}
+            fullWidth
+            helperText="Define o teto de acesso da empresa. Sem plano = acesso total."
+          >
+            <MenuItem value=""><em>Sem plano (acesso total)</em></MenuItem>
+            {plans.map((p) => (
+              <MenuItem key={p.id} value={String(p.id)} disabled={p.active === false}>
+                {p.name}{p.active === false ? ' (inativo)' : ''}
+              </MenuItem>
+            ))}
+          </TextField>
+        )}
+        {showPlan && (
+          <FormControlLabel
+            control={<Switch checked={isOwner} onChange={(e)=>setIsOwner(e.target.checked)} />}
+            label={
+              <span>
+                Esta é a <strong>minha empresa</strong> (recebe as assinaturas dos planos)
+              </span>
+            }
+          />
+        )}
         <TextField label="Chave PIX" value={pix} onChange={(e)=>setPix(e.target.value)} fullWidth placeholder="Informe a chave PIX usada nas cobranças" />
         <Stack spacing={1}>
           <Typography variant="subtitle2" color="text.secondary">Gateway de pagamento (Pix)</Typography>

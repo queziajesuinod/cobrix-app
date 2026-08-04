@@ -9,6 +9,10 @@ export const reportsService = {
     (await api.post(`/reports/overdue-clients/client/${clientId}/mark-paid`, payload)).data,
   markOverdueBillingPaid: async (billingId) =>
     (await api.post(`/reports/overdue-clients/billing/${billingId}/mark-paid`)).data,
+  waiveOverdueBillings: async (billingIds) =>
+    (await api.post('/reports/overdue-clients/waive', { billingIds })).data,
+  settleOverdueBillings: async ({ billingIds, amount, paidAt, label }) =>
+    (await api.post('/reports/overdue-clients/settle', { billingIds, amount, paid_at: paidAt, label })).data,
 };
 
 export default reportsService;

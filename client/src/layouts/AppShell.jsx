@@ -25,6 +25,7 @@ import LogoutIcon from '@mui/icons-material/Logout'
 import AutorenewIcon from '@mui/icons-material/Autorenew'
 import QrCodeIcon from '@mui/icons-material/QrCode'
 import ExtensionIcon from '@mui/icons-material/Extension'
+import LayersIcon from '@mui/icons-material/Layers'
 import EditNoteIcon from '@mui/icons-material/EditNote'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import WarningAmberIcon from '@mui/icons-material/WarningAmber'
@@ -109,6 +110,7 @@ const buildSections = (role) => [
         label: 'Admin',
         items: [
           { to: '/companies', label: 'Empresas', icon: <BusinessIcon /> },
+          { to: '/admin/plans', label: 'Planos', icon: <LayersIcon /> },
           { to: '/admin/permissions', label: 'Perfis e permissões', icon: <AdminPanelSettingsIcon /> },
           { to: '/system/health', label: 'Saúde do sistema', icon: <MonitorHeartIcon /> },
         ],

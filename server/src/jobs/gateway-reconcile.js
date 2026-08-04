@@ -104,6 +104,31 @@ async function markLinkAsPaid(link, detail) {
   return { link: mergedLink, billing: billingResult };
 }
 
+// SaaS: se o contrato pago é o de uma assinatura pendente, ativa a empresa-cliente
+// (libera o acesso). Idempotente e defensivo — nunca quebra a confirmação de
+// pagamento se a tabela/assinatura não existir.
+async function activateSubscriptionForContract(contractId) {
+  if (!contractId) return;
+  try {
+    const sub = await query(
+      `UPDATE ${SCHEMA}.company_subscriptions
+          SET status='active', activated_at=COALESCE(activated_at, NOW())
+        WHERE contract_id=$1 AND status='pending_payment'
+        RETURNING company_id`,
+      [contractId]
+    );
+    const row = sub.rows[0];
+    if (!row) return;
+    await query(
+      `UPDATE ${SCHEMA}.companies SET status='active' WHERE id=$1 AND status='pending_payment'`,
+      [row.company_id]
+    );
+    logger.info({ companyId: row.company_id, contractId }, '[saas] assinatura ativada pelo pagamento');
+  } catch (err) {
+    logger.error({ err, contractId }, '[saas] falha ao ativar assinatura');
+  }
+}
+
 async function handleConfirmedPayment(link, detail) {
   const result = await markLinkAsPaid(link, detail);
   if (!result) return;
@@ -114,6 +139,7 @@ async function handleConfirmedPayment(link, detail) {
     companyId: result.link?.company_id || link.company_id,
     detail,
   });
+  await activateSubscriptionForContract(result.link?.contract_id || link.contract_id);
   logger.info(
     { billingId, companyId: result.link?.company_id, notified: Boolean(notification?.sent), source: detail?._source || 'polling' },
     '[gateway] pagamento confirmado'

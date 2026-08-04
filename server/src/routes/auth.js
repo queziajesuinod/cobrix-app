@@ -210,6 +210,24 @@ router.post("/login", async (req, res) => {
       company_ids: companyIds
     };
 
+    // Gate da assinatura (SaaS): usuário não-master só entra se ao menos uma de
+    // suas empresas estiver ativa. Empresas de inscrição nascem 'pending_payment'
+    // e só liberam o acesso quando o PIX é confirmado (webhook ativa). Empresas
+    // antigas têm status 'active' (default), então não são afetadas.
+    if (user.role !== 'master' && companyIds.length > 0) {
+      const cs = await query(`SELECT status FROM companies WHERE id = ANY($1::int[])`, [companyIds]);
+      const statuses = cs.rows.map((row) => row.status);
+      const hasActive = statuses.some((s) => !s || s === 'active');
+      if (!hasActive) {
+        const pending = statuses.includes('pending_payment');
+        return res.status(403).json({
+          error: pending
+            ? 'Sua conta está aguardando a confirmação do pagamento. Assim que o PIX for compensado, o acesso é liberado automaticamente.'
+            : 'Sua assinatura está suspensa. Regularize o pagamento para reativar o acesso.',
+        });
+      }
+    }
+
     const token = await sign(user);
     return res.json({ token, user });
   } catch (err) {

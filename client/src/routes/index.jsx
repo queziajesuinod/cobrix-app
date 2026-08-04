@@ -8,6 +8,7 @@ const EvoConnectionPage = lazy(() => import('@/features/integration/EvoConnectio
 const IntegrationsHubPage = lazy(() => import('@/features/integration/IntegrationsHubPage'))
 const CompanyCreatePage = lazy(() => import('@/features/companies/CompanyCreatePage'))
 const LoginPage = lazy(() => import('@/features/auth/LoginPage'))
+const SignupPage = lazy(() => import('@/features/public/SignupPage'))
 const DashboardPage = lazy(() => import('@/features/dashboard/DashboardPage'))
 const ClientsPage = lazy(() => import('@/features/clients/ClientsPage'))
 const ClientFormPage = lazy(() => import('@/features/clients/ClientFormPage'))
@@ -19,6 +20,7 @@ const PaidContractsPage = lazy(() => import('@/features/billings/PaidContractsPa
 const OverdueClientsPage = lazy(() => import('@/features/reports/OverdueClientsPage'))
 const RiskPortfolioPage = lazy(() => import('@/features/reports/RiskPortfolioPage'))
 const PermissionsAdminPage = lazy(() => import('@/features/admin/PermissionsAdminPage'))
+const PlansAdminPage = lazy(() => import('@/features/admin/PlansAdminPage'))
 const UsersPage = lazy(() => import('@/features/admin/UsersPage'))
 const FinancePage = lazy(() => import('@/features/finance/FinancePage'))
 const FinanceDashboardPage = lazy(() => import('@/features/finance/FinanceDashboardPage'))
@@ -31,6 +33,7 @@ export default function AppRouter() {
     <Suspense fallback={<div style={{ padding: 24 }}>Carregando…</div>}>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/signup" element={<SignupPage />} />
         <Route path="/" element={<ProtectedRoute><AppShell><DashboardPage /></AppShell></ProtectedRoute>} />
         <Route path="/dashboard" element={<ProtectedRoute><AppShell><DashboardPage /></AppShell></ProtectedRoute>} />
         <Route path="/companies" element={<ProtectedRoute><AppShell><CompanyListPage /></AppShell></ProtectedRoute>} />
@@ -52,6 +55,7 @@ export default function AppRouter() {
         <Route path="/reports/risk" element={<ProtectedRoute><AppShell><RiskPortfolioPage /></AppShell></ProtectedRoute>} />
         <Route path="/system/health" element={<ProtectedRoute><AppShell><SystemHealthPage /></AppShell></ProtectedRoute>} />
         <Route path="/admin/permissions" element={<ProtectedRoute><AppShell><PermissionsAdminPage /></AppShell></ProtectedRoute>} />
+        <Route path="/admin/plans" element={<ProtectedRoute><AppShell><PlansAdminPage /></AppShell></ProtectedRoute>} />
         <Route path="/admin/users" element={<ProtectedRoute><AppShell><UsersPage /></AppShell></ProtectedRoute>} />
         <Route path="/finance" element={<ProtectedRoute><AppShell><FinancePage /></AppShell></ProtectedRoute>} />
         <Route path="/finance/dashboard" element={<ProtectedRoute><AppShell><FinanceDashboardPage /></AppShell></ProtectedRoute>} />

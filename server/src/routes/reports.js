@@ -353,6 +353,38 @@ async function setContractMonthStatusPaid(contractId, companyId, billingDate) {
   ).catch(() => {});
 }
 
+async function setContractMonthStatusCanceled(contractId, companyId, billingDate) {
+  if (!contractId || !companyId || !billingDate) return;
+  const date = ensureDateOnly(billingDate);
+  if (!date) return;
+  await query(
+    `INSERT INTO ${SCHEMA}.contract_month_status (contract_id, company_id, year, month, status)
+     VALUES ($1,$2,$3,$4,'canceled')
+     ON CONFLICT (contract_id, year, month)
+     DO UPDATE SET status='canceled', updated_at=NOW()`,
+    [Number(contractId), Number(companyId), date.getFullYear(), date.getMonth() + 1]
+  ).catch(() => {});
+}
+
+// "Abona" (baixa por perdão/acordo) as cobranças: marca como 'canceled', o que as
+// tira da inadimplência e NÃO as conta como receita (só 'paid' vira receita).
+async function cancelOverdueBillings(companyId, ids) {
+  const list = [...new Set((ids || []).map((v) => Number(v)).filter((v) => Number.isInteger(v) && v > 0))];
+  if (!list.length) return [];
+  const updated = await query(
+    `UPDATE ${SCHEMA}.billings
+        SET status='canceled', updated_at=NOW()
+      WHERE company_id = $1 AND id = ANY($2::int[])
+        AND LOWER(COALESCE(status, 'pending')) = 'pending'
+      RETURNING id, contract_id, billing_date, amount`,
+    [companyId, list]
+  );
+  for (const row of updated.rows) {
+    await setContractMonthStatusCanceled(row.contract_id, companyId, row.billing_date);
+  }
+  return updated.rows;
+}
+
 async function markBillingsPaid(companyId, billings) {
   const ids = [...new Set((billings || []).map((item) => Number(item.billing_id)).filter((item) => Number.isInteger(item) && item > 0))];
   if (!ids.length) {
@@ -558,6 +590,67 @@ router.post('/overdue-clients/billing/:billingId/mark-paid', requireAuth, compan
         name: row.client_name,
       },
     });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Abona (perdoa) uma ou várias cobranças em atraso: saem da inadimplência e não
+// entram como receita. Recebe { billingIds: [] }.
+router.post('/overdue-clients/waive', requireAuth, companyScope(true), requirePermission('billings.markPaid'), async (req, res) => {
+  try {
+    const companyId = req.companyId;
+    if (!companyId) return res.status(400).json({ error: 'Selecione uma empresa' });
+    const ids = parseBillingIds(req.body?.billingIds);
+    if (!ids) return res.status(400).json({ error: 'Selecione ao menos uma cobrança' });
+    const rows = await cancelOverdueBillings(companyId, ids);
+    return res.json({ ok: true, waived: rows.length });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Registra um acordo/pagamento com valor manual (juros ou desconto) para uma ou
+// várias cobranças em atraso do MESMO cliente. As cobranças saem da inadimplência
+// (viram 'canceled') e é lançada UMA receita com o valor acordado na data informada
+// (padrão: hoje) — assim a receita reflete o valor atualizado, sem duplicar.
+router.post('/overdue-clients/settle', requireAuth, companyScope(true), requirePermission('billings.markPaid'), async (req, res) => {
+  try {
+    const companyId = req.companyId;
+    if (!companyId) return res.status(400).json({ error: 'Selecione uma empresa' });
+    const ids = parseBillingIds(req.body?.billingIds);
+    if (!ids) return res.status(400).json({ error: 'Selecione ao menos uma cobrança' });
+
+    const amountNum = Number(req.body?.amount);
+    if (!Number.isFinite(amountNum) || amountNum <= 0) return res.status(400).json({ error: 'Informe um valor de acordo maior que zero' });
+    const amount = Number(amountNum.toFixed(2));
+    const receivedAt = req.body?.paid_at ? parseDateParam(req.body.paid_at, 'Data do pagamento') : formatISODate(new Date());
+    const label = String(req.body?.label || '').trim() || 'Acordo de inadimplência';
+
+    // Cobranças pendentes selecionadas + cliente/contrato.
+    const info = await query(
+      `SELECT b.id, b.contract_id, c.client_id
+         FROM ${SCHEMA}.billings b
+         JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
+        WHERE b.company_id = $1 AND c.company_id = $1 AND b.id = ANY($2::int[])
+          AND LOWER(COALESCE(b.status, 'pending')) = 'pending'`,
+      [companyId, ids]
+    );
+    if (!info.rows.length) return res.status(400).json({ error: 'Nenhuma cobrança pendente encontrada na seleção' });
+    const clientIds = [...new Set(info.rows.map((r) => Number(r.client_id)))];
+    if (clientIds.length > 1) return res.status(400).json({ error: 'Selecione cobranças de um único cliente para registrar o acordo' });
+    const contractIds = [...new Set(info.rows.map((r) => Number(r.contract_id)))];
+    const contractId = contractIds.length === 1 ? contractIds[0] : null;
+    const clientId = clientIds[0] || null;
+
+    const canceled = await cancelOverdueBillings(companyId, info.rows.map((r) => r.id));
+    const description = `Acordo — cobrança(s) ${canceled.map((r) => `#${r.id}`).join(', ')}`;
+    const rev = await query(
+      `INSERT INTO ${SCHEMA}.finance_revenues (company_id, label, description, amount, received_at, client_id, contract_id, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+      [companyId, label, description, amount, receivedAt, clientId, contractId, req.user.id]
+    );
+    return res.json({ ok: true, settled: canceled.length, revenueId: rev.rows[0].id, amount, receivedAt });
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
   }

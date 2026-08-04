@@ -10,8 +10,14 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Grid,
+  InputAdornment,
   Skeleton,
   Snackbar,
   Stack,
@@ -22,11 +28,14 @@ import {
   TablePagination,
   TableRow,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
 import DownloadIcon from '@mui/icons-material/Download';
 import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
+import MoneyOffIcon from '@mui/icons-material/MoneyOff';
+import HandshakeIcon from '@mui/icons-material/Handshake';
 import FilterListIcon from '@mui/icons-material/FilterList';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
@@ -80,6 +89,60 @@ function sanitizeFilters(filters) {
 function formatCurrency(value) {
   const amount = Number(value || 0);
   return amount.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+}
+
+function todayISO() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+// Diálogo de acordo: valor manual (juros/desconto), data (padrão hoje) e descrição.
+// Lança UMA receita com o valor acordado e tira as cobranças da inadimplência.
+function SettleDialog({ open, clientName, billingIds, originalTotal, submitting, onClose, onConfirm }) {
+  const [amount, setAmount] = useState('');
+  const [paidAt, setPaidAt] = useState(todayISO);
+  const [label, setLabel] = useState('Acordo de inadimplência');
+  React.useEffect(() => {
+    if (open) {
+      setAmount(originalTotal ? String(Number(originalTotal).toFixed(2)) : '');
+      setPaidAt(todayISO());
+      setLabel('Acordo de inadimplência');
+    }
+  }, [open, originalTotal]);
+  const value = Number(String(amount).replace(',', '.'));
+  const valid = Number.isFinite(value) && value > 0 && /^\d{4}-\d{2}-\d{2}$/.test(paidAt);
+  const diff = Number.isFinite(value) ? value - Number(originalTotal || 0) : 0;
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth slotProps={{ paper: { sx: { borderRadius: 3 } } }}>
+      <DialogTitle sx={{ fontWeight: 700 }}>Registrar acordo / pagamento</DialogTitle>
+      <DialogContent dividers>
+        <Stack spacing={2} sx={{ mt: 0.5 }}>
+          <Typography variant="body2" color="text.secondary">
+            {billingIds.length} cobrança(s) de <b>{clientName || 'cliente'}</b> · valor original {formatCurrency(originalTotal)}.
+            As cobranças saem da inadimplência e é lançada uma receita com o valor acordado.
+          </Typography>
+          <TextField
+            label="Valor acordado (R$)" type="number" value={amount} onChange={(e) => setAmount(e.target.value)}
+            inputProps={{ step: '0.01', min: 0 }} InputProps={{ startAdornment: <InputAdornment position="start">R$</InputAdornment> }}
+            autoFocus fullWidth required
+            helperText={Number.isFinite(value) && value > 0
+              ? (diff === 0 ? 'Igual ao valor original.' : diff > 0 ? `Juros de ${formatCurrency(diff)}.` : `Desconto de ${formatCurrency(-diff)}.`)
+              : 'Informe o valor com juros ou desconto.'}
+          />
+          <TextField label="Data do pagamento" type="date" value={paidAt} onChange={(e) => setPaidAt(e.target.value)} InputLabelProps={{ shrink: true }} fullWidth required />
+          <TextField label="Descrição da receita" value={label} onChange={(e) => setLabel(e.target.value)} fullWidth />
+        </Stack>
+      </DialogContent>
+      <DialogActions sx={{ px: 3, py: 2 }}>
+        <Button onClick={onClose} color="inherit">Cancelar</Button>
+        <Button variant="contained" color="success" disableElevation disabled={!valid || submitting}
+          onClick={() => onConfirm({ amount: Number(value.toFixed(2)), paidAt, label: label.trim() || 'Acordo de inadimplência' })}>
+          Registrar acordo
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
 }
 
 function buildExportRows(rows) {
@@ -198,6 +261,80 @@ export default function OverdueClientsPage() {
       });
     },
   });
+
+  // Seleção de cobranças (para abonar em lote ou registrar acordo).
+  const [selected, setSelected] = useState(() => new Set());
+  const [settleOpen, setSettleOpen] = useState(false);
+  React.useEffect(() => {
+    // Mantém a seleção só com cobranças visíveis na página atual.
+    const valid = new Set(rows.map((r) => r.billing_id));
+    setSelected((prev) => {
+      const next = new Set([...prev].filter((id) => valid.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [rows]);
+  const selectedRows = useMemo(() => rows.filter((r) => selected.has(r.billing_id)), [rows, selected]);
+  const selectedTotal = useMemo(() => selectedRows.reduce((s, r) => s + Number(r.amount || 0), 0), [selectedRows]);
+  const selectedClients = useMemo(() => new Set(selectedRows.map((r) => r.client_id)), [selectedRows]);
+  const toggleBilling = (id) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleGroup = (billings) => setSelected((prev) => {
+    const ids = billings.map((b) => b.billing_id);
+    const allIn = ids.every((id) => prev.has(id));
+    const n = new Set(prev);
+    ids.forEach((id) => (allIn ? n.delete(id) : n.add(id)));
+    return n;
+  });
+
+  const waiveMutation = useMutation({
+    mutationFn: (billingIds) => reportsService.waiveOverdueBillings(billingIds),
+    onSuccess: (r) => {
+      queryClient.invalidateQueries({ queryKey: ['reports-overdue-clients'] });
+      setSelected(new Set());
+      setSnack({ open: true, severity: 'success', message: `${r?.waived || 0} cobrança(s) abonada(s) — saíram da inadimplência.` });
+    },
+    onError: (error) => setSnack({ open: true, severity: 'error', message: error?.response?.data?.error || error?.message || 'Falha ao abonar cobranças' }),
+  });
+  const settleMutation = useMutation({
+    mutationFn: (payload) => reportsService.settleOverdueBillings(payload),
+    onSuccess: (r) => {
+      queryClient.invalidateQueries({ queryKey: ['reports-overdue-clients'] });
+      queryClient.invalidateQueries({ queryKey: ['finance-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['finance-revenues'] });
+      setSelected(new Set());
+      setSettleOpen(false);
+      setSnack({ open: true, severity: 'success', message: `Acordo registrado: ${r?.settled || 0} cobrança(s) e receita de ${formatCurrency(r?.amount)}.` });
+    },
+    onError: (error) => setSnack({ open: true, severity: 'error', message: error?.response?.data?.error || error?.message || 'Falha ao registrar acordo' }),
+  });
+
+  const handleWaive = async () => {
+    const ids = [...selected];
+    if (!ids.length) return;
+    const ok = await confirm({
+      title: 'Abonar inadimplência',
+      description: `Abonar ${ids.length} cobrança(s)? Elas saem da inadimplência e NÃO entram como receita. Esta ação pode ser revista lançando manualmente depois.`,
+      confirmText: 'Abonar',
+      tone: 'danger',
+    });
+    if (ok) waiveMutation.mutate(ids);
+  };
+  const openSettle = () => {
+    if (!selected.size) return;
+    if (selectedClients.size > 1) {
+      setSnack({ open: true, severity: 'warning', message: 'Selecione cobranças de um único cliente para registrar um acordo.' });
+      return;
+    }
+    setSettleOpen(true);
+  };
+  const handleWaiveOne = async (b) => {
+    const ok = await confirm({
+      title: 'Abonar cobrança',
+      description: `Abonar a cobrança #${b.billing_id}? Sai da inadimplência e não entra como receita.`,
+      confirmText: 'Abonar',
+      tone: 'danger',
+    });
+    if (ok) waiveMutation.mutate([b.billing_id]);
+  };
 
   const handleFilterChange = (field) => (event) => {
     setDraftFilters((prev) => ({ ...prev, [field]: event.target.value }));
@@ -349,7 +486,8 @@ export default function OverdueClientsPage() {
 
       <Alert severity="info" icon={<WarningAmberIcon />}>
         Esta tela lista os <strong>inadimplentes</strong>: clientes com cobranças pendentes vencidas há <strong>mais de 30 dias</strong>.
-        Cobranças com menos de 30 dias de atraso ainda não aparecem aqui.
+        Cobranças com menos de 30 dias de atraso ainda não aparecem aqui. Selecione cobranças para <strong>abonar</strong> (sai da
+        inadimplência sem virar receita) ou <strong>registrar um acordo</strong> (valor manual com juros/desconto, lançado como receita na data do pagamento).
       </Alert>
 
       <PapperBlock title="Filtros" icon={<FilterListIcon />} iconColor="info.main">
@@ -484,6 +622,26 @@ export default function OverdueClientsPage() {
             />
           ) : (
             <>
+              {canMarkPaid && selected.size > 0 && (
+                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }} sx={{ mb: 1.5, p: 1.5, borderRadius: 2, bgcolor: 'action.hover', border: '1px solid', borderColor: 'divider' }}>
+                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                    {selected.size} selecionada(s) · {money(selectedTotal)}
+                    {selectedClients.size > 1 && ' · vários clientes'}
+                  </Typography>
+                  <Box sx={{ flexGrow: 1 }} />
+                  <Button size="small" color="inherit" onClick={() => setSelected(new Set())}>Limpar</Button>
+                  <Button size="small" variant="outlined" color="warning" startIcon={<MoneyOffIcon />} disabled={waiveMutation.isPending} onClick={handleWaive}>
+                    Abonar
+                  </Button>
+                  <Tooltip title={selectedClients.size > 1 ? 'Selecione cobranças de um único cliente' : ''}>
+                    <span>
+                      <Button size="small" variant="contained" color="success" disableElevation startIcon={<HandshakeIcon />} disabled={settleMutation.isPending || selectedClients.size > 1} onClick={openSettle}>
+                        Registrar acordo
+                      </Button>
+                    </span>
+                  </Tooltip>
+                </Stack>
+              )}
               <Stack direction="row" justifyContent="flex-end" spacing={1} sx={{ mb: 1 }}>
                 <Button size="small" startIcon={<UnfoldMoreIcon />} onClick={expandAllClients}>Expandir todos</Button>
                 <Button size="small" startIcon={<UnfoldLessIcon />} onClick={collapseAllClients}>Recolher todos</Button>
@@ -551,6 +709,17 @@ export default function OverdueClientsPage() {
                         <Table stickyHeader size="small">
                           <TableHead>
                             <TableRow>
+                              {canMarkPaid && (
+                                <TableCell padding="checkbox">
+                                  <Checkbox
+                                    size="small"
+                                    checked={g.billings.length > 0 && g.billings.every((b) => selected.has(b.billing_id))}
+                                    indeterminate={g.billings.some((b) => selected.has(b.billing_id)) && !g.billings.every((b) => selected.has(b.billing_id))}
+                                    onChange={() => toggleGroup(g.billings)}
+                                    inputProps={{ 'aria-label': 'Selecionar todas do cliente' }}
+                                  />
+                                </TableCell>
+                              )}
                               <TableCell>Cobrança</TableCell>
                               <TableCell>Contrato</TableCell>
                               <TableCell>Vencimento</TableCell>
@@ -561,7 +730,12 @@ export default function OverdueClientsPage() {
                           </TableHead>
                           <TableBody>
                             {g.billings.map((b) => (
-                              <TableRow key={b.billing_id} hover>
+                              <TableRow key={b.billing_id} hover selected={selected.has(b.billing_id)}>
+                                {canMarkPaid && (
+                                  <TableCell padding="checkbox">
+                                    <Checkbox size="small" checked={selected.has(b.billing_id)} onChange={() => toggleBilling(b.billing_id)} inputProps={{ 'aria-label': `Selecionar cobrança ${b.billing_id}` }} />
+                                  </TableCell>
+                                )}
                                 <TableCell>
                                   <Typography variant="body2" sx={{ fontWeight: 600 }}>#{b.billing_id}</Typography>
                                 </TableCell>
@@ -571,15 +745,22 @@ export default function OverdueClientsPage() {
                                 <TableCell>{money(b.amount)}</TableCell>
                                 <TableCell align="right">
                                   {canMarkPaid ? (
-                                    <Button
-                                      size="small"
-                                      variant="text"
-                                      color="success"
-                                      disabled={isBillingPaying(b.billing_id)}
-                                      onClick={() => markBillingPaid(b)}
-                                    >
-                                      Pago (esta)
-                                    </Button>
+                                    <Stack direction="row" spacing={0.25} justifyContent="flex-end">
+                                      <Tooltip title="Abonar (sai da inadimplência, sem virar receita)">
+                                        <Button size="small" variant="text" color="warning" disabled={waiveMutation.isPending} onClick={() => handleWaiveOne(b)}>
+                                          Abonar
+                                        </Button>
+                                      </Tooltip>
+                                      <Button
+                                        size="small"
+                                        variant="text"
+                                        color="success"
+                                        disabled={isBillingPaying(b.billing_id)}
+                                        onClick={() => markBillingPaid(b)}
+                                      >
+                                        Pago (esta)
+                                      </Button>
+                                    </Stack>
                                   ) : (
                                     <Typography variant="caption" color="text.secondary">—</Typography>
                                   )}
@@ -614,6 +795,16 @@ export default function OverdueClientsPage() {
           </Box>
         )}
       </PapperBlock>
+
+      <SettleDialog
+        open={settleOpen}
+        clientName={selectedRows[0]?.client_name}
+        billingIds={[...selected]}
+        originalTotal={selectedTotal}
+        submitting={settleMutation.isPending}
+        onClose={() => setSettleOpen(false)}
+        onConfirm={({ amount, paidAt, label }) => settleMutation.mutate({ billingIds: [...selected], amount, paidAt, label })}
+      />
 
       <Snackbar
         open={snack.open}

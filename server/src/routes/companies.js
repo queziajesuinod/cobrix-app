@@ -88,7 +88,7 @@ router.get("/", requireAuth, async (req, res) => {
     return res.json([]);
   }
   const r = await query(
-    `SELECT id, name, pix_key, evo_api_url, evo_api_key, evo_instance, clients_limit, contracts_limit, created_at, updated_at,
+    `SELECT id, name, pix_key, evo_api_url, evo_api_key, evo_instance, clients_limit, contracts_limit, plan_id, status, is_saas_owner, created_at, updated_at,
             (SELECT COALESCE(NULLIF(cu.name,''), cu.email) FROM users cu WHERE cu.id = companies.created_by) AS created_by_name,
             (SELECT COALESCE(NULLIF(eu.name,''), eu.email) FROM users eu WHERE eu.id = companies.updated_by) AS updated_by_name,
             efi_client_id_enc, efi_client_secret_enc, efi_cert_base64_enc FROM companies WHERE id = ANY($1::int[]) ORDER BY id DESC`,
@@ -102,7 +102,7 @@ router.get("/", requireAuth, async (req, res) => {
 router.get("/:id", requireAuth, async (req, res) => {
   const id = Number(req.params.id);
   if (!canReadCompany(req.user, req.companyId, id)) return res.status(403).json({ error: "Sem permissão" });
-  const r = await query(`SELECT id, name, pix_key, evo_api_url, evo_api_key, evo_instance, clients_limit, contracts_limit, created_at, updated_at,
+  const r = await query(`SELECT id, name, pix_key, evo_api_url, evo_api_key, evo_instance, clients_limit, contracts_limit, plan_id, status, is_saas_owner, created_at, updated_at,
     (SELECT COALESCE(NULLIF(cu.name,''), cu.email) FROM users cu WHERE cu.id = companies.created_by) AS created_by_name,
     (SELECT COALESCE(NULLIF(eu.name,''), eu.email) FROM users eu WHERE eu.id = companies.updated_by) AS updated_by_name,
     efi_client_id_enc, efi_client_secret_enc, efi_cert_base64_enc FROM companies WHERE id=$1`, [id]);
@@ -240,6 +240,30 @@ router.put("/:id", requireAuth, async (req, res) => {
 
     await query("UPDATE companies SET name=$1, pix_key=$2, clients_limit=$3, contracts_limit=$4, efi_client_id_enc=$5, efi_client_secret_enc=$6, efi_cert_base64_enc=$7, updated_by=$8, updated_at=now() WHERE id=$9", [String(name).trim(), pix_key || null, normalizedClientLimit, normalizedContractLimit, gatewayColumns.clientIdEnc, gatewayColumns.clientSecretEnc, gatewayColumns.certBase64Enc, req.user.id, id]);
 
+    // Plano (SaaS): somente master define/altera o plano da empresa. Vazio = sem
+    // plano (acesso total). O teto passa a valer para os usuários da empresa.
+    if (isMaster(req.user) && Object.prototype.hasOwnProperty.call(payload, 'plan_id')) {
+      const raw = payload.plan_id;
+      const planId = (raw === null || raw === '') ? null : Number(raw);
+      if (planId !== null && !Number.isInteger(planId)) {
+        return res.status(400).json({ error: 'Plano inválido' });
+      }
+      if (planId !== null) {
+        const pl = await query("SELECT id FROM plans WHERE id=$1", [planId]);
+        if (!pl.rows[0]) return res.status(400).json({ error: 'Plano não encontrado' });
+      }
+      await query("UPDATE companies SET plan_id=$1 WHERE id=$2", [planId, id]);
+    }
+
+    // Empresa dona do SaaS: só master define, e só uma empresa pode ser a dona.
+    if (isMaster(req.user) && Object.prototype.hasOwnProperty.call(payload, 'is_saas_owner')) {
+      if (payload.is_saas_owner) {
+        await query("UPDATE companies SET is_saas_owner = (id = $1)", [id]);
+      } else {
+        await query("UPDATE companies SET is_saas_owner = false WHERE id = $1", [id]);
+      }
+    }
+
     let instanceName = currentRow.evo_instance;
     let integration = null;
 
@@ -265,7 +289,7 @@ router.put("/:id", requireAuth, async (req, res) => {
     await ensureEnvMasterUser(id);
 
     clearCompanyCache(id);
-    const updatedRow = await query("SELECT id, name, pix_key, clients_limit, contracts_limit, evo_instance, efi_client_id_enc, efi_client_secret_enc, efi_cert_base64_enc FROM companies WHERE id=$1", [id]);
+    const updatedRow = await query("SELECT id, name, pix_key, clients_limit, contracts_limit, plan_id, status, is_saas_owner, evo_instance, efi_client_id_enc, efi_client_secret_enc, efi_cert_base64_enc FROM companies WHERE id=$1", [id]);
     const formatted = mapGatewayResponse(updatedRow.rows[0]);
     res.json({ ...formatted, integration });
   } catch (err) {

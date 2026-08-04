@@ -1,7 +1,7 @@
 import React from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Alert, Autocomplete, Box, Button, Card, CardContent, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
+  Alert, Autocomplete, Box, Button, Card, CardContent, Checkbox, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
   Divider, FormControlLabel, Grid, IconButton, MenuItem, Snackbar, Stack, Switch, Tab, Table, TableBody,
   TableCell, TableHead, TableRow, Tabs, TextField, Tooltip, Typography,
 } from '@mui/material'
@@ -12,6 +12,8 @@ import DownloadIcon from '@mui/icons-material/Download'
 import UploadFileIcon from '@mui/icons-material/UploadFile'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
 import EventRepeatIcon from '@mui/icons-material/EventRepeat'
+import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline'
+import UndoIcon from '@mui/icons-material/Undo'
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance'
 import TrendingUpIcon from '@mui/icons-material/TrendingUp'
 import TrendingDownIcon from '@mui/icons-material/TrendingDown'
@@ -279,6 +281,98 @@ function ImportPreviewDialog({ kind, rows, onClose, onConfirm, submitting }) {
   )
 }
 
+// Mostra, após a importação, os meses que JÁ existiam e por isso não foram
+// duplicados. Destaca quando o valor difere do atual. Permite marcar linhas e
+// "manter mesmo assim" — pois nem todo repetido é duplicata (ex.: várias
+// "Taxas/Impostos" no mesmo mês são lançamentos legítimos).
+function ImportResultDialog({ result, items, onForceKeep, submitting, onClose }) {
+  const dups = result?.duplicateSamples || []
+  const diff = dups.filter((d) => d.valorDiferente).length
+  const [keep, setKeep] = React.useState(() => new Set())
+  const toggle = (line) => setKeep((s) => { const n = new Set(s); n.has(line) ? n.delete(line) : n.add(line); return n })
+  const allLines = dups.map((d) => d.line)
+  const allKept = allLines.length > 0 && allLines.every((l) => keep.has(l))
+  const toggleAll = () => setKeep(allKept ? new Set() : new Set(allLines))
+  const forceKeep = () => {
+    // duplicateSamples.line = índice na planilha + 2 → recupera o item original.
+    const lines = [...keep]
+    const chosen = lines.map((l) => items?.[l - 2]).filter(Boolean)
+    if (chosen.length) { onForceKeep({ items: chosen, lines }); setKeep(new Set()) }
+  }
+  return (
+    <Dialog open onClose={onClose} maxWidth="md" fullWidth slotProps={{ paper: { sx: { borderRadius: 3 } } }}>
+      <DialogTitle sx={{ fontWeight: 700 }}>Resultado da importação</DialogTitle>
+      <DialogContent dividers>
+        <Stack direction="row" spacing={1} sx={{ mb: 2, flexWrap: 'wrap' }}>
+          <Chip color="success" variant="outlined" label={`${result.imported} importada(s)`} />
+          {result.recurringSeries > 0 && <Chip color="info" variant="outlined" label={`${result.recurringSeries} recorrência(s)`} />}
+          {result.duplicates > 0 && <Chip color="warning" variant="outlined" label={`${result.duplicates} já existia(m) — ignorada(s)`} />}
+          {diff > 0 && <Chip color="error" variant="outlined" label={`${diff} com valor diferente`} />}
+        </Stack>
+        {dups.length > 0 ? (
+          <>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+              Estes meses já tinham um lançamento da mesma conta (mesmo nome e descrição), então não foram importados.
+              Se algum é um lançamento legítimo (não uma duplicata), marque-o e clique em <b>Manter selecionadas</b>.
+            </Typography>
+            <Box sx={{ overflowX: 'auto' }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell padding="checkbox">
+                      <Checkbox size="small" checked={allKept} indeterminate={!allKept && keep.size > 0} onChange={toggleAll} />
+                    </TableCell>
+                    <TableCell>Mês</TableCell>
+                    <TableCell>Nomenclatura</TableCell>
+                    <TableCell align="right">Valor na planilha</TableCell>
+                    <TableCell align="right">Valor atual</TableCell>
+                    <TableCell>Situação</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {dups.map((d) => (
+                    <TableRow key={d.line} hover selected={keep.has(d.line)}>
+                      <TableCell padding="checkbox">
+                        <Checkbox size="small" checked={keep.has(d.line)} onChange={() => toggle(d.line)} disabled={!items} />
+                      </TableCell>
+                      <TableCell>{d.mes}</TableCell>
+                      <TableCell>{d.label}</TableCell>
+                      <TableCell align="right">{BRL(d.valor)}</TableCell>
+                      <TableCell align="right">{d.valorAtual != null ? BRL(d.valorAtual) : '—'}</TableCell>
+                      <TableCell>
+                        {d.valorAtual == null
+                          ? <Chip size="small" variant="outlined" label="Repetida na planilha" />
+                          : d.valorDiferente
+                            ? <Chip size="small" color="error" variant="outlined" label="Valor diferente" />
+                            : <Chip size="small" variant="outlined" label="Igual ao atual" />}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Box>
+            {result.duplicates > dups.length && (
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                Mostrando {dups.length} de {result.duplicates} — ao manter estas, reimporte o restante se precisar.
+              </Typography>
+            )}
+          </>
+        ) : (
+          <Typography variant="body2" color="text.secondary">Nada pendente — nenhum lançamento em duplicidade a resolver.</Typography>
+        )}
+      </DialogContent>
+      <DialogActions sx={{ px: 3, py: 2 }}>
+        <Button onClick={onClose} color="inherit">Fechar</Button>
+        {dups.length > 0 && (
+          <Button variant="contained" disableElevation disabled={!keep.size || submitting || !items} onClick={forceKeep}>
+            Manter selecionadas ({keep.size})
+          </Button>
+        )}
+      </DialogActions>
+    </Dialog>
+  )
+}
+
 function RevenuesTab({ notify, range, canManage }) {
   const qc = useQueryClient()
   const confirm = useConfirm()
@@ -370,15 +464,69 @@ function ExpensesTab({ notify, range, canManage }) {
   const qc = useQueryClient()
   const confirm = useConfirm()
   const [dialog, setDialog] = React.useState(null)
+  const [selected, setSelected] = React.useState(() => new Set())
   const q = useQuery({ queryKey: ['finance-expenses', range.from, range.to], queryFn: () => financeService.expenses(range) })
   const items = q.data?.items || []
+  // Remove ids da lista em cache imediatamente — não depende do refetch (a
+  // rota GET regenera despesas recorrentes, então só invalidar podia "trazer de
+  // volta" a linha; aqui a exclusão aparece na hora).
+  const dropFromCache = (ids) => {
+    const gone = new Set(ids)
+    qc.setQueriesData({ queryKey: ['finance-expenses'] }, (old) => (
+      old?.items ? { ...old, items: old.items.filter((r) => !gone.has(r.id)) } : old
+    ))
+    qc.invalidateQueries({ queryKey: ['finance-summary'] })
+  }
   const refresh = () => { qc.invalidateQueries({ queryKey: ['finance-expenses'] }); qc.invalidateQueries({ queryKey: ['finance-summary'] }) }
-  const del = useMutation({ mutationFn: (id) => financeService.deleteExpense(id), onSuccess: () => { notify('Despesa excluída.'); refresh() }, onError: (e) => notify(e?.response?.data?.error || 'Falha ao excluir.', 'error') })
+  const del = useMutation({
+    mutationFn: (id) => financeService.deleteExpense(id),
+    onSuccess: (_d, id) => { dropFromCache([id]); setSelected((s) => { const n = new Set(s); n.delete(id); return n }); notify('Despesa excluída.') },
+    onError: (e) => notify(e?.response?.data?.error || 'Falha ao excluir.', 'error'),
+  })
+  const bulkDel = useMutation({
+    mutationFn: async (ids) => {
+      const results = await Promise.allSettled(ids.map((id) => financeService.deleteExpense(id)))
+      const okIds = ids.filter((_, i) => results[i].status === 'fulfilled')
+      return { okIds, failed: ids.length - okIds.length }
+    },
+    onSuccess: ({ okIds, failed }) => {
+      dropFromCache(okIds)
+      setSelected(new Set())
+      notify(failed ? `${okIds.length} excluída(s), ${failed} falharam.` : `${okIds.length} despesa(s) excluída(s).`, failed ? 'warning' : 'success')
+    },
+    onError: (e) => notify(e?.response?.data?.error || 'Falha ao excluir.', 'error'),
+  })
   const stop = useMutation({ mutationFn: (id) => financeService.setExpenseRecurrence(id, false), onSuccess: () => { notify('Recorrência encerrada.'); refresh() }, onError: (e) => notify(e?.response?.data?.error || 'Falha ao encerrar.', 'error') })
+  const pay = useMutation({
+    mutationFn: ({ id, paid }) => financeService.setExpensePaid(id, paid),
+    onSuccess: (_d, { paid }) => { notify(paid ? 'Despesa marcada como paga.' : 'Despesa voltou para pendente.'); refresh() },
+    onError: (e) => notify(e?.response?.data?.error || 'Falha ao atualizar.', 'error'),
+  })
+
+  // Mantém a seleção só com ids que ainda existem na lista (ex.: troca de período).
+  React.useEffect(() => {
+    const valid = new Set(items.map((r) => r.id))
+    setSelected((s) => {
+      const next = new Set([...s].filter((id) => valid.has(id)))
+      return next.size === s.size ? s : next
+    })
+  }, [items])
+
+  const allIds = items.map((r) => r.id)
+  const allSelected = allIds.length > 0 && allIds.every((id) => selected.has(id))
+  const someSelected = allIds.some((id) => selected.has(id))
+  const toggleOne = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(allIds))
 
   const handleDelete = async (row) => {
     const ok = await confirm({ title: 'Excluir despesa', description: `Excluir "${row.label}" (${fmtDate(row.paid_at)})?`, confirmText: 'Excluir', tone: 'danger' })
     if (ok) del.mutate(row.id)
+  }
+  const handleBulkDelete = async () => {
+    const ids = allIds.filter((id) => selected.has(id))
+    if (!ids.length) return
+    const ok = await confirm({ title: 'Excluir despesas', description: `Excluir ${ids.length} despesa(s) selecionada(s)? Esta ação não pode ser desfeita.`, confirmText: 'Excluir', tone: 'danger' })
+    if (ok) bulkDel.mutate(ids)
   }
   const handleStop = async (row) => {
     const ok = await confirm({ title: 'Encerrar recorrência', description: `Parar de gerar "${row.label}" nos próximos meses? Os lançamentos já feitos permanecem.`, confirmText: 'Encerrar', tone: 'danger' })
@@ -387,10 +535,38 @@ function ExpensesTab({ notify, range, canManage }) {
 
   const fileRef = React.useRef()
   const [preview, setPreview] = React.useState(null)
+  const [importResult, setImportResult] = React.useState(null) // { result, items }
   const importMut = useMutation({
     mutationFn: (items) => financeService.importExpenses(items),
-    onSuccess: (r) => { notify(`Importadas ${r.imported} despesa(s)${r.skipped ? `, ${r.skipped} ignorada(s)` : ''}.`, r.imported ? 'success' : 'warning'); refresh(); setPreview(null) },
+    onSuccess: (r, items) => {
+      const parts = [`Importadas ${r.imported} despesa(s)`]
+      if (r.duplicates) parts.push(`${r.duplicates} já existia(m)`)
+      if (r.recurringSeries) parts.push(`${r.recurringSeries} recorrência(s)`)
+      notify(`${parts.join(' · ')}.`, r.imported ? 'success' : 'warning')
+      refresh(); setPreview(null)
+      if (r.duplicates > 0) setImportResult({ result: r, items }) // abre p/ análise
+    },
     onError: (e) => notify(e?.response?.data?.error || e.message || 'Falha ao importar.', 'error'),
+  })
+  const forceImportMut = useMutation({
+    mutationFn: ({ items }) => financeService.importExpenses(items, { force: true }),
+    onSuccess: (r, { lines }) => {
+      notify(`Mantida(s) ${r.imported} despesa(s).`, r.imported ? 'success' : 'warning')
+      refresh()
+      // A tela é só o resultado: mantém aberta e remove da lista o que já foi
+      // mantido, para o usuário resolver o resto em novas importações.
+      const kept = new Set(lines)
+      setImportResult((cur) => (cur ? {
+        ...cur,
+        result: {
+          ...cur.result,
+          imported: cur.result.imported + r.imported,
+          duplicates: Math.max(0, cur.result.duplicates - r.imported),
+          duplicateSamples: (cur.result.duplicateSamples || []).filter((d) => !kept.has(d.line)),
+        },
+      } : cur))
+    },
+    onError: (e) => notify(e?.response?.data?.error || e.message || 'Falha ao manter.', 'error'),
   })
   const onFile = async (e) => {
     const f = e.target.files?.[0]; e.target.value = ''
@@ -403,11 +579,27 @@ function ExpensesTab({ notify, range, canManage }) {
   }
 
   const recurrenceChip = (r) => {
-    if (r.recurrence_of) return <Chip label="Gerado" size="small" variant="outlined" />
-    if (r.is_recurring && r.recurrence_active) return <Chip label="Recorrente" size="small" color="info" variant="outlined" icon={<EventRepeatIcon />} />
-    if (r.is_recurring && !r.recurrence_active) return <Chip label="Recorrência encerrada" size="small" variant="outlined" />
+    if (r.recurrence_of) return (
+      <Tooltip title="Gerado automaticamente pela recorrência desta conta (mesmo nome e descrição), com o último valor.">
+        <Chip label="Gerado" size="small" variant="outlined" />
+      </Tooltip>
+    )
+    if (r.is_recurring && r.recurrence_active) return (
+      <Tooltip title="Fonte da recorrência: gera 1 lançamento por mês usando o valor mais recente desta conta.">
+        <Chip label="Recorrente" size="small" color="info" variant="outlined" icon={<EventRepeatIcon />} />
+      </Tooltip>
+    )
+    if (r.is_recurring && !r.recurrence_active) return (
+      <Tooltip title="A série foi encerrada — não gera mais meses novos. Os lançamentos já feitos permanecem.">
+        <Chip label="Recorrência encerrada" size="small" variant="outlined" />
+      </Tooltip>
+    )
     return <Typography variant="caption" color="text.secondary">Avulsa</Typography>
   }
+
+  const statusChip = (r) => (r.status === 'pending'
+    ? <Tooltip title="A pagar — ainda não desconta do saldo. Marque como paga quando for paga."><Chip label="A pagar" size="small" color="warning" variant="outlined" /></Tooltip>
+    : <Chip label="Paga" size="small" color="success" variant="outlined" />)
 
   return (
     <>
@@ -417,15 +609,31 @@ function ExpensesTab({ notify, range, canManage }) {
         {canManage && <Button variant="outlined" startIcon={<UploadFileIcon />} onClick={() => fileRef.current?.click()} disabled={importMut.isPending}>Importar</Button>}
         {canManage && <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog({})}>Nova despesa</Button>}
       </Box>
+      {canManage && selected.size > 0 && (
+        <Box sx={{ px: 2, py: 1, display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap', bgcolor: (t) => alpha(t.palette.error.main, t.palette.mode === 'dark' ? 0.16 : 0.08) }}>
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>{selected.size} selecionada(s)</Typography>
+          <Box sx={{ flex: 1 }} />
+          <Button size="small" color="inherit" onClick={() => setSelected(new Set())}>Limpar</Button>
+          <Button size="small" variant="contained" color="error" disableElevation startIcon={<DeleteOutlineIcon />} disabled={bulkDel.isPending} onClick={handleBulkDelete}>
+            Excluir selecionadas
+          </Button>
+        </Box>
+      )}
       <Divider />
       <Box sx={{ overflowX: 'auto' }}>
         <Table>
           <TableHead>
             <TableRow>
+              {canManage && (
+                <TableCell padding="checkbox">
+                  <Checkbox size="small" checked={allSelected} indeterminate={!allSelected && someSelected} onChange={toggleAll} disabled={!items.length} inputProps={{ 'aria-label': 'Selecionar todas' }} />
+                </TableCell>
+              )}
               <TableCell>Nomenclatura</TableCell>
               <TableCell>Descrição</TableCell>
               <TableCell align="right">Valor</TableCell>
-              <TableCell>Pago em</TableCell>
+              <TableCell>Data</TableCell>
+              <TableCell>Situação</TableCell>
               <TableCell>Tipo</TableCell>
               <TableCell>Recorrência</TableCell>
               <TableCell>Auditoria</TableCell>
@@ -434,11 +642,17 @@ function ExpensesTab({ notify, range, canManage }) {
           </TableHead>
           <TableBody>
             {items.map((r) => (
-              <TableRow key={r.id} hover>
+              <TableRow key={r.id} hover selected={selected.has(r.id)}>
+                {canManage && (
+                  <TableCell padding="checkbox">
+                    <Checkbox size="small" checked={selected.has(r.id)} onChange={() => toggleOne(r.id)} inputProps={{ 'aria-label': `Selecionar ${r.label}` }} />
+                  </TableCell>
+                )}
                 <TableCell><Typography sx={{ fontWeight: 600 }}>{r.label}</Typography></TableCell>
                 <TableCell><Typography variant="body2" color="text.secondary">{r.description || '-'}</Typography></TableCell>
-                <TableCell align="right" sx={{ fontWeight: 700, color: 'error.main' }}>{BRL(r.amount)}</TableCell>
+                <TableCell align="right" sx={{ fontWeight: 700, color: r.status === 'pending' ? 'text.secondary' : 'error.main' }}>{BRL(r.amount)}</TableCell>
                 <TableCell>{fmtDate(r.paid_at)}</TableCell>
+                <TableCell>{statusChip(r)}</TableCell>
                 <TableCell>
                   <Chip label={r.expense_type === 'fixed' ? 'Fixa' : 'Variável'} size="small" variant="outlined"
                     color={r.expense_type === 'fixed' ? 'default' : 'warning'} />
@@ -448,6 +662,9 @@ function ExpensesTab({ notify, range, canManage }) {
                 <TableCell align="right">
                   {canManage ? (
                     <>
+                      {r.status === 'pending'
+                        ? <Tooltip title="Marcar como paga"><IconButton size="small" color="success" onClick={() => pay.mutate({ id: r.id, paid: true })}><CheckCircleOutlineIcon fontSize="small" /></IconButton></Tooltip>
+                        : <Tooltip title="Voltar para 'a pagar'"><IconButton size="small" color="inherit" onClick={() => pay.mutate({ id: r.id, paid: false })}><UndoIcon fontSize="small" /></IconButton></Tooltip>}
                       {r.is_recurring && r.recurrence_active && (
                         <Tooltip title="Encerrar recorrência">
                           <IconButton size="small" color="warning" onClick={() => handleStop(r)}><EventRepeatIcon fontSize="small" /></IconButton>
@@ -460,12 +677,21 @@ function ExpensesTab({ notify, range, canManage }) {
                 </TableCell>
               </TableRow>
             ))}
-            {!items.length && <TableRow><TableCell colSpan={8}><Box sx={{ py: 4, textAlign: 'center', color: 'text.secondary' }}>Nenhuma despesa.</Box></TableCell></TableRow>}
+            {!items.length && <TableRow><TableCell colSpan={canManage ? 10 : 9}><Box sx={{ py: 4, textAlign: 'center', color: 'text.secondary' }}>Nenhuma despesa.</Box></TableCell></TableRow>}
           </TableBody>
         </Table>
       </Box>
       {dialog && <EntryDialog kind="expense" entry={dialog.id ? dialog : null} onClose={() => setDialog(null)} onSaved={refresh} notify={notify} />}
       {preview && <ImportPreviewDialog kind="expense" rows={preview} onClose={() => setPreview(null)} onConfirm={(items) => importMut.mutate(items)} submitting={importMut.isPending} />}
+      {importResult && (
+        <ImportResultDialog
+          result={importResult.result}
+          items={importResult.items}
+          onForceKeep={(its) => forceImportMut.mutate(its)}
+          submitting={forceImportMut.isPending}
+          onClose={() => setImportResult(null)}
+        />
+      )}
     </>
   )
 }
@@ -833,6 +1059,11 @@ export default function FinancePage() {
       {s && canRevView && (
         <Typography variant="caption" color="text.secondary">
           Receitas = lançamentos ({BRL(s.revenuesManual)}) + contratos pagos ({BRL(s.revenuesContracts)}) no período selecionado.
+        </Typography>
+      )}
+      {s && canExpView && s.pendingExpenses > 0 && (
+        <Typography variant="caption" color="warning.main">
+          Despesas = somente as pagas descontam do saldo. Há {BRL(s.pendingExpenses)} a pagar (pendente) no período — marque como paga quando quitar.
         </Typography>
       )}
       {s && canExpView && (s.fixedExpenses || s.variableExpenses) ? (

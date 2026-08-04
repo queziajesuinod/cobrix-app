@@ -1,0 +1,241 @@
+import React, { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { useQuery, useMutation } from '@tanstack/react-query'
+import {
+  Alert, Box, Button, Card, Chip, CircularProgress, Container, Divider, Grid,
+  Stack, TextField, ToggleButton, ToggleButtonGroup, Typography,
+} from '@mui/material'
+import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline'
+import CheckIcon from '@mui/icons-material/Check'
+import ContentCopyIcon from '@mui/icons-material/ContentCopy'
+import { publicService } from './public.service'
+
+const qrSrc = (v) => !v ? null : (String(v).startsWith('data:') ? v : `data:image/png;base64,${v}`)
+
+const BRL = (v) => v == null
+  ? null
+  : Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+
+const EMPTY = { company_name: '', admin_name: '', admin_email: '', admin_password: '', document: '', phone: '', code: '' }
+
+function PlanCard({ plan, period, selected, onSelect }) {
+  const price = period === 'annual' ? plan.price_annual : plan.price_monthly
+  const available = price != null
+  return (
+    <Card
+      onClick={available ? onSelect : undefined}
+      sx={{
+        p: 2.5, height: '100%', display: 'flex', flexDirection: 'column', gap: 1,
+        cursor: available ? 'pointer' : 'not-allowed',
+        opacity: available ? 1 : 0.55,
+        border: '2px solid',
+        borderColor: selected ? 'primary.main' : 'divider',
+        boxShadow: selected ? '0 8px 24px rgba(32,101,209,0.18)' : undefined,
+        transition: 'border-color .15s ease, box-shadow .15s ease',
+      }}
+    >
+      <Stack direction="row" alignItems="center" justifyContent="space-between">
+        <Typography variant="h6" sx={{ fontWeight: 700 }}>{plan.name}</Typography>
+        {selected && <Chip size="small" color="primary" icon={<CheckIcon />} label="Selecionado" sx={{ fontWeight: 700 }} />}
+      </Stack>
+      {plan.description && <Typography variant="body2" color="text.secondary">{plan.description}</Typography>}
+      <Box sx={{ mt: 1 }}>
+        {available ? (
+          <>
+            <Typography variant="h4" sx={{ fontWeight: 800, lineHeight: 1.1 }}>{BRL(price)}</Typography>
+            <Typography variant="caption" color="text.secondary">{period === 'annual' ? 'por ano' : 'por mês'}</Typography>
+          </>
+        ) : (
+          <Typography variant="body2" color="text.secondary">Indisponível no {period === 'annual' ? 'anual' : 'mensal'}</Typography>
+        )}
+      </Box>
+      <Stack direction="row" spacing={0.5} sx={{ flexWrap: 'wrap', gap: 0.5, mt: 'auto', pt: 1 }}>
+        <Chip size="small" variant="outlined" label={plan.clients_limit == null ? 'Clientes ilimitados' : `${plan.clients_limit} clientes`} />
+        <Chip size="small" variant="outlined" label={plan.contracts_limit == null ? 'Contratos ilimitados' : `${plan.contracts_limit} contratos`} />
+      </Stack>
+    </Card>
+  )
+}
+
+export default function SignupPage() {
+  const navigate = useNavigate()
+  const [period, setPeriod] = useState('monthly')
+  const [planId, setPlanId] = useState(null)
+  const [form, setForm] = useState(EMPTY)
+  const [error, setError] = useState(null)
+
+  const plansQuery = useQuery({ queryKey: ['public-plans'], queryFn: publicService.plans })
+  const plans = plansQuery.data?.plans || []
+
+  const selectedPlan = useMemo(() => plans.find((p) => p.id === planId) || null, [plans, planId])
+  const selectedPrice = selectedPlan ? (period === 'annual' ? selectedPlan.price_annual : selectedPlan.price_monthly) : null
+
+  const signup = useMutation({
+    mutationFn: (payload) => publicService.signup(payload),
+    onError: (err) => setError(err?.response?.data?.error || 'Falha ao concluir a inscrição.'),
+  })
+
+  const setField = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }))
+
+  const handleSubmit = (e) => {
+    e.preventDefault()
+    setError(null)
+    if (!selectedPlan) { setError('Selecione um plano.'); return }
+    if (form.company_name.trim().length < 2) { setError('Informe o nome da empresa.'); return }
+    if (form.admin_name.trim().length < 2) { setError('Informe o seu nome.'); return }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.admin_email)) { setError('Informe um e-mail válido.'); return }
+    if (form.admin_password.length < 6) { setError('A senha deve ter ao menos 6 caracteres.'); return }
+    signup.mutate({
+      plan_id: selectedPlan.id,
+      period,
+      company_name: form.company_name.trim(),
+      admin_name: form.admin_name.trim(),
+      admin_email: form.admin_email.trim(),
+      admin_password: form.admin_password,
+      document: form.document.trim() || null,
+      phone: form.phone.trim() || null,
+      code: form.code.trim() || null,
+    })
+  }
+
+  // Tela de sucesso — mostra o PIX para pagamento.
+  if (signup.isSuccess) {
+    const data = signup.data
+    const pix = data?.pix
+    return (
+      <Container maxWidth="sm" sx={{ py: { xs: 5, md: 8 } }}>
+        <Card sx={{ p: { xs: 3, md: 4 }, textAlign: 'center' }}>
+          <CheckCircleOutlineIcon color="success" sx={{ fontSize: 56 }} />
+          <Typography variant="h5" sx={{ fontWeight: 800, mt: 1 }}>Cadastro criado!</Typography>
+          <Typography color="text.secondary" sx={{ mt: 0.5 }}>
+            Plano <strong>{data?.plan}</strong> · {data?.period === 'annual' ? 'anual' : 'mensal'} · <strong>{BRL(data?.amount)}</strong>
+          </Typography>
+
+          {pix && (pix.qrCodeImage || pix.copyPaste) ? (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>Pague com PIX para liberar o acesso</Typography>
+              {pix.qrCodeImage && (
+                <Box sx={{ my: 2 }}>
+                  <img src={qrSrc(pix.qrCodeImage)} alt="QR Code PIX" style={{ width: 240, maxWidth: '100%', borderRadius: 12, boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }} />
+                </Box>
+              )}
+              {pix.copyPaste && (
+                <Stack spacing={1} sx={{ mt: 1 }}>
+                  <TextField
+                    value={pix.copyPaste}
+                    fullWidth
+                    size="small"
+                    InputProps={{ readOnly: true }}
+                    onFocus={(e) => e.target.select()}
+                  />
+                  <Button
+                    variant="outlined"
+                    startIcon={<ContentCopyIcon />}
+                    onClick={() => navigator?.clipboard?.writeText(pix.copyPaste).catch(() => {})}
+                  >
+                    Copiar código PIX
+                  </Button>
+                </Stack>
+              )}
+              <Alert severity="info" sx={{ mt: 2, textAlign: 'left' }}>
+                Após o pagamento, a compensação do PIX leva alguns instantes. Seu acesso é liberado <strong>automaticamente</strong> — depois é só entrar.
+              </Alert>
+            </Box>
+          ) : (
+            <Alert severity="warning" sx={{ mt: 3, textAlign: 'left' }}>
+              Não foi possível gerar a cobrança PIX agora. Entre em contato com o suporte para concluir o pagamento e liberar seu acesso.
+            </Alert>
+          )}
+
+          <Button variant="contained" sx={{ mt: 3 }} onClick={() => navigate('/login')}>Já paguei — entrar</Button>
+        </Card>
+      </Container>
+    )
+  }
+
+  return (
+    <Container maxWidth="md" sx={{ py: { xs: 4, md: 6 } }}>
+      <Stack spacing={1} sx={{ mb: 3, textAlign: 'center' }}>
+        <Typography variant="h4" sx={{ fontWeight: 800 }}>Assine o Cobrix</Typography>
+        <Typography color="text.secondary">Escolha o plano ideal e comece a automatizar suas cobranças hoje.</Typography>
+      </Stack>
+
+      <Stack alignItems="center" sx={{ mb: 3 }}>
+        <ToggleButtonGroup
+          exclusive
+          value={period}
+          onChange={(_, v) => v && setPeriod(v)}
+          size="small"
+          color="primary"
+        >
+          <ToggleButton value="monthly" sx={{ px: 3, fontWeight: 700 }}>Mensal</ToggleButton>
+          <ToggleButton value="annual" sx={{ px: 3, fontWeight: 700 }}>Anual</ToggleButton>
+        </ToggleButtonGroup>
+      </Stack>
+
+      {plansQuery.isLoading ? (
+        <Stack alignItems="center" sx={{ py: 6 }}><CircularProgress /></Stack>
+      ) : plansQuery.isError ? (
+        <Alert severity="error">Não foi possível carregar os planos. Recarregue a página.</Alert>
+      ) : plans.length === 0 ? (
+        <Alert severity="info">Nenhum plano disponível no momento.</Alert>
+      ) : (
+        <Grid container spacing={2}>
+          {plans.map((plan) => (
+            <Grid item xs={12} sm={6} md={4} key={plan.id}>
+              <PlanCard plan={plan} period={period} selected={planId === plan.id} onSelect={() => setPlanId(plan.id)} />
+            </Grid>
+          ))}
+        </Grid>
+      )}
+
+      {selectedPlan && (
+        <Card sx={{ p: { xs: 2.5, md: 3 }, mt: 3 }}>
+          <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.5 }}>Seus dados</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Plano <strong>{selectedPlan.name}</strong> · {period === 'annual' ? 'Anual' : 'Mensal'} · <strong>{BRL(selectedPrice)}</strong>
+          </Typography>
+          <Divider sx={{ mb: 2 }} />
+          {error && <Alert severity="warning" sx={{ mb: 2 }}>{error}</Alert>}
+          <Box component="form" onSubmit={handleSubmit}>
+            <Grid container spacing={2}>
+              <Grid item xs={12} sm={6}>
+                <TextField fullWidth label="Nome da empresa" value={form.company_name} onChange={setField('company_name')} />
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                <TextField fullWidth label="CPF ou CNPJ" value={form.document} onChange={setField('document')} placeholder="Só números" />
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                <TextField fullWidth label="Seu nome" value={form.admin_name} onChange={setField('admin_name')} />
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                <TextField fullWidth label="Telefone / WhatsApp" value={form.phone} onChange={setField('phone')} />
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                <TextField fullWidth type="email" label="E-mail de acesso" value={form.admin_email} onChange={setField('admin_email')} />
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                <TextField fullWidth type="password" label="Senha" value={form.admin_password} onChange={setField('admin_password')} helperText="Mínimo 6 caracteres" />
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                <TextField fullWidth label="Código de cupom (opcional)" value={form.code} onChange={setField('code')} />
+              </Grid>
+            </Grid>
+            <Stack direction="row" justifyContent="flex-end" sx={{ mt: 3 }}>
+              <Button type="submit" variant="contained" size="large" disabled={signup.isPending}>
+                {signup.isPending ? 'Enviando…' : 'Criar conta'}
+              </Button>
+            </Stack>
+          </Box>
+        </Card>
+      )}
+
+      <Stack alignItems="center" sx={{ mt: 3 }}>
+        <Typography variant="body2" color="text.secondary">
+          Já tem conta?{' '}
+          <Button variant="text" size="small" onClick={() => navigate('/login')}>Entrar</Button>
+        </Typography>
+      </Stack>
+    </Container>
+  )
+}

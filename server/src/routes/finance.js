@@ -56,42 +56,82 @@ function addOneMonth(date, day) {
   return new Date(target.getFullYear(), target.getMonth(), d);
 }
 
+// Identidade de uma recorrência: mesma conta = mesmo label + descrição
+// (normalizados: sem espaços nas pontas e caixa unificada). Vários meses
+// históricos com valores diferentes ("só mudou o valor") são UMA única série —
+// não recorrências separadas. O valor NÃO entra na identidade de propósito.
+const KEY_LABEL = 'LOWER(TRIM(label))';
+const KEY_DESC = "LOWER(TRIM(COALESCE(description,'')))";
+const recurrenceKey = (label, description) =>
+  `${String(label ?? '').trim().toLowerCase()}${String(description ?? '').trim().toLowerCase()}`;
+
 const AUDIT = `
   (SELECT COALESCE(NULLIF(cu.name,''), cu.email) FROM ${SCHEMA}.users cu WHERE cu.id = f.created_by) AS created_by_name,
   (SELECT COALESCE(NULLIF(eu.name,''), eu.email) FROM ${SCHEMA}.users eu WHERE eu.id = f.updated_by) AS updated_by_name
 `;
 
-// Gera as ocorrências mensais faltantes das despesas recorrentes ativas,
-// até o mês atual. Idempotente (não duplica meses já gerados).
+// Gera as ocorrências mensais faltantes das despesas recorrentes ativas, até o
+// mês atual. A recorrência é POR IDENTIDADE (label+descrição): mesmo que existam
+// vários lançamentos recorrentes da mesma conta (histórico com valores diferentes),
+// eles formam UMA série e geram só 1 ocorrência por mês. Idempotente: nunca cria
+// um mês que já tenha lançamento daquela identidade — então não duplica.
 async function generateRecurringExpenses(companyId, now = new Date()) {
   const curKey = now.getFullYear() * 100 + (now.getMonth() + 1);
-  const roots = await query(
-    `SELECT id, label, description, amount, paid_at, expense_type, created_by
+  // Uma "fonte" por identidade: o lançamento recorrente ativo mais recente. Serve
+  // de âncora para o recurrence_of das ocorrências geradas.
+  const sources = await query(
+    `SELECT DISTINCT ON (${KEY_LABEL}, ${KEY_DESC})
+            id, label, description
        FROM ${SCHEMA}.finance_expenses
-      WHERE company_id = $1 AND is_recurring = true AND recurrence_active = true`,
+      WHERE company_id = $1 AND is_recurring = true AND recurrence_active = true
+      ORDER BY ${KEY_LABEL}, ${KEY_DESC}, paid_at DESC, id DESC`,
     [companyId]
   );
-  for (const root of roots.rows) {
-    const last = await query(
-      `SELECT MAX(paid_at) AS last FROM ${SCHEMA}.finance_expenses
-        WHERE company_id = $1 AND (id = $2 OR recurrence_of = $2)`,
-      [companyId, root.id]
+  for (const src of sources.rows) {
+    // Todos os lançamentos desta identidade (histórico + já gerados), do mais
+    // recente para o mais antigo.
+    const all = await query(
+      `SELECT id, label, description, amount, paid_at, expense_type, created_by
+         FROM ${SCHEMA}.finance_expenses
+        WHERE company_id = $1
+          AND LOWER(TRIM(label)) = LOWER(TRIM($2))
+          AND LOWER(TRIM(COALESCE(description,''))) = LOWER(TRIM(COALESCE($3,'')))
+        ORDER BY paid_at DESC, id DESC`,
+      [companyId, src.label, src.description]
     );
-    let lastDate = ensureDateOnly(last.rows[0]?.last) || ensureDateOnly(root.paid_at);
-    if (!lastDate) continue;
-    const rootDay = ensureDateOnly(root.paid_at)?.getDate() || lastDate.getDate();
+    const rows = all.rows;
+    if (!rows.length) continue;
+
+    // Template das novas ocorrências = lançamento mais recente (último valor/dia).
+    const latest = rows[0];
+    const latestDate = ensureDateOnly(latest.paid_at);
+    if (!latestDate) continue;
+    const dayRef = latestDate.getDate();
+
+    // Meses (AAAAMM) que já têm lançamento desta identidade — não gera de novo.
+    const existing = new Set(rows.map((r) => {
+      const d = ensureDateOnly(r.paid_at);
+      return d.getFullYear() * 100 + (d.getMonth() + 1);
+    }));
+
+    let cursor = latestDate;
     let guard = 0;
     while (guard++ < 240) {
-      const next = addOneMonth(lastDate, rootDay);
+      const next = addOneMonth(cursor, dayRef);
       const nextKey = next.getFullYear() * 100 + (next.getMonth() + 1);
       if (nextKey > curKey) break;
-      await query(
-        `INSERT INTO ${SCHEMA}.finance_expenses
-           (company_id, label, description, amount, paid_at, is_recurring, recurrence_active, expense_type, recurrence_of, created_by)
-         VALUES ($1,$2,$3,$4,$5,false,false,$6,$7,$8)`,
-        [companyId, root.label, root.description, root.amount, formatISODate(next), root.expense_type || 'variable', root.id, root.created_by]
-      );
-      lastDate = next;
+      if (!existing.has(nextKey)) {
+        // Nasce como 'pending' (a pagar): a ocorrência do mês ainda não foi paga,
+        // então não deve descontar do saldo até ser confirmada como paga.
+        await query(
+          `INSERT INTO ${SCHEMA}.finance_expenses
+             (company_id, label, description, amount, paid_at, is_recurring, recurrence_active, expense_type, recurrence_of, status, created_by)
+           VALUES ($1,$2,$3,$4,$5,false,false,$6,$7,'pending',$8)`,
+          [companyId, latest.label, latest.description, latest.amount, formatISODate(next), latest.expense_type || 'variable', src.id, latest.created_by]
+        );
+        existing.add(nextKey);
+      }
+      cursor = next;
     }
   }
 }
@@ -213,11 +253,14 @@ router.post('/expenses', requireAuth, companyScope(true), requirePermission('fin
     const description = req.body?.description != null ? String(req.body.description).trim() || null : null;
     const isRecurring = Boolean(req.body?.is_recurring);
     const expenseType = parseExpenseType(req.body?.expense_type);
+    // Por padrão a despesa lançada manualmente já é 'paid' (o usuário está
+    // registrando algo pago); pode marcar como pendente ('a pagar').
+    const status = req.body?.status === 'pending' ? 'pending' : 'paid';
     const r = await query(
       `INSERT INTO ${SCHEMA}.finance_expenses
-         (company_id, label, description, amount, paid_at, is_recurring, recurrence_active, expense_type, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8) RETURNING *`,
-      [req.companyId, label, description, amount, paidAt, isRecurring, expenseType, req.user.id]
+         (company_id, label, description, amount, paid_at, is_recurring, recurrence_active, expense_type, status, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9) RETURNING *`,
+      [req.companyId, label, description, amount, paidAt, isRecurring, expenseType, status, req.user.id]
     );
     res.status(201).json(r.rows[0]);
   } catch (e) { respondError(res, e); }
@@ -248,7 +291,94 @@ router.post('/expenses/import', requireAuth, companyScope(true), requirePermissi
   try {
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
     if (items.length > 5000) return res.status(400).json({ error: 'Limite de 5000 linhas por importação' });
+
+    // Força a inclusão sem checagem de duplicados: o usuário revisou o resultado e
+    // decidiu manter linhas que "já existiam" (ex.: várias "Taxas/Impostos" no mesmo
+    // mês são lançamentos legítimos, não duplicatas). Insere cada item como veio.
+    if (req.body?.force === true) {
+      let imported = 0;
+      const errors = [];
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i] || {};
+        try {
+          const label = parseLabel(it.label);
+          const amount = parseAmount(it.amount);
+          const paidAt = parseDate(it.paid_at, 'Data de pagamento');
+          const description = it.description ? String(it.description).trim() || null : null;
+          const isRecurring = Boolean(it.is_recurring);
+          const expenseType = parseExpenseType(it.expense_type);
+          await query(
+            `INSERT INTO ${SCHEMA}.finance_expenses
+               (company_id, label, description, amount, paid_at, is_recurring, recurrence_active, expense_type, created_by)
+             VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8)`,
+            [req.companyId, label, description, amount, paidAt, isRecurring, expenseType, req.user.id]
+          );
+          imported++;
+        } catch (e) { errors.push({ line: i + 2, error: e.message }); }
+      }
+      return res.json({ imported, skipped: items.length - imported, duplicates: 0, duplicateSamples: [], recurringSeries: 0, forced: true, errors: errors.slice(0, 50) });
+    }
+
+    const ymOfDate = (paidAt) => { const d = ensureDateOnly(paidAt); return d ? d.getFullYear() * 100 + (d.getMonth() + 1) : null; };
+    const dedupKey = (label, description, ym) => `${recurrenceKey(label, description)}${ym}`;
+
+    // Anti-duplicação: um mesmo mês da MESMA conta (label+descrição) não é importado
+    // duas vezes — nem contra o que já existe no banco, nem repetido na planilha.
+    // Reimportar meses anteriores (ou uma ocorrência já gerada pela recorrência) é
+    // justamente o que duplicava. Guardamos o valor atual p/ sinalizar quando difere.
+    const existing = new Map(); // "identidade\x01AAAAMM" -> valor atual no banco
+    const ex = await query(
+      `SELECT LOWER(TRIM(label)) AS l, LOWER(TRIM(COALESCE(description,''))) AS d,
+              (EXTRACT(YEAR FROM paid_at) * 100 + EXTRACT(MONTH FROM paid_at))::int AS ym,
+              amount
+         FROM ${SCHEMA}.finance_expenses WHERE company_id = $1`,
+      [req.companyId]
+    );
+    for (const r of ex.rows) existing.set(`${r.l}${r.d}${r.ym}`, Number(r.amount));
+
+    // Marca as linhas duplicadas (mês já existente no banco OU repetido na planilha).
+    const seen = new Set();
+    const dup = items.map((it) => {
+      const ym = ymOfDate(it?.paid_at);
+      if (ym == null) return false; // data inválida segue o fluxo de erro normal
+      const k = dedupKey(it.label, it.description, ym);
+      if (existing.has(k) || seen.has(k)) return true;
+      seen.add(k);
+      return false;
+    });
+
+    // Recorrência é por identidade (label+descrição). Entre as linhas recorrentes
+    // NÃO duplicadas, só a de mês mais recente por identidade vira a "fonte"; os
+    // meses anteriores entram como histórico (is_recurring=false). E se já existir
+    // uma fonte ativa no banco, nenhuma nova é criada.
+    const latestByKey = new Map();
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i] || {};
+      if (!it.is_recurring || dup[i]) continue;
+      const d = String(it.paid_at || '');
+      if (!DATE_RE.test(d)) continue;
+      const key = recurrenceKey(it.label, it.description);
+      const prev = latestByKey.get(key);
+      if (prev == null || d > String(items[prev].paid_at || '')) latestByKey.set(key, i);
+    }
+    const sourceIdx = new Set();
+    for (const [, idx] of latestByKey) {
+      const it = items[idx];
+      const exists = await query(
+        `SELECT 1 FROM ${SCHEMA}.finance_expenses
+          WHERE company_id = $1 AND is_recurring = true AND recurrence_active = true
+            AND LOWER(TRIM(label)) = LOWER(TRIM($2))
+            AND LOWER(TRIM(COALESCE(description,''))) = LOWER(TRIM(COALESCE($3,'')))
+          LIMIT 1`,
+        [req.companyId, it.label, it.description]
+      );
+      if (!exists.rows.length) sourceIdx.add(idx);
+    }
+
     let imported = 0;
+    let recurringSeries = 0;
+    let duplicates = 0;
+    const duplicateSamples = [];
     const errors = [];
     for (let i = 0; i < items.length; i++) {
       const it = items[i] || {};
@@ -257,7 +387,17 @@ router.post('/expenses/import', requireAuth, companyScope(true), requirePermissi
         const amount = parseAmount(it.amount);
         const paidAt = parseDate(it.paid_at, 'Data de pagamento');
         const description = it.description ? String(it.description).trim() || null : null;
-        const isRecurring = Boolean(it.is_recurring);
+        if (dup[i]) {
+          duplicates++;
+          const atual = existing.get(dedupKey(label, description, ymOfDate(paidAt)));
+          if (duplicateSamples.length < 500) {
+            duplicateSamples.push({ line: i + 2, label, mes: paidAt.slice(0, 7), valor: amount, valorAtual: atual ?? null, valorDiferente: atual != null && Number(atual.toFixed(2)) !== amount });
+          }
+          continue;
+        }
+        // Só a "fonte" de cada identidade fica recorrente; os demais meses são histórico.
+        const isRecurring = sourceIdx.has(i);
+        if (isRecurring) recurringSeries++;
         const expenseType = parseExpenseType(it.expense_type);
         await query(
           `INSERT INTO ${SCHEMA}.finance_expenses
@@ -268,23 +408,54 @@ router.post('/expenses/import', requireAuth, companyScope(true), requirePermissi
         imported++;
       } catch (e) { errors.push({ line: i + 2, error: e.message }); }
     }
-    res.json({ imported, skipped: items.length - imported, errors: errors.slice(0, 50) });
+    res.json({ imported, skipped: items.length - imported, duplicates, duplicateSamples, recurringSeries, errors: errors.slice(0, 50) });
   } catch (e) { respondError(res, e); }
 });
 
-// Encerra a recorrência (mantém os lançamentos retroativos).
+// Liga/encerra a recorrência (mantém os lançamentos retroativos). Como a série é
+// por identidade (label+descrição), aplica a TODA a série — assim "encerrar" de
+// fato para de gerar, mesmo que existam vários lançamentos-fonte da mesma conta.
 router.patch('/expenses/:id/recurrence', requireAuth, companyScope(true), requirePermission('finance.expenses.manage'), async (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) return res.status(400).json({ error: 'id inválido' });
     const active = Boolean(req.body?.active);
+    const target = await query(
+      `SELECT label, description FROM ${SCHEMA}.finance_expenses
+        WHERE id=$1 AND company_id=$2 AND is_recurring=true`,
+      [id, req.companyId]
+    );
+    if (!target.rows[0]) return res.status(404).json({ error: 'Despesa recorrente não encontrada' });
+    const { label, description } = target.rows[0];
     const r = await query(
       `UPDATE ${SCHEMA}.finance_expenses
           SET recurrence_active=$1, updated_by=$2, updated_at=now()
-        WHERE id=$3 AND company_id=$4 AND is_recurring=true RETURNING *`,
-      [active, req.user.id, id, req.companyId]
+        WHERE company_id=$3 AND is_recurring=true
+          AND LOWER(TRIM(label)) = LOWER(TRIM($4))
+          AND LOWER(TRIM(COALESCE(description,''))) = LOWER(TRIM(COALESCE($5,'')))
+        RETURNING *`,
+      [active, req.user.id, req.companyId, label, description]
     );
-    if (!r.rows[0]) return res.status(404).json({ error: 'Despesa recorrente não encontrada' });
+    res.json(r.rows.find((x) => x.id === id) || r.rows[0]);
+  } catch (e) { respondError(res, e); }
+});
+
+// Marca a despesa como paga ('paid') ou volta para pendente ('pending'). Só ao
+// pagar ela passa a descontar do saldo. Opcionalmente atualiza a data de pagamento.
+router.patch('/expenses/:id/pay', requireAuth, companyScope(true), requirePermission('finance.expenses.manage'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'id inválido' });
+    const paid = Boolean(req.body?.paid);
+    const status = paid ? 'paid' : 'pending';
+    const paidAt = paid && req.body?.paid_at ? parseDate(req.body.paid_at, 'Data de pagamento') : null;
+    const r = await query(
+      `UPDATE ${SCHEMA}.finance_expenses
+          SET status=$1, paid_at=COALESCE($2::date, paid_at), updated_by=$3, updated_at=now()
+        WHERE id=$4 AND company_id=$5 RETURNING *`,
+      [status, paidAt, req.user.id, id, req.companyId]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Despesa não encontrada' });
     res.json(r.rows[0]);
   } catch (e) { respondError(res, e); }
 });
@@ -386,12 +557,14 @@ router.get('/summary', requireAuth, companyScope(true), requireAnyPermission(['f
           ${ranged ? 'AND COALESCE(b.gateway_paid_at::date, b.billing_date) >= $2::date AND COALESCE(b.gateway_paid_at::date, b.billing_date) < $3::date' : ''}`,
       params
     );
-    // Despesas no período (com quebra por tipo: fixa/variável).
+    // Despesas no período. Só as PAGAS descontam do saldo; as pendentes (a pagar)
+    // são reportadas à parte. Quebra por tipo (fixa/variável) considera as pagas.
     const exp = await query(
       `SELECT
-         COALESCE(SUM(amount),0)::numeric(14,2) AS total,
-         COALESCE(SUM(amount) FILTER (WHERE expense_type = 'fixed'),0)::numeric(14,2) AS fixed,
-         COALESCE(SUM(amount) FILTER (WHERE expense_type <> 'fixed'),0)::numeric(14,2) AS variable
+         COALESCE(SUM(amount) FILTER (WHERE status = 'paid'),0)::numeric(14,2) AS total,
+         COALESCE(SUM(amount) FILTER (WHERE status = 'paid' AND expense_type = 'fixed'),0)::numeric(14,2) AS fixed,
+         COALESCE(SUM(amount) FILTER (WHERE status = 'paid' AND expense_type <> 'fixed'),0)::numeric(14,2) AS variable,
+         COALESCE(SUM(amount) FILTER (WHERE status = 'pending'),0)::numeric(14,2) AS pending
        FROM ${SCHEMA}.finance_expenses
         WHERE company_id=$1 ${ranged ? 'AND paid_at >= $2::date AND paid_at < $3::date' : ''}`,
       params
@@ -401,6 +574,7 @@ router.get('/summary', requireAuth, companyScope(true), requireAnyPermission(['f
     const revenuesContracts = Number(contracts.rows[0].total || 0);
     const totalRevenues = Number((revenuesManual + revenuesContracts).toFixed(2));
     const totalExpenses = Number(exp.rows[0].total || 0);
+    const pendingExpenses = Number(exp.rows[0].pending || 0);
 
     // Redige a parte que o usuário não tem permissão de ver (receitas ou despesas).
     const perms = req.user.role === 'master' ? null : await getEffectivePermissions(req.user);
@@ -414,6 +588,7 @@ router.get('/summary', requireAuth, companyScope(true), requireAnyPermission(['f
       revenuesContracts: canRev ? revenuesContracts : null,
       totalRevenues: canRev ? totalRevenues : null,
       totalExpenses: canExp ? totalExpenses : null,
+      pendingExpenses: canExp ? pendingExpenses : null,
       fixedExpenses: canExp ? Number(exp.rows[0].fixed || 0) : null,
       variableExpenses: canExp ? Number(exp.rows[0].variable || 0) : null,
       balance: (canRev && canExp) ? Number((totalRevenues - totalExpenses).toFixed(2)) : null,
@@ -498,7 +673,7 @@ router.get('/summary/annual', requireAuth, companyScope(true),
            SELECT COALESCE(SUM(fe.amount) FILTER (WHERE fe.expense_type = 'fixed'), 0) AS fixed,
                   COALESCE(SUM(fe.amount) FILTER (WHERE fe.expense_type <> 'fixed'), 0) AS variable
              FROM ${SCHEMA}.finance_expenses fe
-            WHERE fe.company_id = $1 AND fe.paid_at >= m.som AND fe.paid_at < m.nextm
+            WHERE fe.company_id = $1 AND fe.status = 'paid' AND fe.paid_at >= m.som AND fe.paid_at < m.nextm
          ) e ON true
          ORDER BY m.som`,
         [req.companyId, fromDate, toDate]
@@ -578,7 +753,7 @@ async function monthlyFinanceBase(companyId, fromDate, toDate) {
          SELECT COALESCE(SUM(fe.amount) FILTER (WHERE fe.expense_type = 'fixed'), 0) fixed,
                 COALESCE(SUM(fe.amount) FILTER (WHERE fe.expense_type <> 'fixed'), 0) variable, COUNT(*) n
            FROM ${SCHEMA}.finance_expenses fe
-          WHERE fe.company_id = $1 AND fe.paid_at >= m.som AND fe.paid_at < m.nextm
+          WHERE fe.company_id = $1 AND fe.status = 'paid' AND fe.paid_at >= m.som AND fe.paid_at < m.nextm
        ) e ON true
        ORDER BY m.som`,
     [companyId, fromDate, toDate]
@@ -627,7 +802,7 @@ router.get('/dashboard/despesas-categoria', ...dashGuard, async (req, res) => {
       `SELECT fe.label AS nome, fe.expense_type,
               SUM(fe.amount)::numeric(14,2) AS valor
          FROM ${SCHEMA}.finance_expenses fe
-        WHERE fe.company_id = $1 AND fe.paid_at >= $2::date AND fe.paid_at < $3::date
+        WHERE fe.company_id = $1 AND fe.status = 'paid' AND fe.paid_at >= $2::date AND fe.paid_at < $3::date
         GROUP BY fe.label, fe.expense_type
        HAVING SUM(fe.amount) <> 0
         ORDER BY SUM(fe.amount) DESC`,

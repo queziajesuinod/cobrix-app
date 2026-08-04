@@ -66,6 +66,52 @@ async function initDb() {
         PRIMARY KEY (user_id, company_id)
       );
     `);
+    // --- SaaS: catálogo de planos (Fase 1) ---
+    // Um plano define preço (mensal/anual), cotas e o TETO de acesso
+    // (permission_keys) que limita o que a empresa-cliente enxerga. Ver
+    // services/permissions.js (interseção do teto). Empresa sem plano = acesso
+    // total (sem teto), para não afetar as empresas já existentes.
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.plans (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT,
+        price_monthly NUMERIC(14,2),
+        price_annual NUMERIC(14,2),
+        clients_limit INTEGER,
+        contracts_limit INTEGER,
+        permission_keys TEXT[] NOT NULL DEFAULT '{}',
+        active BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ,
+        created_by INTEGER REFERENCES ${schema}.users(id)
+      );
+    `);
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS plan_id INTEGER REFERENCES ${schema}.plans(id);`);
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';`);
+    // Empresa "dona" do SaaS: onde vivem os clientes/contratos das assinaturas e
+    // para onde vão os pagamentos. Só uma empresa deve ter is_saas_owner = true.
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS is_saas_owner BOOLEAN NOT NULL DEFAULT false;`);
+    // Assinatura: liga a empresa-cliente provisionada ao seu plano e ao
+    // contrato/cliente criados no tenant do owner. É por aqui que a ativação
+    // (Fase 3) sabe qual empresa liberar quando o pagamento confirma.
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.company_subscriptions (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
+        plan_id INTEGER REFERENCES ${schema}.plans(id),
+        period TEXT NOT NULL DEFAULT 'monthly',
+        owner_company_id INTEGER REFERENCES ${schema}.companies(id),
+        client_id INTEGER,
+        contract_id INTEGER,
+        partner_id INTEGER,
+        campaign_id INTEGER,
+        promo_code TEXT,
+        status TEXT NOT NULL DEFAULT 'pending_payment',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        activated_at TIMESTAMPTZ
+      );
+    `);
     await c.query(`
       CREATE TABLE IF NOT EXISTS clients (
         id SERIAL PRIMARY KEY,
@@ -368,6 +414,10 @@ async function initDb() {
     await c.query(`CREATE INDEX IF NOT EXISTS idx_fin_exp_recurrence ON ${schema}.finance_expenses (recurrence_of);`);
     // Tipo de despesa: 'fixed' (fixa) ou 'variable' (variável) — para diferenciar em gráfico.
     await c.query(`ALTER TABLE ${schema}.finance_expenses ADD COLUMN IF NOT EXISTS expense_type TEXT NOT NULL DEFAULT 'variable';`);
+    // Situação de pagamento: 'paid' (paga, desconta do saldo) ou 'pending' (a pagar).
+    // Default 'paid' mantém o histórico existente como pago; só as ocorrências geradas
+    // pela recorrência nascem 'pending' até serem confirmadas como pagas.
+    await c.query(`ALTER TABLE ${schema}.finance_expenses ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'paid';`);
 
     // Metas financeiras anuais (orçado) por empresa: 1 linha por ano.
     await c.query(`

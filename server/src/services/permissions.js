@@ -56,8 +56,35 @@ async function seedPermissions() {
   }
 }
 
-// Permissões efetivas de um usuário: master = tudo; demais = perfil ∪ grants − revokes.
-async function getEffectivePermissions(user) {
+// Teto de acesso do PLANO da empresa (camada 1 do modelo de 2 camadas).
+// Retorna um Set com as chaves permitidas pelo plano, ou `null` quando não há
+// teto — empresa sem plano (ou plano sem chaves) = acesso total, para não
+// afetar empresas já existentes. Falha "aberta" (null) em caso de erro para
+// nunca trancar o acesso por um problema de infraestrutura — o teto só restringe.
+async function getCompanyCeiling(companyId) {
+  if (!companyId) return null;
+  try {
+    const r = await query(
+      `SELECT pl.permission_keys
+         FROM ${SCHEMA}.companies c
+         JOIN ${SCHEMA}.plans pl ON pl.id = c.plan_id
+        WHERE c.id = $1`,
+      [companyId]
+    );
+    const row = r.rows[0];
+    if (!row) return null; // empresa sem plano → sem teto
+    const keys = Array.isArray(row.permission_keys) ? row.permission_keys : [];
+    if (keys.length === 0) return null; // plano sem chaves definidas → sem teto
+    return new Set(keys.filter(isValidPermission));
+  } catch {
+    return null;
+  }
+}
+
+// Permissões efetivas de um usuário: master = tudo; demais = (perfil ∪ grants −
+// revokes) ∩ teto-do-plano-da-empresa. `companyId` define qual empresa (e, logo,
+// qual teto) aplicar; se omitido, usa a empresa principal do token.
+async function getEffectivePermissions(user, companyId) {
   if (!user) return [];
   if (user.role === 'master') return [...ALL_KEYS];
 
@@ -79,7 +106,13 @@ async function getEffectivePermissions(user) {
     else set.delete(o.permission_key);
   }
   // Filtra por chaves válidas do catálogo (limpa chaves obsoletas).
-  return [...set].filter(isValidPermission);
+  let effective = [...set].filter(isValidPermission);
+
+  // Camada 1: aplica o teto do plano da empresa (interseção).
+  const cid = companyId ?? (Array.isArray(user.company_ids) ? user.company_ids[0] : null);
+  const ceiling = await getCompanyCeiling(cid);
+  if (ceiling) effective = effective.filter((k) => ceiling.has(k));
+  return effective;
 }
 
 // Middleware: exige uma permissão específica (master sempre passa).
@@ -88,7 +121,7 @@ function requirePermission(key) {
     try {
       if (!req.user) return res.status(401).json({ error: 'Não autenticado' });
       if (req.user.role === 'master') return next();
-      const perms = await getEffectivePermissions(req.user);
+      const perms = await getEffectivePermissions(req.user, req.companyId);
       if (perms.includes(key)) return next();
       return res.status(403).json({ error: 'Acesso negado: sem permissão para esta ação.' });
     } catch (e) {
@@ -103,7 +136,7 @@ function requireAnyPermission(keys) {
     try {
       if (!req.user) return res.status(401).json({ error: 'Não autenticado' });
       if (req.user.role === 'master') return next();
-      const perms = await getEffectivePermissions(req.user);
+      const perms = await getEffectivePermissions(req.user, req.companyId);
       if (keys.some((k) => perms.includes(k))) return next();
       return res.status(403).json({ error: 'Acesso negado: sem permissão para esta ação.' });
     } catch (e) {
@@ -119,4 +152,4 @@ function masterOnly(req, res, next) {
   next();
 }
 
-module.exports = { seedPermissions, getEffectivePermissions, requirePermission, requireAnyPermission, masterOnly };
+module.exports = { seedPermissions, getEffectivePermissions, getCompanyCeiling, requirePermission, requireAnyPermission, masterOnly };
