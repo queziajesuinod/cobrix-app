@@ -62,8 +62,9 @@ const CATALOG = [
     { key: 'users.create', label: 'Criar usuários (Operador/Somente leitura)', type: 'action' },
   ] },
   { module: 'tasks', label: 'Gerenciador de Tarefas', permissions: [
-    { key: 'tasks.view', label: 'Acessar o quadro da minha equipe', type: 'view' },
-    { key: 'tasks.manage', label: 'Gerente: equipes, colunas, modelos e cartões', type: 'action' },
+    { key: 'tasks.view', label: 'Acessar o quadro e minhas tarefas', type: 'view' },
+    { key: 'tasks.manage', label: 'Criar/editar rotinas, etapas e tarefas', type: 'action' },
+    { key: 'tasks.gestor', label: 'Gestor: visão global e painel de produtividade', type: 'action' },
   ] },
   { module: 'finance', label: 'Gerenciador Financeiro', permissions: [
     { key: 'finance.revenues.view', label: 'Receitas: acessar', type: 'view' },

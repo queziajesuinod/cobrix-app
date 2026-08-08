@@ -1,66 +1,157 @@
 // server/src/jobs/tasks-cron.js
 // Job diário do Gerenciador de Tarefas:
-//  1) Rola para o mês vigente os cartões abertos de meses anteriores (mantém o
-//     due_date original — SLA honesto — e registra a rolagem no histórico).
-//  2) Gera notificações de prazo (D-3 / amanhã / hoje / vencida) na central do
-//     sininho, idempotentes por cartão+faixa via dedup_key.
+//  1) Gera as OCORRÊNCIAS das rotinas recorrentes (mensal/anual) até o período
+//     atual — idempotente por (source_node_id, due_date). O nó recorrente é um
+//     TEMPLATE (is_template=true, oculto do board); cada ocorrência é uma cópia
+//     visível com prazo calculado, clonando a subárvore de subitens do template.
+//  2) Notifica prazos na central do sino: 3 dias antes, amanhã, vence hoje e ao
+//     virar atrasada (1 aviso cada, via dedup_key).
 const { query } = require('../db');
 const { createNotification } = require('../services/notifications');
 const { ensureDateOnly, formatISODate } = require('../utils/date-only');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 const pad = (n) => String(n).padStart(2, '0');
-const firstOfMonth = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-01`;
 const daysBetween = (aISO, bISO) => Math.round((new Date(`${bISO}T00:00:00`) - new Date(`${aISO}T00:00:00`)) / 86400000);
 
-async function rollAllTeams(now) {
-  const first = firstOfMonth(now);
-  const past = await query(
-    `SELECT id, company_id, competence FROM ${SCHEMA}.task_cards WHERE status='open' AND competence < $1::date`,
-    [first]
-  );
-  for (const c of past.rows) {
-    const d = ensureDateOnly(c.competence);
-    const diff = (now.getFullYear() * 12 + now.getMonth()) - (d.getFullYear() * 12 + d.getMonth());
-    if (diff <= 0) continue;
-    await query(`UPDATE ${SCHEMA}.task_cards SET competence=$1::date, months_rolled = months_rolled + $2, updated_at=now() WHERE id=$3`, [first, diff, c.id]);
-    await query(`INSERT INTO ${SCHEMA}.task_activity (card_id, user_id, action, detail) VALUES ($1,NULL,'rolled',$2)`, [c.id, `Rolou ${diff} mês(es) para ${first.slice(0, 7)}`]);
-  }
-  return past.rowCount;
+// Data (AAAA-MM-DD) do dia informado, com clamp para o último dia do mês.
+function occurrenceISO(year, month, day) {
+  const last = new Date(year, month, 0).getDate();
+  const d = Math.min(Math.max(Number(day) || 1, 1), last);
+  return `${year}-${pad(month)}-${pad(d)}`;
 }
 
-// Notifica: 3 dias ANTES do prazo (D-3) e 4 dias DEPOIS de vencer. Pessoal para o
-// responsável (assignee); se não houver responsável, vai para a empresa (todos).
+async function firstStageId(companyId) {
+  const r = await query(`SELECT id FROM ${SCHEMA}.task_stages WHERE company_id=$1 ORDER BY position, id LIMIT 1`, [companyId]);
+  return r.rows[0]?.id || null;
+}
+
+// Clona recursivamente os subitens do template (srcParentId) sob newParentId, como
+// nós reais da ocorrência (is_template=false), mantendo source_node_id p/ rastreio.
+async function cloneChildren(srcParentId, newParentId, companyId, stageId) {
+  const kids = await query(`SELECT * FROM ${SCHEMA}.task_nodes WHERE parent_id=$1 ORDER BY position, id`, [srcParentId]);
+  for (const k of kids.rows) {
+    const r = await query(
+      `INSERT INTO ${SCHEMA}.task_nodes
+         (company_id, group_id, parent_id, stage_id, kind, title, description, assignee_id, priority, due_date,
+          recurrence, is_template, source_node_id, client_id, contract_id, position, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'none',false,$11,$12,$13,$14,$15) RETURNING id`,
+      [companyId, k.group_id, newParentId, stageId, k.kind, k.title, k.description, k.assignee_id, k.priority, k.due_date, k.id, k.client_id, k.contract_id, k.position, k.created_by]
+    );
+    await cloneChildren(k.id, r.rows[0].id, companyId, stageId);
+  }
+}
+
+// Cria a ocorrência do template para o prazo dado, se ainda não existir. Retorna 1/0.
+async function ensureOccurrence(t, dueISO) {
+  const exists = await query(
+    `SELECT 1 FROM ${SCHEMA}.task_nodes WHERE source_node_id=$1 AND due_date=$2 LIMIT 1`,
+    [t.id, dueISO]
+  );
+  if (exists.rows[0]) return 0;
+  const stageId = await firstStageId(t.company_id);
+  const pos = await query(
+    `SELECT COALESCE(MAX(position),-1)+1 AS p FROM ${SCHEMA}.task_nodes
+      WHERE company_id=$1 AND COALESCE(group_id,0)=COALESCE($2,0) AND parent_id IS NULL AND is_template=false`,
+    [t.company_id, t.group_id]
+  );
+  const r = await query(
+    `INSERT INTO ${SCHEMA}.task_nodes
+       (company_id, group_id, parent_id, stage_id, kind, title, description, assignee_id, priority, due_date,
+        recurrence, is_template, source_node_id, client_id, contract_id, position, created_by)
+     VALUES ($1,$2,NULL,$3,'fixa',$4,$5,$6,$7,$8,'none',false,$9,$10,$11,$12,$13) RETURNING id`,
+    [t.company_id, t.group_id, stageId, t.title, t.description, t.assignee_id, t.priority, dueISO, t.id, t.client_id, t.contract_id, pos.rows[0].p, t.created_by]
+  );
+  const occId = r.rows[0].id;
+  await cloneChildren(t.id, occId, t.company_id, stageId);
+  await query(
+    `INSERT INTO ${SCHEMA}.task_node_activity (node_id, user_id, action, detail) VALUES ($1,NULL,'generated',$2)`,
+    [occId, `Ocorrência ${dueISO.split('-').reverse().join('/')} da rotina`]
+  );
+  return 1;
+}
+
+// Materializa as ocorrências de todas as rotinas recorrentes de uma empresa até o
+// período atual. Idempotente. Backfill limitado (12 meses / 2 anos) para não explodir.
+async function generateOccurrences(companyId, now = new Date()) {
+  const tps = await query(
+    `SELECT * FROM ${SCHEMA}.task_nodes WHERE company_id=$1 AND is_template=true AND recurrence<>'none'`,
+    [companyId]
+  );
+  const curY = now.getFullYear();
+  const curIdx = curY * 12 + now.getMonth(); // mês atual (0-based)
+  let count = 0;
+  for (const t of tps.rows) {
+    const created = ensureDateOnly(t.created_at) || now;
+    if (t.recurrence === 'monthly') {
+      const day = t.recurrence_day || 1;
+      const createdIdx = created.getFullYear() * 12 + created.getMonth();
+      const startIdx = Math.max(createdIdx, curIdx - 11);
+      for (let idx = startIdx; idx <= curIdx; idx++) {
+        count += await ensureOccurrence(t, occurrenceISO(Math.floor(idx / 12), (idx % 12) + 1, day));
+      }
+    } else if (t.recurrence === 'yearly') {
+      const day = t.recurrence_day || 1;
+      const mon = t.recurrence_month || 1;
+      const startY = Math.max(created.getFullYear(), curY - 2);
+      for (let y = startY; y <= curY; y++) {
+        count += await ensureOccurrence(t, occurrenceISO(y, mon, day));
+      }
+    }
+  }
+  return count;
+}
+
+// Avisos de prazo (cadência "essencial", 1 vez cada via dedup_key):
+//  faltam 3 dias · amanhã · vence hoje · ficou atrasada (1º dia de atraso).
+// Pessoal para o responsável; sem responsável, vai para a empresa. Só tarefas
+// abertas com prazo (não templates).
 async function notifyDeadlines(now) {
   const today = formatISODate(now);
-  const cards = await query(
-    `SELECT id, company_id, title, due_date, assignee_id FROM ${SCHEMA}.task_cards WHERE status='open' AND due_date IS NOT NULL`
+  const nodes = await query(
+    `SELECT id, company_id, title, due_date, assignee_id
+       FROM ${SCHEMA}.task_nodes
+      WHERE status='open' AND is_template=false AND due_date IS NOT NULL`
   );
   let created = 0;
-  for (const c of cards.rows) {
-    const dueISO = formatISODate(c.due_date);
+  for (const n of nodes.rows) {
+    const dueISO = formatISODate(n.due_date);
     if (!dueISO) continue;
-    const diff = daysBetween(today, dueISO); // >0 = faltam dias; <0 = atrasada
+    const diff = daysBetween(today, dueISO); // >0 = faltam dias; 0 = hoje; <0 = atrasada
     let bucket = null; let title = null;
-    if (diff === 3) { bucket = 'd3'; title = `Tarefa vence em 3 dias: ${c.title}`; }
-    else if (diff === -4) { bucket = 'late4'; title = `Tarefa atrasada há 4 dias: ${c.title}`; }
+    if (diff === 3) { bucket = 'd3'; title = `Tarefa vence em 3 dias: ${n.title}`; }
+    else if (diff === 1) { bucket = 'd1'; title = `Tarefa vence amanhã: ${n.title}`; }
+    else if (diff === 0) { bucket = 'd0'; title = `Tarefa vence hoje: ${n.title}`; }
+    else if (diff === -1) { bucket = 'late1'; title = `Tarefa atrasada: ${n.title}`; }
     if (!bucket) continue;
+    const dateBr = dueISO.split('-').reverse().join('/');
     await createNotification({
-      companyId: c.company_id, userId: c.assignee_id || null, type: 'task_due', title,
-      body: `Prazo em ${dueISO.split('-').reverse().join('/')}.`,
-      refType: 'task_card', refId: c.id, link: '/tasks',
-      dedupKey: `task-due:${c.id}:${bucket}`,
+      companyId: n.company_id, userId: n.assignee_id || null, type: 'task_due', title,
+      body: diff < 0 ? `Prazo era ${dateBr} — está atrasada.` : `Prazo em ${dateBr}.`,
+      refType: 'task_node', refId: n.id, link: '/tasks',
+      dedupKey: `task-due:${n.id}:${bucket}`,
     });
     created++;
   }
   return created;
 }
 
-async function runTasksDaily() {
-  const now = new Date();
-  const rolled = await rollAllTeams(now);
-  const notified = await notifyDeadlines(now);
-  return { rolled, notified };
+// Gera ocorrências de TODAS as empresas que têm rotinas recorrentes.
+async function generateAllCompanies(now) {
+  const cos = await query(`SELECT DISTINCT company_id FROM ${SCHEMA}.task_nodes WHERE is_template=true AND recurrence<>'none'`);
+  let total = 0;
+  for (const c of cos.rows) {
+    try { total += await generateOccurrences(c.company_id, now); }
+    catch (e) { console.error('[tasks] geração de ocorrências falhou empresa=%s: %s', c.company_id, e.message); }
+  }
+  return total;
 }
 
-module.exports = { runTasksDaily, rollAllTeams, notifyDeadlines };
+async function runTasksDaily() {
+  const now = new Date();
+  const generated = await generateAllCompanies(now);
+  const notified = await notifyDeadlines(now);
+  return { generated, notified };
+}
+
+module.exports = { runTasksDaily, notifyDeadlines, generateOccurrences, generateAllCompanies };

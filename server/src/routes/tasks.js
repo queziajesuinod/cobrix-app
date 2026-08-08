@@ -3,163 +3,508 @@ const { query } = require('../db');
 const { requireAuth, companyScope } = require('./auth');
 const { requirePermission } = require('../services/permissions');
 const { respondError } = require('../utils/http-error');
-const { ensureDateOnly, formatISODate } = require('../utils/date-only');
 const { createNotification } = require('../services/notifications');
+const { generateOccurrences } = require('../jobs/tasks-cron');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 const router = express.Router();
 
-const pad = (n) => String(n).padStart(2, '0');
 const err = (msg, status = 400) => { const e = new Error(msg); e.status = status; throw e; };
+const PRIORITIES = ['baixa', 'media', 'alta', 'urgente'];
+const parsePriority = (v, fallback = 'media') => (PRIORITIES.includes(String(v || '').toLowerCase()) ? String(v).toLowerCase() : fallback);
+const parseKind = (v) => (String(v || '').toLowerCase() === 'fixa' ? 'fixa' : 'avulsa');
+const parseRecurrence = (v) => (['monthly', 'yearly'].includes(String(v || '').toLowerCase()) ? String(v).toLowerCase() : 'none');
+const optId = (v) => (Number.isInteger(Number(v)) && Number(v) > 0 ? Number(v) : null);
+const optDate = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null);
+const optInt = (v, min, max) => { const n = Number(v); return Number.isInteger(n) && n >= min && n <= max ? n : null; };
 
-// 1º dia do mês a partir de 'AAAA-MM' (ou de uma Date). Base da competência.
-function firstOfMonth(input) {
-  if (input instanceof Date) return `${input.getFullYear()}-${pad(input.getMonth() + 1)}-01`;
-  const m = /^(\d{4})-(\d{2})$/.exec(String(input || '').trim());
-  if (m) return `${m[1]}-${m[2]}-01`;
-  const d = new Date();
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-01`;
-}
-const isAdmin = (user) => user?.role === 'master' || user?.role === 'admin';
+// Acesso ao módulo = tasks.view; gestão (criar/editar rotinas/etapas/tarefas) = tasks.manage;
+// visão global + produtividade = tasks.gestor. Mover/concluir a própria tarefa basta view.
+const view = [requireAuth, companyScope(true), requirePermission('tasks.view')];
+const manage = [requireAuth, companyScope(true), requirePermission('tasks.manage')];
+const gestor = [requireAuth, companyScope(true), requirePermission('tasks.gestor')];
 
-// Papel do usuário na equipe: admin/master contam como 'manager'. Retorna
-// 'manager' | 'member' | null (sem acesso).
-async function roleInTeam(companyId, teamId, user) {
-  const t = await query(`SELECT id FROM ${SCHEMA}.task_teams WHERE id=$1 AND company_id=$2`, [teamId, companyId]);
-  if (!t.rows[0]) return { exists: false, role: null };
-  if (isAdmin(user)) return { exists: true, role: 'manager' };
-  const m = await query(`SELECT role FROM ${SCHEMA}.task_team_members WHERE team_id=$1 AND user_id=$2`, [teamId, user.id]);
-  return { exists: true, role: m.rows[0]?.role || null };
-}
-// Garante acesso à equipe; { manage:true } exige papel de gerente.
-async function assertTeam(req, teamId, { manage = false } = {}) {
-  const { exists, role } = await roleInTeam(req.companyId, teamId, req.user);
-  if (!exists) err('Equipe não encontrada', 404);
-  if (!role) err('Você não participa desta equipe', 403);
-  if (manage && role !== 'manager') err('Apenas o gerente da equipe pode fazer isso', 403);
-  return role;
-}
-async function cardTeam(companyId, cardId) {
-  const r = await query(`SELECT * FROM ${SCHEMA}.task_cards WHERE id=$1 AND company_id=$2`, [cardId, companyId]);
-  if (!r.rows[0]) err('Cartão não encontrado', 404);
-  return r.rows[0];
-}
-// Membro comum só acessa cartões atribuídos a ele; gerente/admin acessam todos.
-async function assertCardAccess(req, card, { manage = false } = {}) {
-  const role = await assertTeam(req, card.team_id, { manage });
-  if (role === 'member' && Number(card.assignee_id) !== Number(req.user.id)) err('Esta tarefa não está atribuída a você', 403);
-  return role;
-}
-async function logActivity(cardId, userId, action, { fromCol = null, toCol = null, detail = null } = {}) {
+const AUTHOR = `(SELECT COALESCE(NULLIF(au.name,''), au.email) FROM ${SCHEMA}.users au WHERE au.id = n.assignee_id) AS assignee_name`;
+// Nomes do vínculo opcional (cliente/contrato) de uma tarefa (alias de tabela `n`).
+const LINKS = `
+  (SELECT cli.name FROM ${SCHEMA}.clients cli WHERE cli.id = n.client_id) AS client_name,
+  (SELECT con.description FROM ${SCHEMA}.contracts con WHERE con.id = n.contract_id) AS contract_description`;
+
+async function logActivity(nodeId, userId, action, detail = null) {
   await query(
-    `INSERT INTO ${SCHEMA}.task_activity (card_id, user_id, action, from_column_id, to_column_id, detail)
-     VALUES ($1,$2,$3,$4,$5,$6)`,
-    [cardId, userId, action, fromCol, toCol, detail]
-  );
+    `INSERT INTO ${SCHEMA}.task_node_activity (node_id, user_id, action, detail) VALUES ($1,$2,$3,$4)`,
+    [nodeId, userId, action, detail]
+  ).catch(() => {});
 }
 
-// Traz para o mês vigente os cartões abertos de competências anteriores (rolagem).
-// Mantém o due_date original (SLA honesto) e registra a rolagem no histórico.
-async function rollForward(companyId, teamId, now = new Date()) {
-  const curFirst = firstOfMonth(now);
-  const past = await query(
-    `SELECT id, competence FROM ${SCHEMA}.task_cards
-      WHERE company_id=$1 AND team_id=$2 AND status='open' AND competence < $3::date`,
-    [companyId, teamId, curFirst]
-  );
-  for (const c of past.rows) {
-    const d = ensureDateOnly(c.competence);
-    const diff = (now.getFullYear() * 12 + now.getMonth()) - (d.getFullYear() * 12 + d.getMonth());
-    if (diff <= 0) continue;
+// Semeia as etapas padrão do quadro na 1ª vez que a empresa acessa o board.
+async function ensureStages(companyId) {
+  const r = await query(`SELECT COUNT(*)::int n FROM ${SCHEMA}.task_stages WHERE company_id=$1`, [companyId]);
+  if (r.rows[0].n > 0) return;
+  const defaults = [['A fazer', false], ['Em andamento', false], ['Concluído', true]];
+  for (let i = 0; i < defaults.length; i++) {
     await query(
-      `UPDATE ${SCHEMA}.task_cards SET competence=$1::date, months_rolled = months_rolled + $2, updated_at=now() WHERE id=$3`,
-      [curFirst, diff, c.id]
+      `INSERT INTO ${SCHEMA}.task_stages (company_id, name, position, is_done) VALUES ($1,$2,$3,$4)`,
+      [companyId, defaults[i][0], i, defaults[i][1]]
     );
-    await logActivity(c.id, null, 'rolled', { detail: `Rolou ${diff} mês(es) para ${curFirst.slice(0, 7)}` });
   }
 }
 
-// Acesso ao módulo = permissão tasks.view. A GESTÃO é decidida pelo PAPEL na
-// equipe (gerente) ou por ser admin — não por uma permissão global — para que o
-// gerente de cada equipe possa gerenciar a sua sem depender de tasks.manage.
-const view = [requireAuth, companyScope(true), requirePermission('tasks.view')];
-const manage = view; // o gate real de gestão é feito por assertTeam(manage)/isAdmin nos handlers
+async function firstStageId(companyId) {
+  const r = await query(`SELECT id FROM ${SCHEMA}.task_stages WHERE company_id=$1 ORDER BY position, id LIMIT 1`, [companyId]);
+  return r.rows[0]?.id || null;
+}
 
-// Modelos são de empresa (não de equipe): exige ser admin ou gerente de ALGUMA equipe.
-async function requireAnyManager(req, res, next) {
+async function getNode(companyId, id) {
+  const r = await query(`SELECT * FROM ${SCHEMA}.task_nodes WHERE id=$1 AND company_id=$2`, [id, companyId]);
+  if (!r.rows[0]) err('Tarefa não encontrada', 404);
+  return r.rows[0];
+}
+
+// ===================== ETAPAS (colunas) =====================
+router.get('/stages', ...view, async (req, res) => {
   try {
-    if (isAdmin(req.user)) return next();
+    await ensureStages(req.companyId);
+    const r = await query(`SELECT id, name, position, is_done FROM ${SCHEMA}.task_stages WHERE company_id=$1 ORDER BY position, id`, [req.companyId]);
+    res.json({ items: r.rows });
+  } catch (e) { respondError(res, e); }
+});
+
+router.post('/stages', ...manage, async (req, res) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    if (name.length < 1) err('Informe o nome da etapa');
+    const pos = await query(`SELECT COALESCE(MAX(position),-1)+1 AS p FROM ${SCHEMA}.task_stages WHERE company_id=$1`, [req.companyId]);
     const r = await query(
-      `SELECT 1 FROM ${SCHEMA}.task_team_members m JOIN ${SCHEMA}.task_teams t ON t.id = m.team_id
-        WHERE t.company_id = $1 AND m.user_id = $2 AND m.role = 'manager' LIMIT 1`,
+      `INSERT INTO ${SCHEMA}.task_stages (company_id, name, position, is_done) VALUES ($1,$2,$3,$4) RETURNING *`,
+      [req.companyId, name, pos.rows[0].p, Boolean(req.body?.is_done)]
+    );
+    res.status(201).json(r.rows[0]);
+  } catch (e) { respondError(res, e); }
+});
+
+router.put('/stages/:id', ...manage, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const cur = await query(`SELECT * FROM ${SCHEMA}.task_stages WHERE id=$1 AND company_id=$2`, [id, req.companyId]);
+    if (!cur.rows[0]) err('Etapa não encontrada', 404);
+    const name = req.body?.name != null ? String(req.body.name).trim() : cur.rows[0].name;
+    const position = Number.isInteger(Number(req.body?.position)) ? Number(req.body.position) : cur.rows[0].position;
+    const isDone = req.body?.is_done != null ? Boolean(req.body.is_done) : cur.rows[0].is_done;
+    const r = await query(
+      `UPDATE ${SCHEMA}.task_stages SET name=$1, position=$2, is_done=$3 WHERE id=$4 RETURNING *`,
+      [name, position, isDone, id]
+    );
+    res.json(r.rows[0]);
+  } catch (e) { respondError(res, e); }
+});
+
+router.delete('/stages/:id', ...manage, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const cur = await query(`SELECT id FROM ${SCHEMA}.task_stages WHERE id=$1 AND company_id=$2`, [id, req.companyId]);
+    if (!cur.rows[0]) err('Etapa não encontrada', 404);
+    const inUse = await query(`SELECT 1 FROM ${SCHEMA}.task_nodes WHERE stage_id=$1 LIMIT 1`, [id]);
+    if (inUse.rows[0]) err('Mova as tarefas desta etapa antes de excluí-la', 409);
+    await query(`DELETE FROM ${SCHEMA}.task_stages WHERE id=$1`, [id]);
+    res.json({ ok: true });
+  } catch (e) { respondError(res, e); }
+});
+
+// ===================== GRUPOS (rotinas / raias) =====================
+router.get('/groups', ...view, async (req, res) => {
+  try {
+    const r = await query(
+      `SELECT g.id, g.name, g.description, g.recurring, g.default_assignee_id, g.default_priority, g.position,
+              (SELECT COUNT(*) FROM ${SCHEMA}.task_nodes n WHERE n.group_id=g.id AND n.parent_id IS NULL AND n.is_template=false)::int AS tasks
+         FROM ${SCHEMA}.task_groups g
+        WHERE g.company_id=$1 ORDER BY g.position, g.name`,
+      [req.companyId]
+    );
+    res.json({ items: r.rows });
+  } catch (e) { respondError(res, e); }
+});
+
+router.post('/groups', ...manage, async (req, res) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    if (name.length < 2) err('Informe o nome da rotina');
+    const pos = await query(`SELECT COALESCE(MAX(position),-1)+1 AS p FROM ${SCHEMA}.task_groups WHERE company_id=$1`, [req.companyId]);
+    const r = await query(
+      `INSERT INTO ${SCHEMA}.task_groups (company_id, name, description, recurring, default_assignee_id, default_priority, position, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [
+        req.companyId, name,
+        req.body?.description ? String(req.body.description).trim() || null : null,
+        req.body?.recurring != null ? Boolean(req.body.recurring) : true,
+        optId(req.body?.default_assignee_id),
+        parsePriority(req.body?.default_priority),
+        pos.rows[0].p, req.user.id,
+      ]
+    );
+    res.status(201).json(r.rows[0]);
+  } catch (e) { respondError(res, e); }
+});
+
+router.put('/groups/:id', ...manage, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const cur = await query(`SELECT * FROM ${SCHEMA}.task_groups WHERE id=$1 AND company_id=$2`, [id, req.companyId]);
+    if (!cur.rows[0]) err('Rotina não encontrada', 404);
+    const g = cur.rows[0];
+    const name = req.body?.name != null ? String(req.body.name).trim() : g.name;
+    if (name.length < 2) err('Nome inválido');
+    const description = req.body?.description !== undefined ? (String(req.body.description || '').trim() || null) : g.description;
+    const recurring = req.body?.recurring != null ? Boolean(req.body.recurring) : g.recurring;
+    const defAssignee = req.body?.default_assignee_id !== undefined ? optId(req.body.default_assignee_id) : g.default_assignee_id;
+    const defPriority = req.body?.default_priority != null ? parsePriority(req.body.default_priority) : g.default_priority;
+    const position = Number.isInteger(Number(req.body?.position)) ? Number(req.body.position) : g.position;
+    const r = await query(
+      `UPDATE ${SCHEMA}.task_groups
+          SET name=$1, description=$2, recurring=$3, default_assignee_id=$4, default_priority=$5, position=$6, updated_at=now()
+        WHERE id=$7 RETURNING *`,
+      [name, description, recurring, defAssignee, defPriority, position, id]
+    );
+    res.json(r.rows[0]);
+  } catch (e) { respondError(res, e); }
+});
+
+// Excluir rotina — só se NÃO houver tarefas vinculadas (em nenhuma etapa, nem
+// recorrências). Evita apagar trabalho por engano.
+router.delete('/groups/:id', ...manage, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const g = await query(`SELECT id FROM ${SCHEMA}.task_groups WHERE id=$1 AND company_id=$2`, [id, req.companyId]);
+    if (!g.rows[0]) err('Rotina não encontrada', 404);
+    const used = await query(`SELECT COUNT(*)::int AS n FROM ${SCHEMA}.task_nodes WHERE group_id=$1`, [id]);
+    if (used.rows[0].n > 0) err(`Esta rotina tem ${used.rows[0].n} tarefa(s) vinculada(s). Mova ou exclua as tarefas antes de remover a rotina.`, 409);
+    await query(`DELETE FROM ${SCHEMA}.task_groups WHERE id=$1`, [id]);
+    res.json({ ok: true });
+  } catch (e) { respondError(res, e); }
+});
+
+// ===================== BOARD (híbrido: raias × etapas) =====================
+// Retorna etapas, grupos (raias) e as tarefas de topo (parent_id nulo). Tarefas com
+// group_id nulo vão para a raia virtual "Avulsas". Subitens são carregados sob demanda.
+router.get('/board', ...view, async (req, res) => {
+  try {
+    await ensureStages(req.companyId);
+    const stages = await query(`SELECT id, name, position, is_done FROM ${SCHEMA}.task_stages WHERE company_id=$1 ORDER BY position, id`, [req.companyId]);
+    const groups = await query(
+      `SELECT id, name, description, recurring, default_assignee_id, default_priority, position
+         FROM ${SCHEMA}.task_groups WHERE company_id=$1 ORDER BY position, name`,
+      [req.companyId]
+    );
+    const nodes = await query(
+      `SELECT n.id, n.group_id, n.stage_id, n.kind, n.title, n.description, n.priority, n.due_date, n.status,
+              n.assignee_id, n.client_id, n.contract_id, n.recurrence, n.position, ${AUTHOR}, ${LINKS},
+              (SELECT COUNT(*) FROM ${SCHEMA}.task_nodes c WHERE c.parent_id=n.id)::int AS sub_total,
+              (SELECT COUNT(*) FROM ${SCHEMA}.task_nodes c WHERE c.parent_id=n.id AND c.status='done')::int AS sub_done
+         FROM ${SCHEMA}.task_nodes n
+        WHERE n.company_id=$1 AND n.parent_id IS NULL AND n.is_template=false
+        ORDER BY n.position, n.id`,
+      [req.companyId]
+    );
+    res.json({ stages: stages.rows, groups: groups.rows, nodes: nodes.rows });
+  } catch (e) { respondError(res, e); }
+});
+
+// ===================== TAREFAS / SUBTAREFAS (árvore) =====================
+// Detalhe de uma tarefa: a própria + toda a subárvore (flat, com parent_id) + histórico.
+router.get('/nodes/:id', ...view, async (req, res) => {
+  try {
+    const node = await getNode(req.companyId, Number(req.params.id));
+    const subtree = await query(
+      `WITH RECURSIVE tree AS (
+         SELECT * FROM ${SCHEMA}.task_nodes WHERE parent_id=$1
+         UNION ALL
+         SELECT c.* FROM ${SCHEMA}.task_nodes c JOIN tree t ON c.parent_id=t.id
+       )
+       SELECT n.id, n.parent_id, n.group_id, n.stage_id, n.kind, n.title, n.description, n.priority,
+              n.due_date, n.status, n.assignee_id, n.client_id, n.contract_id,
+              n.recurrence, n.recurrence_day, n.recurrence_month, n.position, ${AUTHOR}, ${LINKS}
+         FROM tree n ORDER BY n.parent_id, n.position, n.id`,
+      [node.id]
+    );
+    const assignee = node.assignee_id
+      ? (await query(`SELECT COALESCE(NULLIF(name,''), email) AS n FROM ${SCHEMA}.users WHERE id=$1`, [node.assignee_id])).rows[0]?.n || null
+      : null;
+    const links = (await query(
+      `SELECT (SELECT name FROM ${SCHEMA}.clients WHERE id=$1) AS client_name,
+              (SELECT description FROM ${SCHEMA}.contracts WHERE id=$2) AS contract_description`,
+      [node.client_id, node.contract_id]
+    )).rows[0];
+    const activity = await query(
+      `SELECT a.action, a.detail, a.created_at, COALESCE(NULLIF(u.name,''), u.email) AS user_name
+         FROM ${SCHEMA}.task_node_activity a LEFT JOIN ${SCHEMA}.users u ON u.id=a.user_id
+        WHERE a.node_id=$1 ORDER BY a.created_at DESC, a.id DESC LIMIT 200`,
+      [node.id]
+    );
+    res.json({ node: { ...node, assignee_name: assignee, client_name: links?.client_name || null, contract_description: links?.contract_description || null }, children: subtree.rows, activity: activity.rows });
+  } catch (e) { respondError(res, e); }
+});
+
+async function notifyAssignment(companyId, node, title) {
+  if (!node.assignee_id) return;
+  await createNotification({
+    companyId, userId: node.assignee_id, type: 'task_assigned',
+    title: `Você recebeu a tarefa: ${title}`, body: null,
+    refType: 'task_node', refId: node.id, link: '/tasks',
+    dedupKey: `task-assigned:${node.id}:${node.assignee_id}`,
+  }).catch(() => {});
+}
+
+router.post('/nodes', ...manage, async (req, res) => {
+  try {
+    const title = String(req.body?.title || '').trim();
+    if (title.length < 2) err('Informe o título da tarefa');
+    let groupId = optId(req.body?.group_id);
+    const parentId = optId(req.body?.parent_id);
+    // Subitem herda a rotina (grupo) do pai quando não for informada.
+    let parent = null;
+    if (parentId) { parent = await getNode(req.companyId, parentId); if (!groupId) groupId = parent.group_id; }
+    // Herda defaults do grupo (responsável/prioridade) quando não informados.
+    let group = null;
+    if (groupId) {
+      const g = await query(`SELECT * FROM ${SCHEMA}.task_groups WHERE id=$1 AND company_id=$2`, [groupId, req.companyId]);
+      if (!g.rows[0]) err('Rotina inválida');
+      group = g.rows[0];
+    }
+
+    const kind = parseKind(req.body?.kind ?? (group ? 'fixa' : 'avulsa'));
+    const stageId = optId(req.body?.stage_id) || (parent ? parent.stage_id : await firstStageId(req.companyId));
+    // Subitem herda o responsável do pai; tarefa de topo usa o padrão da rotina.
+    const assigneeId = req.body?.assignee_id !== undefined ? optId(req.body.assignee_id)
+      : (parent ? parent.assignee_id : (group?.default_assignee_id || null));
+    const priority = req.body?.priority != null ? parsePriority(req.body.priority) : (group ? group.default_priority : 'media');
+    // Vínculo opcional cliente/contrato é só da tarefa: explícito > herdado do pai (subitem).
+    const clientId = req.body?.client_id !== undefined ? optId(req.body.client_id) : (parent ? parent.client_id : null);
+    const contractId = req.body?.contract_id !== undefined ? optId(req.body.contract_id) : (parent ? parent.contract_id : null);
+    const dueDate = optDate(req.body?.due_date);
+    // Recorrência só faz sentido em tarefa de topo; subitem nunca recorre sozinho.
+    const recurrence = parentId ? 'none' : parseRecurrence(req.body?.recurrence);
+    const recDay = recurrence !== 'none' ? optInt(req.body?.recurrence_day, 1, 31) : null;
+    const recMonth = recurrence === 'yearly' ? optInt(req.body?.recurrence_month, 1, 12) : null;
+    // Um nó recorrente é TEMPLATE (oculto do board); subitens de um template também
+    // herdam is_template (fazem parte da definição, não são tarefas reais).
+    const isTemplate = (recurrence !== 'none') || Boolean(parent && parent.is_template);
+    const description = req.body?.description ? String(req.body.description).trim() || null : null;
+    // Posição no fim da lista dentro do mesmo grupo/parent/etapa.
+    const pos = await query(
+      `SELECT COALESCE(MAX(position),-1)+1 AS p FROM ${SCHEMA}.task_nodes
+        WHERE company_id=$1 AND COALESCE(group_id,0)=COALESCE($2,0) AND COALESCE(parent_id,0)=COALESCE($3,0)`,
+      [req.companyId, groupId, parentId]
+    );
+    const r = await query(
+      `INSERT INTO ${SCHEMA}.task_nodes
+         (company_id, group_id, parent_id, stage_id, kind, title, description, assignee_id, priority, due_date,
+          recurrence, recurrence_day, recurrence_month, is_template, client_id, contract_id, position, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`,
+      [req.companyId, groupId, parentId, stageId, kind, title, description, assigneeId, priority, dueDate,
+       recurrence, recDay, recMonth, isTemplate, clientId, contractId, pos.rows[0].p, req.user.id]
+    );
+    const node = r.rows[0];
+    await logActivity(node.id, req.user.id, 'created', parentId ? 'subtarefa criada' : 'tarefa criada');
+    if (recurrence !== 'none') {
+      try { await generateOccurrences(req.companyId, new Date()); } catch (e) { console.error('[tasks] geração imediata:', e.message); }
+    } else {
+      await notifyAssignment(req.companyId, node, title);
+    }
+    res.status(201).json(node);
+  } catch (e) { respondError(res, e); }
+});
+
+router.put('/nodes/:id', ...manage, async (req, res) => {
+  try {
+    const node = await getNode(req.companyId, Number(req.params.id));
+    const title = req.body?.title != null ? String(req.body.title).trim() : node.title;
+    if (title.length < 2) err('Título inválido');
+    const description = req.body?.description !== undefined ? (String(req.body.description || '').trim() || null) : node.description;
+    const assigneeId = req.body?.assignee_id !== undefined ? optId(req.body.assignee_id) : node.assignee_id;
+    const priority = req.body?.priority != null ? parsePriority(req.body.priority) : node.priority;
+    const dueDate = req.body?.due_date !== undefined ? optDate(req.body.due_date) : node.due_date;
+    // Recorrência só em tarefa de topo. Subitem mantém none e o is_template do pai.
+    const isTopLevel = node.parent_id == null;
+    const recurrence = !isTopLevel ? 'none' : (req.body?.recurrence != null ? parseRecurrence(req.body.recurrence) : node.recurrence);
+    const recDay = recurrence !== 'none' ? (req.body?.recurrence_day !== undefined ? optInt(req.body.recurrence_day, 1, 31) : node.recurrence_day) : null;
+    const recMonth = recurrence === 'yearly' ? (req.body?.recurrence_month !== undefined ? optInt(req.body.recurrence_month, 1, 12) : node.recurrence_month) : null;
+    const isTemplate = isTopLevel ? (recurrence !== 'none') : node.is_template;
+    const clientId = req.body?.client_id !== undefined ? optId(req.body.client_id) : node.client_id;
+    const contractId = req.body?.contract_id !== undefined ? optId(req.body.contract_id) : node.contract_id;
+    const r = await query(
+      `UPDATE ${SCHEMA}.task_nodes
+          SET title=$1, description=$2, assignee_id=$3, priority=$4, due_date=$5,
+              recurrence=$6, recurrence_day=$7, recurrence_month=$8, is_template=$9, client_id=$10, contract_id=$11, updated_at=now()
+        WHERE id=$12 RETURNING *`,
+      [title, description, assigneeId, priority, dueDate, recurrence, recDay, recMonth, isTemplate, clientId, contractId, node.id]
+    );
+    // Ao virar (ou deixar de ser) template, a subárvore acompanha (definição vs tarefas reais).
+    if (isTopLevel && isTemplate !== node.is_template) {
+      await query(
+        `WITH RECURSIVE tree AS (
+           SELECT id FROM ${SCHEMA}.task_nodes WHERE parent_id=$1
+           UNION ALL SELECT c.id FROM ${SCHEMA}.task_nodes c JOIN tree t ON c.parent_id=t.id
+         )
+         UPDATE ${SCHEMA}.task_nodes SET is_template=$2 WHERE id IN (SELECT id FROM tree)`,
+        [node.id, isTemplate]
+      );
+    }
+    if (Number(assigneeId) && Number(assigneeId) !== Number(node.assignee_id)) {
+      await logActivity(node.id, req.user.id, 'assigned', 'responsável definido');
+      if (!isTemplate) await notifyAssignment(req.companyId, r.rows[0], title);
+    } else {
+      await logActivity(node.id, req.user.id, 'edited', null);
+    }
+    if (isTemplate && recurrence !== 'none') {
+      try { await generateOccurrences(req.companyId, new Date()); } catch (e) { console.error('[tasks] geração (put):', e.message); }
+    }
+    res.json(r.rows[0]);
+  } catch (e) { respondError(res, e); }
+});
+
+router.delete('/nodes/:id', ...manage, async (req, res) => {
+  try {
+    const node = await getNode(req.companyId, Number(req.params.id));
+    await query(`DELETE FROM ${SCHEMA}.task_nodes WHERE id=$1`, [node.id]); // subárvore via ON DELETE CASCADE
+    res.json({ ok: true });
+  } catch (e) { respondError(res, e); }
+});
+
+// Mover a tarefa para outra etapa (coluna). Entrar numa etapa 'is_done' conclui;
+// sair de uma etapa final reabre. Basta tasks.view (mover a própria tarefa).
+router.post('/nodes/:id/move', ...view, async (req, res) => {
+  try {
+    const node = await getNode(req.companyId, Number(req.params.id));
+    const toStageId = Number(req.body?.to_stage_id);
+    const st = await query(`SELECT id, is_done FROM ${SCHEMA}.task_stages WHERE id=$1 AND company_id=$2`, [toStageId, req.companyId]);
+    if (!st.rows[0]) err('Etapa de destino inválida');
+    const enteringDone = Boolean(st.rows[0].is_done);
+    const r = await query(
+      `UPDATE ${SCHEMA}.task_nodes
+          SET stage_id=$1,
+              status = CASE WHEN $2 THEN 'done' ELSE 'open' END,
+              started_at = COALESCE(started_at, now()),
+              done_at = CASE WHEN $2 THEN now() ELSE NULL END,
+              done_by = CASE WHEN $2 THEN $3::int ELSE NULL END,
+              updated_at = now()
+        WHERE id=$4 RETURNING *`,
+      [toStageId, enteringDone, req.user.id, node.id]
+    );
+    await logActivity(node.id, req.user.id, 'moved', enteringDone ? 'concluída' : 'movida');
+    res.json(r.rows[0]);
+  } catch (e) { respondError(res, e); }
+});
+
+// Concluir/reabrir diretamente (checkbox). Basta tasks.view.
+router.patch('/nodes/:id/done', ...view, async (req, res) => {
+  try {
+    const node = await getNode(req.companyId, Number(req.params.id));
+    const done = Boolean(req.body?.done);
+    const r = await query(
+      `UPDATE ${SCHEMA}.task_nodes
+          SET status = CASE WHEN $1 THEN 'done' ELSE 'open' END,
+              started_at = COALESCE(started_at, now()),
+              done_at = CASE WHEN $1 THEN now() ELSE NULL END,
+              done_by = CASE WHEN $1 THEN $2::int ELSE NULL END,
+              updated_at = now()
+        WHERE id=$3 RETURNING *`,
+      [done, req.user.id, node.id]
+    );
+    await logActivity(node.id, req.user.id, done ? 'done' : 'reopened', null);
+    res.json(r.rows[0]);
+  } catch (e) { respondError(res, e); }
+});
+
+// ===================== ROTINAS RECORRENTES (templates) =====================
+// Definições recorrentes (ocultas do board). Cada uma gera ocorrências por período.
+router.get('/templates', ...view, async (req, res) => {
+  try {
+    const r = await query(
+      `SELECT n.id, n.title, n.description, n.priority, n.recurrence, n.recurrence_day, n.recurrence_month,
+              n.group_id, g.name AS group_name, ${AUTHOR},
+              (SELECT COUNT(*) FROM ${SCHEMA}.task_nodes o WHERE o.source_node_id=n.id AND o.parent_id IS NULL)::int AS occurrences
+         FROM ${SCHEMA}.task_nodes n
+         LEFT JOIN ${SCHEMA}.task_groups g ON g.id=n.group_id
+        WHERE n.company_id=$1 AND n.is_template=true AND n.recurrence<>'none' AND n.parent_id IS NULL
+        ORDER BY n.title`,
+      [req.companyId]
+    );
+    res.json({ items: r.rows });
+  } catch (e) { respondError(res, e); }
+});
+
+// Gera as ocorrências pendentes de todas as rotinas recorrentes (disparo manual).
+router.post('/generate', ...manage, async (req, res) => {
+  try {
+    const created = await generateOccurrences(req.companyId, new Date());
+    res.json({ ok: true, created });
+  } catch (e) { respondError(res, e); }
+});
+
+// ===================== MINHAS TAREFAS =====================
+// Só as tarefas em que sou o responsável, abertas, agrupadas por prazo (fuso local
+// via CURRENT_DATE): atrasada / vence hoje / próximos 7 dias / sem prazo.
+router.get('/my', ...view, async (req, res) => {
+  try {
+    const r = await query(
+      `SELECT n.id, n.title, n.priority, n.due_date, n.group_id, g.name AS group_name,
+              (n.due_date IS NOT NULL AND n.due_date < CURRENT_DATE) AS overdue,
+              (n.due_date = CURRENT_DATE) AS today,
+              (n.due_date IS NOT NULL AND n.due_date > CURRENT_DATE AND n.due_date <= CURRENT_DATE + 7) AS soon
+         FROM ${SCHEMA}.task_nodes n
+         LEFT JOIN ${SCHEMA}.task_groups g ON g.id=n.group_id
+        WHERE n.company_id=$1 AND n.assignee_id=$2 AND n.status='open' AND n.is_template=false
+        ORDER BY n.due_date NULLS LAST, n.id`,
       [req.companyId, req.user.id]
     );
-    if (!r.rows[0]) return res.status(403).json({ error: 'Apenas gerentes ou administrador' });
-    next();
+    const atrasada = [], hoje = [], prox7 = [], semPrazo = [];
+    for (const t of r.rows) {
+      if (t.overdue) atrasada.push(t);
+      else if (t.today) hoje.push(t);
+      else if (t.soon) prox7.push(t);
+      else if (!t.due_date) semPrazo.push(t);
+      // com prazo além de 7 dias fica de fora do alerta
+    }
+    res.json({
+      atrasada, hoje, prox7, semPrazo,
+      counts: { atrasada: atrasada.length, hoje: hoje.length, prox7: prox7.length, total: atrasada.length + hoje.length + prox7.length },
+    });
   } catch (e) { respondError(res, e); }
-}
-const manageModels = [...view, requireAnyManager];
+});
 
-// Colunas padrão de um quadro novo (o gerente pode editar depois — colunas livres).
-const DEFAULT_COLUMNS = [
-  { name: 'A fazer', is_done_col: false },
-  { name: 'Em andamento', is_done_col: false },
-  { name: 'Concluído', is_done_col: true },
-];
-
-// ===================== EQUIPES =====================
-// Equipes que o usuário enxerga: admin vê todas da empresa; demais, as suas.
-router.get('/teams', ...view, async (req, res) => {
+// ===================== PRODUTIVIDADE (Gestor) =====================
+// Por usuário: concluídas, % no prazo, abertas, atrasadas, tempo médio de entrega.
+router.get('/productivity', ...gestor, async (req, res) => {
   try {
-    const params = [req.companyId, req.user.id];
-    const scope = isAdmin(req.user) ? '' : `AND t.id IN (SELECT team_id FROM ${SCHEMA}.task_team_members WHERE user_id=$2)`;
     const r = await query(
-      `SELECT t.id, t.name, t.created_at,
-              (SELECT COUNT(*) FROM ${SCHEMA}.task_team_members m WHERE m.team_id=t.id)::int AS members,
-              (SELECT role FROM ${SCHEMA}.task_team_members m WHERE m.team_id=t.id AND m.user_id=$2) AS my_role
-         FROM ${SCHEMA}.task_teams t
-        WHERE t.company_id=$1 ${scope}
-        ORDER BY t.name`,
-      params
+      `SELECT u.id AS user_id, COALESCE(NULLIF(u.name,''), u.email) AS name,
+              COUNT(*) FILTER (WHERE n.status='done')::int AS done,
+              COUNT(*) FILTER (WHERE n.status='open')::int AS open,
+              COUNT(*) FILTER (WHERE n.status='open' AND n.due_date IS NOT NULL AND n.due_date < CURRENT_DATE)::int AS overdue,
+              COUNT(*) FILTER (WHERE n.status='done' AND n.due_date IS NOT NULL)::int AS done_with_due,
+              COUNT(*) FILTER (WHERE n.status='done' AND n.due_date IS NOT NULL AND n.done_at::date <= n.due_date)::int AS on_time,
+              AVG(EXTRACT(EPOCH FROM (n.done_at - COALESCE(n.started_at, n.created_at)))/86400.0)
+                FILTER (WHERE n.status='done' AND n.done_at IS NOT NULL) AS avg_days
+         FROM ${SCHEMA}.task_nodes n
+         JOIN ${SCHEMA}.users u ON u.id = n.assignee_id
+        WHERE n.company_id=$1 AND n.is_template=false
+        GROUP BY u.id, name
+        ORDER BY done DESC, name`,
+      [req.companyId]
     );
-    const rows = r.rows.map((t) => ({ ...t, my_role: isAdmin(req.user) ? 'manager' : t.my_role }));
-    res.json({ items: rows, isAdmin: isAdmin(req.user) });
+    const items = r.rows.map((s) => ({
+      userId: s.user_id, name: s.name, done: s.done, open: s.open, overdue: s.overdue,
+      onTime: s.on_time, doneWithDue: s.done_with_due,
+      onTimePct: s.done_with_due ? Number((s.on_time / s.done_with_due).toFixed(4)) : null,
+      avgDays: s.avg_days == null ? null : Number(Number(s.avg_days).toFixed(1)),
+    }));
+    res.json({ items });
   } catch (e) { respondError(res, e); }
 });
 
-// Cria equipe (somente Admin) e semeia colunas padrão. Opcional: gerente inicial.
-router.post('/teams', ...manage, async (req, res) => {
-  try {
-    if (!isAdmin(req.user)) err('Apenas o administrador pode criar equipes', 403);
-    const name = String(req.body?.name || '').trim();
-    if (name.length < 2) err('Informe o nome da equipe');
-    const managerId = Number(req.body?.manager_id) || null;
-    const t = await query(
-      `INSERT INTO ${SCHEMA}.task_teams (company_id, name, created_by) VALUES ($1,$2,$3) RETURNING *`,
-      [req.companyId, name, req.user.id]
-    );
-    const team = t.rows[0];
-    for (let i = 0; i < DEFAULT_COLUMNS.length; i++) {
-      await query(
-        `INSERT INTO ${SCHEMA}.task_columns (company_id, team_id, name, position, is_done_col) VALUES ($1,$2,$3,$4,$5)`,
-        [req.companyId, team.id, DEFAULT_COLUMNS[i].name, i, DEFAULT_COLUMNS[i].is_done_col]
-      );
-    }
-    if (managerId) {
-      await query(
-        `INSERT INTO ${SCHEMA}.task_team_members (team_id, user_id, role) VALUES ($1,$2,'manager')
-         ON CONFLICT (team_id, user_id) DO UPDATE SET role='manager'`,
-        [team.id, managerId]
-      );
-    }
-    res.status(201).json(team);
-  } catch (e) { respondError(res, e); }
-});
-
-// Usuários da empresa (para o Admin escolher quem entra na equipe).
+// Usuários da empresa (para atribuir responsável). Requer gestão.
 router.get('/company-users', ...manage, async (req, res) => {
   try {
-    if (!isAdmin(req.user)) err('Apenas o administrador', 403);
     const r = await query(
       `SELECT u.id, COALESCE(NULLIF(u.name,''), u.email) AS name, u.email
          FROM ${SCHEMA}.users u JOIN ${SCHEMA}.user_companies uc ON uc.user_id = u.id
@@ -168,483 +513,6 @@ router.get('/company-users', ...manage, async (req, res) => {
       [req.companyId]
     );
     res.json({ items: r.rows });
-  } catch (e) { respondError(res, e); }
-});
-
-router.get('/teams/:id/members', ...view, async (req, res) => {
-  try {
-    const teamId = Number(req.params.id);
-    await assertTeam(req, teamId);
-    const r = await query(
-      `SELECT m.user_id, m.role, COALESCE(NULLIF(u.name,''), u.email) AS name, u.email
-         FROM ${SCHEMA}.task_team_members m JOIN ${SCHEMA}.users u ON u.id=m.user_id
-        WHERE m.team_id=$1 ORDER BY (m.role='manager') DESC, name`,
-      [teamId]
-    );
-    res.json({ items: r.rows });
-  } catch (e) { respondError(res, e); }
-});
-
-// Add/atualiza membro (somente Admin).
-router.post('/teams/:id/members', ...manage, async (req, res) => {
-  try {
-    if (!isAdmin(req.user)) err('Apenas o administrador gerencia membros', 403);
-    const teamId = Number(req.params.id);
-    await assertTeam(req, teamId, { manage: true });
-    const userId = Number(req.body?.user_id);
-    if (!Number.isInteger(userId)) err('Usuário inválido');
-    const role = req.body?.role === 'manager' ? 'manager' : 'member';
-    // Garante que o usuário pertence à empresa.
-    const belongs = await query(`SELECT 1 FROM ${SCHEMA}.user_companies WHERE user_id=$1 AND company_id=$2`, [userId, req.companyId]);
-    if (!belongs.rows[0]) err('Usuário não pertence a esta empresa');
-    await query(
-      `INSERT INTO ${SCHEMA}.task_team_members (team_id, user_id, role) VALUES ($1,$2,$3)
-       ON CONFLICT (team_id, user_id) DO UPDATE SET role=EXCLUDED.role`,
-      [teamId, userId, role]
-    );
-    res.json({ ok: true });
-  } catch (e) { respondError(res, e); }
-});
-
-router.delete('/teams/:id/members/:userId', ...manage, async (req, res) => {
-  try {
-    if (!isAdmin(req.user)) err('Apenas o administrador gerencia membros', 403);
-    const teamId = Number(req.params.id);
-    await assertTeam(req, teamId, { manage: true });
-    await query(`DELETE FROM ${SCHEMA}.task_team_members WHERE team_id=$1 AND user_id=$2`, [teamId, Number(req.params.userId)]);
-    res.json({ ok: true });
-  } catch (e) { respondError(res, e); }
-});
-
-// Lista de modelos para seleção (ex.: no cadastro de contrato). Só id/nome/equipe,
-// sem exigir a permissão de gestão — apenas modelos que geram (têm equipe).
-router.get('/models-select', requireAuth, companyScope(true), async (req, res) => {
-  try {
-    const r = await query(
-      `SELECT m.id, m.name, t.name AS team_name
-         FROM ${SCHEMA}.task_models m JOIN ${SCHEMA}.task_teams t ON t.id=m.team_id
-        WHERE m.company_id=$1 ORDER BY m.name`,
-      [req.companyId]
-    );
-    res.json({ items: r.rows });
-  } catch (e) { respondError(res, e); }
-});
-
-// ===================== COLUNAS =====================
-router.get('/teams/:id/columns', ...view, async (req, res) => {
-  try {
-    const teamId = Number(req.params.id);
-    await assertTeam(req, teamId);
-    const r = await query(`SELECT id, name, position, is_done_col FROM ${SCHEMA}.task_columns WHERE team_id=$1 ORDER BY position, id`, [teamId]);
-    res.json({ items: r.rows });
-  } catch (e) { respondError(res, e); }
-});
-
-router.post('/teams/:id/columns', ...manage, async (req, res) => {
-  try {
-    const teamId = Number(req.params.id);
-    await assertTeam(req, teamId, { manage: true });
-    const name = String(req.body?.name || '').trim();
-    if (name.length < 1) err('Informe o nome da coluna');
-    const pos = await query(`SELECT COALESCE(MAX(position),-1)+1 AS p FROM ${SCHEMA}.task_columns WHERE team_id=$1`, [teamId]);
-    const r = await query(
-      `INSERT INTO ${SCHEMA}.task_columns (company_id, team_id, name, position, is_done_col) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [req.companyId, teamId, name, pos.rows[0].p, Boolean(req.body?.is_done_col)]
-    );
-    res.status(201).json(r.rows[0]);
-  } catch (e) { respondError(res, e); }
-});
-
-router.put('/columns/:id', ...manage, async (req, res) => {
-  try {
-    const colId = Number(req.params.id);
-    const col = await query(`SELECT * FROM ${SCHEMA}.task_columns WHERE id=$1 AND company_id=$2`, [colId, req.companyId]);
-    if (!col.rows[0]) err('Coluna não encontrada', 404);
-    await assertTeam(req, col.rows[0].team_id, { manage: true });
-    const name = req.body?.name != null ? String(req.body.name).trim() : col.rows[0].name;
-    const position = Number.isInteger(Number(req.body?.position)) ? Number(req.body.position) : col.rows[0].position;
-    const isDone = req.body?.is_done_col != null ? Boolean(req.body.is_done_col) : col.rows[0].is_done_col;
-    const r = await query(
-      `UPDATE ${SCHEMA}.task_columns SET name=$1, position=$2, is_done_col=$3 WHERE id=$4 RETURNING *`,
-      [name, position, isDone, colId]
-    );
-    res.json(r.rows[0]);
-  } catch (e) { respondError(res, e); }
-});
-
-router.delete('/columns/:id', ...manage, async (req, res) => {
-  try {
-    const colId = Number(req.params.id);
-    const col = await query(`SELECT * FROM ${SCHEMA}.task_columns WHERE id=$1 AND company_id=$2`, [colId, req.companyId]);
-    if (!col.rows[0]) err('Coluna não encontrada', 404);
-    await assertTeam(req, col.rows[0].team_id, { manage: true });
-    const has = await query(`SELECT 1 FROM ${SCHEMA}.task_cards WHERE column_id=$1 LIMIT 1`, [colId]);
-    if (has.rows[0]) err('Mova os cartões desta coluna antes de excluí-la');
-    await query(`DELETE FROM ${SCHEMA}.task_columns WHERE id=$1`, [colId]);
-    res.json({ ok: true });
-  } catch (e) { respondError(res, e); }
-});
-
-// ===================== QUADRO (board do mês) =====================
-router.get('/teams/:id/board', ...view, async (req, res) => {
-  try {
-    const teamId = Number(req.params.id);
-    const role = await assertTeam(req, teamId);
-    const now = new Date();
-    const curYm = `${now.getFullYear()}-${pad(now.getMonth() + 1)}`;
-    const ym = /^\d{4}-\d{2}$/.test(String(req.query.ym || '')) ? req.query.ym : curYm;
-    // Só rola quando o mês pedido é o vigente (não mexe no passado).
-    if (ym === curYm) { try { await rollForward(req.companyId, teamId, now); } catch (e) { console.error('[tasks] rollForward:', e.message); } }
-    const comp = firstOfMonth(ym);
-
-    const columns = await query(
-      `SELECT id, name, position, is_done_col FROM ${SCHEMA}.task_columns WHERE team_id=$1 ORDER BY position, id`,
-      [teamId]
-    );
-    // Membro comum vê apenas os cartões em que é o responsável; gerente/admin veem tudo.
-    const params = [req.companyId, teamId, comp];
-    let scope = '';
-    if (role === 'member') { params.push(req.user.id); scope = `AND c.assignee_id = $4`; }
-    const cards = await query(
-      `SELECT c.*, COALESCE(NULLIF(u.name,''), u.email) AS assignee_name,
-              (SELECT COUNT(*) FROM ${SCHEMA}.task_items i WHERE i.card_id=c.id)::int AS items_total,
-              (SELECT COUNT(*) FROM ${SCHEMA}.task_items i WHERE i.card_id=c.id AND i.done)::int AS items_done,
-              (SELECT COUNT(*) FROM ${SCHEMA}.task_items i WHERE i.card_id=c.id AND i.stage_column_id=c.column_id AND NOT i.done)::int AS stage_open
-         FROM ${SCHEMA}.task_cards c
-         LEFT JOIN ${SCHEMA}.users u ON u.id=c.assignee_id
-        WHERE c.company_id=$1 AND c.team_id=$2 AND c.competence=$3::date AND c.status<>'archived' ${scope}
-        ORDER BY c.position, c.id`,
-      params
-    );
-    res.json({ ym, currentYm: curYm, role, columns: columns.rows, cards: cards.rows });
-  } catch (e) { respondError(res, e); }
-});
-
-// Indicadores de SLA da equipe (todos os cartões): % no prazo, tempo médio de
-// entrega, abertas atrasadas, sem responsável e total de meses rolados.
-router.get('/teams/:id/stats', ...view, async (req, res) => {
-  try {
-    const teamId = Number(req.params.id);
-    const role = await assertTeam(req, teamId);
-    // Membro comum vê os indicadores apenas dos cartões dele.
-    const params = [req.companyId, teamId];
-    let scope = '';
-    if (role === 'member') { params.push(req.user.id); scope = 'AND assignee_id = $3'; }
-    const r = await query(
-      `SELECT
-         COUNT(*) FILTER (WHERE status='done')::int AS done,
-         COUNT(*) FILTER (WHERE status='open')::int AS open,
-         COUNT(*) FILTER (WHERE status='open' AND due_date IS NOT NULL AND due_date < CURRENT_DATE)::int AS open_overdue,
-         COUNT(*) FILTER (WHERE status='open' AND assignee_id IS NULL)::int AS unassigned,
-         COUNT(*) FILTER (WHERE status='done' AND due_date IS NOT NULL)::int AS done_with_due,
-         COUNT(*) FILTER (WHERE status='done' AND due_date IS NOT NULL AND done_at::date <= due_date)::int AS on_time,
-         COALESCE(SUM(months_rolled),0)::int AS months_rolled_total,
-         AVG(EXTRACT(EPOCH FROM (done_at - COALESCE(started_at, created_at)))/86400.0)
-           FILTER (WHERE status='done' AND done_at IS NOT NULL) AS avg_days
-       FROM ${SCHEMA}.task_cards WHERE company_id=$1 AND team_id=$2 ${scope}`,
-      params
-    );
-    const s = r.rows[0];
-    res.json({
-      done: s.done, open: s.open, openOverdue: s.open_overdue, unassigned: s.unassigned,
-      doneWithDue: s.done_with_due, onTime: s.on_time,
-      onTimePct: s.done_with_due ? Number((s.on_time / s.done_with_due).toFixed(4)) : null,
-      avgDays: s.avg_days == null ? null : Number(Number(s.avg_days).toFixed(1)),
-      monthsRolledTotal: s.months_rolled_total,
-    });
-  } catch (e) { respondError(res, e); }
-});
-
-// ===================== CARTÕES =====================
-// Instancia itens de um modelo, mapeando a etapa (stage_name) para a coluna de
-// mesmo nome na equipe (ou a coluna inicial, se não houver correspondência).
-async function seedItemsFromModel(cardId, modelId, columns) {
-  const items = await query(`SELECT stage_name, title, position FROM ${SCHEMA}.task_model_items WHERE model_id=$1 ORDER BY position, id`, [modelId]);
-  const byName = new Map(columns.map((c) => [String(c.name).trim().toLowerCase(), c.id]));
-  const firstCol = columns[0]?.id || null;
-  for (const it of items.rows) {
-    const stageCol = byName.get(String(it.stage_name).trim().toLowerCase()) || firstCol;
-    await query(
-      `INSERT INTO ${SCHEMA}.task_items (card_id, stage_column_id, title, position) VALUES ($1,$2,$3,$4)`,
-      [cardId, stageCol, it.title, it.position]
-    );
-  }
-}
-
-router.post('/teams/:id/cards', ...manage, async (req, res) => {
-  try {
-    const teamId = Number(req.params.id);
-    await assertTeam(req, teamId, { manage: true });
-    const title = String(req.body?.title || '').trim();
-    if (title.length < 2) err('Informe o título da tarefa');
-    const cols = await query(`SELECT id, name, position, is_done_col FROM ${SCHEMA}.task_columns WHERE team_id=$1 ORDER BY position, id`, [teamId]);
-    if (!cols.rows.length) err('Crie ao menos uma coluna no quadro antes');
-    const columnId = Number(req.body?.column_id) || cols.rows[0].id;
-    if (cols.rows.find((c) => c.id === columnId)?.is_done_col) err('Não é possível criar tarefas na etapa final', 409);
-    const comp = firstOfMonth(/^\d{4}-\d{2}$/.test(String(req.body?.ym || '')) ? req.body.ym : new Date());
-    const dueDate = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body?.due_date || '')) ? req.body.due_date : null;
-    const assigneeId = Number(req.body?.assignee_id) || null;
-    const modelId = Number(req.body?.model_id) || null;
-    const description = req.body?.description ? String(req.body.description).trim() || null : null;
-    const posr = await query(`SELECT COALESCE(MAX(position),-1)+1 AS p FROM ${SCHEMA}.task_cards WHERE team_id=$1 AND column_id=$2 AND competence=$3::date`, [teamId, columnId, comp]);
-
-    const r = await query(
-      `INSERT INTO ${SCHEMA}.task_cards
-         (company_id, team_id, column_id, title, description, assignee_id, due_date, competence, model_id, contract_id, position, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
-      [req.companyId, teamId, columnId, title, description, assigneeId, dueDate, comp, modelId, Number(req.body?.contract_id) || null, posr.rows[0].p, req.user.id]
-    );
-    const card = r.rows[0];
-    if (modelId) await seedItemsFromModel(card.id, modelId, cols.rows);
-    await logActivity(card.id, req.user.id, 'created', { toCol: columnId });
-    res.status(201).json(card);
-  } catch (e) { respondError(res, e); }
-});
-
-router.get('/cards/:id', ...view, async (req, res) => {
-  try {
-    const card = await cardTeam(req.companyId, Number(req.params.id));
-    await assertCardAccess(req, card);
-    // Enriquece com o nome do responsável (a linha crua só tem assignee_id).
-    if (card.assignee_id) {
-      const u = await query(`SELECT COALESCE(NULLIF(name,''), email) AS n FROM ${SCHEMA}.users WHERE id=$1`, [card.assignee_id]);
-      card.assignee_name = u.rows[0]?.n || null;
-    } else {
-      card.assignee_name = null;
-    }
-    const items = await query(
-      `SELECT i.*, COALESCE(NULLIF(u.name,''), u.email) AS done_by_name
-         FROM ${SCHEMA}.task_items i LEFT JOIN ${SCHEMA}.users u ON u.id=i.done_by
-        WHERE i.card_id=$1 ORDER BY i.position, i.id`,
-      [card.id]
-    );
-    const activity = await query(
-      `SELECT a.*, COALESCE(NULLIF(u.name,''), u.email) AS user_name,
-              cf.name AS from_name, ct.name AS to_name
-         FROM ${SCHEMA}.task_activity a
-         LEFT JOIN ${SCHEMA}.users u ON u.id=a.user_id
-         LEFT JOIN ${SCHEMA}.task_columns cf ON cf.id=a.from_column_id
-         LEFT JOIN ${SCHEMA}.task_columns ct ON ct.id=a.to_column_id
-        WHERE a.card_id=$1 ORDER BY a.created_at DESC, a.id DESC LIMIT 200`,
-      [card.id]
-    );
-    res.json({ card, items: items.rows, activity: activity.rows });
-  } catch (e) { respondError(res, e); }
-});
-
-router.put('/cards/:id', ...manage, async (req, res) => {
-  try {
-    const card = await cardTeam(req.companyId, Number(req.params.id));
-    await assertTeam(req, card.team_id, { manage: true });
-    const title = req.body?.title != null ? String(req.body.title).trim() : card.title;
-    if (title.length < 2) err('Título inválido');
-    const description = req.body?.description !== undefined ? (String(req.body.description || '').trim() || null) : card.description;
-    const assigneeId = req.body?.assignee_id !== undefined ? (Number(req.body.assignee_id) || null) : card.assignee_id;
-    const dueDate = req.body?.due_date !== undefined ? (/^\d{4}-\d{2}-\d{2}$/.test(String(req.body.due_date || '')) ? req.body.due_date : null) : card.due_date;
-    const priority = req.body?.priority || card.priority;
-    const r = await query(
-      `UPDATE ${SCHEMA}.task_cards SET title=$1, description=$2, assignee_id=$3, due_date=$4, priority=$5, updated_at=now()
-        WHERE id=$6 RETURNING *`,
-      [title, description, assigneeId, dueDate, priority, card.id]
-    );
-    // Notifica quem RECEBEU a tarefa (responsável novo e diferente do anterior).
-    if (assigneeId && Number(assigneeId) !== Number(card.assignee_id)) {
-      await logActivity(card.id, req.user.id, 'assigned', { detail: 'responsável definido' });
-      await createNotification({
-        companyId: req.companyId, userId: assigneeId, type: 'task_assigned',
-        title: `Você recebeu a tarefa: ${title}`, body: null,
-        refType: 'task_card', refId: card.id, link: '/tasks',
-        dedupKey: `task-assigned:${card.id}:${assigneeId}`,
-      });
-    } else {
-      await logActivity(card.id, req.user.id, 'edited', {});
-    }
-    res.json(r.rows[0]);
-  } catch (e) { respondError(res, e); }
-});
-
-// Exclui a tarefa macro. Regra: só é possível excluir se NÃO houver micros
-// pendentes (a fazer) e se o cartão NÃO estiver na etapa final (coluna de entrega).
-router.delete('/cards/:id', ...manage, async (req, res) => {
-  try {
-    const card = await cardTeam(req.companyId, Number(req.params.id));
-    await assertTeam(req, card.team_id, { manage: true });
-    const col = await query(`SELECT is_done_col FROM ${SCHEMA}.task_columns WHERE id=$1`, [card.column_id]);
-    if (col.rows[0]?.is_done_col) err('Não é possível excluir uma tarefa que está na etapa final', 409);
-    const pend = await query(`SELECT COUNT(*)::int AS n FROM ${SCHEMA}.task_items WHERE card_id=$1 AND NOT done`, [card.id]);
-    if (pend.rows[0].n > 0) err(`Conclua ou remova as ${pend.rows[0].n} micro-tarefa(s) pendente(s) antes de excluir`, 409);
-    await query(`DELETE FROM ${SCHEMA}.task_cards WHERE id=$1`, [card.id]);
-    res.json({ ok: true });
-  } catch (e) { respondError(res, e); }
-});
-
-// Mover cartão de coluna. Portão: para AVANÇAR (coluna de posição maior) todas as
-// micros da coluna atual precisam estar fechadas. Membro pode mover.
-router.post('/cards/:id/move', ...view, async (req, res) => {
-  try {
-    const card = await cardTeam(req.companyId, Number(req.params.id));
-    await assertCardAccess(req, card);
-    const toColumnId = Number(req.body?.to_column_id);
-    const cols = await query(`SELECT id, position, is_done_col FROM ${SCHEMA}.task_columns WHERE team_id=$1`, [card.team_id]);
-    const from = cols.rows.find((c) => c.id === card.column_id);
-    const to = cols.rows.find((c) => c.id === toColumnId);
-    if (!to) err('Coluna de destino inválida');
-    if (to.id === card.column_id) { res.json(card); return; }
-
-    const advancing = from ? to.position > from.position : true;
-    if (advancing) {
-      const open = await query(
-        `SELECT COUNT(*)::int AS n FROM ${SCHEMA}.task_items WHERE card_id=$1 AND stage_column_id=$2 AND NOT done`,
-        [card.id, card.column_id]
-      );
-      if (open.rows[0].n > 0) err(`Feche as ${open.rows[0].n} micro-tarefa(s) desta coluna antes de avançar`, 409);
-    }
-
-    const enteringDone = to.is_done_col;
-    const leavingDone = from?.is_done_col;
-    const setStatus = enteringDone ? 'done' : 'open';
-    const r = await query(
-      `UPDATE ${SCHEMA}.task_cards
-          SET column_id=$1,
-              status=$2,
-              started_at = COALESCE(started_at, now()),
-              done_at = CASE WHEN $3 THEN now() WHEN $4 THEN NULL ELSE done_at END,
-              updated_at = now()
-        WHERE id=$5 RETURNING *`,
-      [toColumnId, setStatus, enteringDone, leavingDone, card.id]
-    );
-    await logActivity(card.id, req.user.id, 'moved', { fromCol: card.column_id, toCol: toColumnId });
-    res.json(r.rows[0]);
-  } catch (e) { respondError(res, e); }
-});
-
-// ===================== MICRO-TAREFAS =====================
-router.post('/cards/:id/items', ...manage, async (req, res) => {
-  try {
-    const card = await cardTeam(req.companyId, Number(req.params.id));
-    await assertTeam(req, card.team_id, { manage: true });
-    const title = String(req.body?.title || '').trim();
-    if (title.length < 1) err('Informe a micro-tarefa');
-    const stageColumnId = Number(req.body?.stage_column_id) || card.column_id;
-    const pos = await query(`SELECT COALESCE(MAX(position),-1)+1 AS p FROM ${SCHEMA}.task_items WHERE card_id=$1`, [card.id]);
-    const r = await query(
-      `INSERT INTO ${SCHEMA}.task_items (card_id, stage_column_id, title, position) VALUES ($1,$2,$3,$4) RETURNING *`,
-      [card.id, stageColumnId, title, pos.rows[0].p]
-    );
-    await logActivity(card.id, req.user.id, 'item_added', { detail: title });
-    res.status(201).json(r.rows[0]);
-  } catch (e) { respondError(res, e); }
-});
-
-// Fechar/reabrir micro (membro pode).
-router.patch('/items/:id/toggle', ...view, async (req, res) => {
-  try {
-    const it = await query(`SELECT i.*, c.team_id, c.company_id, c.assignee_id FROM ${SCHEMA}.task_items i JOIN ${SCHEMA}.task_cards c ON c.id=i.card_id WHERE i.id=$1 AND c.company_id=$2`, [Number(req.params.id), req.companyId]);
-    if (!it.rows[0]) err('Micro-tarefa não encontrada', 404);
-    await assertCardAccess(req, it.rows[0]);
-    const done = Boolean(req.body?.done);
-    const r = await query(
-      `UPDATE ${SCHEMA}.task_items
-          SET done=$1, done_by = CASE WHEN $1 THEN $2::int ELSE NULL END, done_at = CASE WHEN $1 THEN now() ELSE NULL END
-        WHERE id=$3 RETURNING *`,
-      [done, req.user.id, Number(req.params.id)]
-    );
-    await logActivity(it.rows[0].card_id, req.user.id, done ? 'item_done' : 'item_undone', { detail: it.rows[0].title });
-    res.json(r.rows[0]);
-  } catch (e) { respondError(res, e); }
-});
-
-router.put('/items/:id', ...manage, async (req, res) => {
-  try {
-    const it = await query(`SELECT i.*, c.team_id FROM ${SCHEMA}.task_items i JOIN ${SCHEMA}.task_cards c ON c.id=i.card_id WHERE i.id=$1 AND c.company_id=$2`, [Number(req.params.id), req.companyId]);
-    if (!it.rows[0]) err('Micro-tarefa não encontrada', 404);
-    await assertTeam(req, it.rows[0].team_id, { manage: true });
-    const title = req.body?.title != null ? String(req.body.title).trim() : it.rows[0].title;
-    const stageColumnId = req.body?.stage_column_id !== undefined ? (Number(req.body.stage_column_id) || null) : it.rows[0].stage_column_id;
-    const r = await query(`UPDATE ${SCHEMA}.task_items SET title=$1, stage_column_id=$2 WHERE id=$3 RETURNING *`, [title, stageColumnId, Number(req.params.id)]);
-    res.json(r.rows[0]);
-  } catch (e) { respondError(res, e); }
-});
-
-router.delete('/items/:id', ...manage, async (req, res) => {
-  try {
-    const it = await query(`SELECT i.*, c.team_id FROM ${SCHEMA}.task_items i JOIN ${SCHEMA}.task_cards c ON c.id=i.card_id WHERE i.id=$1 AND c.company_id=$2`, [Number(req.params.id), req.companyId]);
-    if (!it.rows[0]) err('Micro-tarefa não encontrada', 404);
-    await assertTeam(req, it.rows[0].team_id, { manage: true });
-    await query(`DELETE FROM ${SCHEMA}.task_items WHERE id=$1`, [Number(req.params.id)]);
-    res.json({ ok: true });
-  } catch (e) { respondError(res, e); }
-});
-
-// ===================== MODELOS DE TAREFA =====================
-router.get('/models', ...manageModels, async (req, res) => {
-  try {
-    const r = await query(
-      `SELECT m.*, t.name AS team_name,
-              (SELECT COUNT(*) FROM ${SCHEMA}.task_model_items i WHERE i.model_id=m.id)::int AS items
-         FROM ${SCHEMA}.task_models m LEFT JOIN ${SCHEMA}.task_teams t ON t.id=m.team_id
-        WHERE m.company_id=$1 ORDER BY m.name`,
-      [req.companyId]
-    );
-    res.json({ items: r.rows });
-  } catch (e) { respondError(res, e); }
-});
-
-router.get('/models/:id', ...manageModels, async (req, res) => {
-  try {
-    const m = await query(`SELECT * FROM ${SCHEMA}.task_models WHERE id=$1 AND company_id=$2`, [Number(req.params.id), req.companyId]);
-    if (!m.rows[0]) err('Modelo não encontrado', 404);
-    const items = await query(`SELECT * FROM ${SCHEMA}.task_model_items WHERE model_id=$1 ORDER BY position, id`, [m.rows[0].id]);
-    res.json({ model: m.rows[0], items: items.rows });
-  } catch (e) { respondError(res, e); }
-});
-
-async function replaceModelItems(modelId, items) {
-  await query(`DELETE FROM ${SCHEMA}.task_model_items WHERE model_id=$1`, [modelId]);
-  const list = Array.isArray(items) ? items : [];
-  for (let i = 0; i < list.length; i++) {
-    const stage = String(list[i]?.stage_name || '').trim();
-    const title = String(list[i]?.title || '').trim();
-    if (!title) continue;
-    await query(`INSERT INTO ${SCHEMA}.task_model_items (model_id, stage_name, title, position) VALUES ($1,$2,$3,$4)`, [modelId, stage, title, i]);
-  }
-}
-
-router.post('/models', ...manageModels, async (req, res) => {
-  try {
-    const name = String(req.body?.name || '').trim();
-    if (name.length < 2) err('Informe o nome do modelo');
-    const teamId = Number(req.body?.team_id) || null;
-    const title = req.body?.title ? String(req.body.title).trim() || null : null;
-    const dueDays = Number.isInteger(Number(req.body?.due_days)) ? Number(req.body.due_days) : null;
-    const r = await query(
-      `INSERT INTO ${SCHEMA}.task_models (company_id, team_id, name, title, due_days, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [req.companyId, teamId, name, title, dueDays, req.user.id]
-    );
-    await replaceModelItems(r.rows[0].id, req.body?.items);
-    res.status(201).json(r.rows[0]);
-  } catch (e) { respondError(res, e); }
-});
-
-router.put('/models/:id', ...manageModels, async (req, res) => {
-  try {
-    const m = await query(`SELECT * FROM ${SCHEMA}.task_models WHERE id=$1 AND company_id=$2`, [Number(req.params.id), req.companyId]);
-    if (!m.rows[0]) err('Modelo não encontrado', 404);
-    const name = req.body?.name != null ? String(req.body.name).trim() : m.rows[0].name;
-    const teamId = req.body?.team_id !== undefined ? (Number(req.body.team_id) || null) : m.rows[0].team_id;
-    const title = req.body?.title !== undefined ? (String(req.body.title || '').trim() || null) : m.rows[0].title;
-    const dueDays = req.body?.due_days !== undefined ? (Number.isInteger(Number(req.body.due_days)) ? Number(req.body.due_days) : null) : m.rows[0].due_days;
-    const r = await query(`UPDATE ${SCHEMA}.task_models SET name=$1, team_id=$2, title=$3, due_days=$4 WHERE id=$5 RETURNING *`, [name, teamId, title, dueDays, m.rows[0].id]);
-    if (req.body?.items !== undefined) await replaceModelItems(m.rows[0].id, req.body.items);
-    res.json(r.rows[0]);
-  } catch (e) { respondError(res, e); }
-});
-
-router.delete('/models/:id', ...manageModels, async (req, res) => {
-  try {
-    const m = await query(`DELETE FROM ${SCHEMA}.task_models WHERE id=$1 AND company_id=$2 RETURNING id`, [Number(req.params.id), req.companyId]);
-    if (!m.rows[0]) err('Modelo não encontrado', 404);
-    res.json({ ok: true });
   } catch (e) { respondError(res, e); }
 });
 

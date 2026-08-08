@@ -12,6 +12,9 @@ import { usePermissions } from '@/features/permissions/PermissionsContext'
 import { useColorMode } from '@/theme/ColorModeProvider'
 import CompanySelector from '@/components/CompanySelector'
 import { notificationsService } from '@/features/notifications/notifications.service'
+import { tasksService } from '@/features/tasks/tasks.service'
+import AssignmentTurnedInIcon from '@mui/icons-material/AssignmentTurnedIn'
+import LeaderboardIcon from '@mui/icons-material/Leaderboard'
 import { menuService } from '@/features/menu/menu.service'
 
 // Ícones
@@ -104,6 +107,7 @@ const buildSections = (role) => [
     label: 'Tarefas',
     items: [
       { to: '/tasks', label: 'Gerenciador de Tarefas', icon: <ViewKanbanIcon />, perm: 'tasks.view', since: '2026-08-04' },
+      { to: '/tasks/productivity', label: 'Produtividade', icon: <LeaderboardIcon />, perm: 'tasks.gestor', since: '2026-08-08' },
     ],
   },
   {
@@ -150,6 +154,7 @@ export default function AppShell({ children }) {
 
   const [anchorEl, setAnchorEl] = React.useState(null)
   const [notifAnchor, setNotifAnchor] = React.useState(null)
+  const [myTasksAnchor, setMyTasksAnchor] = React.useState(null)
 
   React.useEffect(() => { setOpen(isMdUp) }, [isMdUp])
 
@@ -163,6 +168,18 @@ export default function AppShell({ children }) {
   })
   const notifications = notifData?.items || []
   const unreadCount = notifData?.unreadCount || 0
+
+  // Minhas tarefas (pop-up do topo): só as tarefas em que sou responsável, por prazo.
+  const canTasks = can('tasks.view')
+  const { data: myTasks } = useQuery({
+    queryKey: ['tasks-my', selectedCompanyId],
+    queryFn: () => tasksService.my(),
+    enabled: Boolean(selectedCompanyId) && canTasks,
+    refetchInterval: 60000,
+  })
+  const myCount = myTasks?.counts?.total || 0
+  const TASK_PRIO = { baixa: { l: 'Baixa', c: 'default' }, media: { l: 'Média', c: 'info' }, alta: { l: 'Alta', c: 'warning' }, urgente: { l: 'Urgente', c: 'error' } }
+  const fmtTaskDate = (v) => (v && /^\d{4}-\d{2}-\d{2}/.test(String(v)) ? String(v).slice(0, 10).split('-').reverse().join('/') : '')
 
   // Etiqueta "Novo": aparece na janela de publicação E some quando o usuário
   // abre o item (registro por usuário, persistido no backend).
@@ -386,6 +403,65 @@ export default function AppShell({ children }) {
           </Box>
 
           <Box sx={{ flexGrow: 1 }} />
+
+          {canTasks && (
+            <>
+              <Tooltip title="Minhas tarefas">
+                <IconButton color="inherit" onClick={(e) => setMyTasksAnchor(e.currentTarget)}>
+                  <Badge color="warning" badgeContent={myCount} max={99}>
+                    <AssignmentTurnedInIcon />
+                  </Badge>
+                </IconButton>
+              </Tooltip>
+              <Menu
+                anchorEl={myTasksAnchor}
+                open={Boolean(myTasksAnchor)}
+                onClose={() => setMyTasksAnchor(null)}
+                slotProps={{ paper: { sx: { width: 400, maxWidth: '92vw', maxHeight: '70vh' } } }}
+              >
+                <Box sx={{ px: 2, py: 1 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Minhas tarefas</Typography>
+                  <Typography variant="caption" color="text.secondary">Onde você é o responsável</Typography>
+                </Box>
+                <Divider />
+                {myCount === 0 ? (
+                  <Box sx={{ px: 2, py: 3, textAlign: 'center' }}>
+                    <Typography variant="body2" color="text.secondary">Nada vencendo atribuído a você 🎉</Typography>
+                  </Box>
+                ) : (
+                  [
+                    { key: 'atrasada', label: 'ATRASADAS', color: 'error.main', list: myTasks?.atrasada || [] },
+                    { key: 'hoje', label: 'VENCE HOJE', color: 'warning.main', list: myTasks?.hoje || [] },
+                    { key: 'prox7', label: 'PRÓXIMOS 7 DIAS', color: 'info.main', list: myTasks?.prox7 || [] },
+                  ].filter((g) => g.list.length).map((g) => (
+                    <Box key={g.key}>
+                      <Typography variant="overline" sx={{ px: 2, pt: 1, display: 'block', color: g.color, fontWeight: 700, lineHeight: 2 }}>
+                        {g.label} ({g.list.length})
+                      </Typography>
+                      {g.list.map((t) => {
+                        const p = TASK_PRIO[t.priority] || TASK_PRIO.media
+                        return (
+                          <MenuItem key={t.id} onClick={() => { setMyTasksAnchor(null); navigate('/tasks') }} sx={{ whiteSpace: 'normal', alignItems: 'flex-start', gap: 1, py: 1 }}>
+                            <Box sx={{ minWidth: 0, flex: 1 }}>
+                              <Typography variant="body2" sx={{ fontWeight: 600 }}>{t.title}</Typography>
+                              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                {t.group_name || 'Avulsa'}{t.due_date ? ` · ${fmtTaskDate(t.due_date)}` : ''}
+                              </Typography>
+                            </Box>
+                            <Chip size="small" label={p.l} color={p.c} variant="outlined" sx={{ height: 20 }} />
+                          </MenuItem>
+                        )
+                      })}
+                    </Box>
+                  ))
+                )}
+                <Divider />
+                <MenuItem onClick={() => { setMyTasksAnchor(null); navigate('/tasks') }} sx={{ justifyContent: 'center', color: 'primary.main', fontWeight: 600 }}>
+                  Ver todas as minhas tarefas
+                </MenuItem>
+              </Menu>
+            </>
+          )}
 
           <Tooltip title="Notificações">
             <IconButton color="inherit" onClick={(e) => setNotifAnchor(e.currentTarget)}>

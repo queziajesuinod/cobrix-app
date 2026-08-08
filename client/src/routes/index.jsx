@@ -17,6 +17,7 @@ const CadastroPage = lazy(() => import('@/features/cadastro/CadastroPage'))
 const ContractsPage = lazy(() => import('@/features/contracts/ContractsPage'))
 const ContractFormPage = lazy(() => import('@/features/contracts/ContractFormPage'))
 const ContractTypesPage = lazy(() => import('@/features/contracts/ContractTypesPage'))
+const PaidContractsPage = lazy(() => import('@/features/billings/PaidContractsPage'))
 const OverdueClientsPage = lazy(() => import('@/features/reports/OverdueClientsPage'))
 const RiskPortfolioPage = lazy(() => import('@/features/reports/RiskPortfolioPage'))
 const PermissionsAdminPage = lazy(() => import('@/features/admin/PermissionsAdminPage'))
@@ -26,6 +27,7 @@ const MySubscriptionPage = lazy(() => import('@/features/account/MySubscriptionP
 const UsersPage = lazy(() => import('@/features/admin/UsersPage'))
 const FinancePage = lazy(() => import('@/features/finance/FinancePage'))
 const TasksPage = lazy(() => import('@/features/tasks/TasksPage'))
+const ProductivityPage = lazy(() => import('@/features/tasks/ProductivityPage'))
 const FinanceDashboardPage = lazy(() => import('@/features/finance/FinanceDashboardPage'))
 const SystemHealthPage = lazy(() => import('@/features/system/SystemHealthPage'))
 const CompanyListPage = lazy(() => import('@/features/companies/CompanyListPage'))
@@ -53,7 +55,7 @@ export default function AppRouter() {
         <Route path="/contracts/types" element={<ProtectedRoute><AppShell><ContractTypesPage /></AppShell></ProtectedRoute>} />
         <Route path="/notifications/auto" element={<ProtectedRoute><AppShell><AutoNotificationsPage /></AppShell></ProtectedRoute>} />
         <Route path="/notifications/templates" element={<ProtectedRoute><AppShell><MessageTemplatesPage /></AppShell></ProtectedRoute>} />
-        <Route path="/billings/paid" element={<Navigate to="/finance?tab=paid" replace />} />
+        <Route path="/billings/paid" element={<ProtectedRoute><AppShell><PaidContractsPage /></AppShell></ProtectedRoute>} />
         <Route path="/reports/overdue-clients" element={<ProtectedRoute><AppShell><OverdueClientsPage /></AppShell></ProtectedRoute>} />
         <Route path="/reports/risk" element={<ProtectedRoute><AppShell><RiskPortfolioPage /></AppShell></ProtectedRoute>} />
         <Route path="/system/health" element={<ProtectedRoute><AppShell><SystemHealthPage /></AppShell></ProtectedRoute>} />
@@ -65,6 +67,7 @@ export default function AppRouter() {
         <Route path="/finance" element={<ProtectedRoute><AppShell><FinancePage /></AppShell></ProtectedRoute>} />
         <Route path="/finance/dashboard" element={<ProtectedRoute><AppShell><FinanceDashboardPage /></AppShell></ProtectedRoute>} />
         <Route path="/tasks" element={<ProtectedRoute><AppShell><TasksPage /></AppShell></ProtectedRoute>} />
+        <Route path="/tasks/productivity" element={<ProtectedRoute><AppShell><ProductivityPage /></AppShell></ProtectedRoute>} />
         <Route path="/integrations" element={<ProtectedRoute><AppShell><IntegrationsHubPage /></AppShell></ProtectedRoute>} />
         <Route path="/integration/evo" element={<ProtectedRoute><AppShell><EvoConnectionPage /></AppShell></ProtectedRoute>} />
         <Route path="/integration/email" element={<ProtectedRoute><AppShell><EmailConnectionPage /></AppShell></ProtectedRoute>} />

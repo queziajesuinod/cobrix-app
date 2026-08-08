@@ -3,9 +3,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Alert, Box, Button, Dialog, DialogTitle, DialogContent, DialogActions,
   TextField, Table, TableHead, TableRow, TableCell, TableBody,
-  Stack, Switch, FormControlLabel, IconButton, MenuItem, Typography
+  Stack, Switch, FormControlLabel, IconButton, Typography
 } from '@mui/material'
-import { tasksService } from '@/features/tasks/tasks.service'
 import EditIcon from '@mui/icons-material/Edit'
 import DeleteIcon from '@mui/icons-material/Delete'
 import AddIcon from '@mui/icons-material/Add'
@@ -22,11 +21,11 @@ import { useConfirm } from '@/components/ConfirmDialog'
 import { usePermissions } from '@/features/permissions/PermissionsContext'
 import AuditInfo from '@/components/AuditInfo'
 
-function TypeDialog({ open, onClose, onSubmit, defaultValues, models }) {
-  const base = { name: '', is_recurring: false, adjustment_percent: 0, default_task_model_id: '' }
-  const { register, handleSubmit, reset, watch, setValue } = useForm({ defaultValues: defaultValues || base })
+function TypeDialog({ open, onClose, onSubmit, defaultValues }) {
+  const base = { name: '', is_recurring: false, adjustment_percent: 0 }
+  const { register, handleSubmit, reset, watch } = useForm({ defaultValues: defaultValues || base })
   React.useEffect(() => {
-    reset(defaultValues ? { ...base, ...defaultValues, default_task_model_id: defaultValues.default_task_model_id || '' } : base)
+    reset(defaultValues ? { ...base, ...defaultValues } : base)
   }, [defaultValues, reset])
 
   return (
@@ -46,15 +45,6 @@ function TypeDialog({ open, onClose, onSubmit, defaultValues, models }) {
             {...register('adjustment_percent', { valueAsNumber: true })}
             disabled={!watch('is_recurring')}
           />
-          <TextField
-            select label="Modelo de tarefa padrão (opcional)"
-            value={watch('default_task_model_id') || ''}
-            onChange={(e) => setValue('default_task_model_id', e.target.value)}
-            helperText="Ao cadastrar um contrato deste tipo, gera a tarefa automaticamente (o usuário pode trocar no formulário)."
-          >
-            <MenuItem value=""><em>Nenhum</em></MenuItem>
-            {(models || []).map((m) => <MenuItem key={m.id} value={m.id}>{m.name}{m.team_name ? ` · ${m.team_name}` : ''}</MenuItem>)}
-          </TextField>
         </Stack>
       </DialogContent>
       <DialogActions>
@@ -80,8 +70,6 @@ export default function ContractTypesPage() {
     enabled,
     retry: false,
   })
-  const modelsQ = useQuery({ queryKey: ['task-models-select', selectedCompanyId], queryFn: () => tasksService.modelsSelect(), enabled, retry: false })
-  const taskModels = modelsQ.data?.items || []
   const create = useMutation({
     mutationFn: (payload) => contractTypesService.create(payload, selectedCompanyId),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['contract_types'] }) }
@@ -105,7 +93,6 @@ export default function ContractTypesPage() {
       name: form.name?.trim(),
       is_recurring: !!form.is_recurring,
       adjustment_percent: Number(form.adjustment_percent || 0),
-      default_task_model_id: form.default_task_model_id ? Number(form.default_task_model_id) : null,
     }
     if (editing?.id) {
       await update.mutateAsync({ id: editing.id, payload })
@@ -148,7 +135,6 @@ export default function ContractTypesPage() {
                 <TableCell>Nome</TableCell>
                 <TableCell>Recorrente?</TableCell>
                 <TableCell>Reajuste (%)</TableCell>
-                <TableCell>Tarefa padrão</TableCell>
                 <TableCell>Auditoria</TableCell>
                 <TableCell align="right">Ações</TableCell>
               </TableRow>
@@ -173,7 +159,6 @@ export default function ContractTypesPage() {
                     <TableCell>{row.name}</TableCell>
                     <TableCell>{row.is_recurring ? 'Sim' : 'Não'}</TableCell>
                     <TableCell>{Number(row.adjustment_percent || 0).toFixed(2)}</TableCell>
-                    <TableCell>{row.default_task_model_name || <Typography variant="caption" color="text.secondary">—</Typography>}</TableCell>
                     <TableCell>
                       <AuditInfo createdByName={row.created_by_name} createdAt={row.created_at} updatedByName={row.updated_by_name} updatedAt={row.updated_at} />
                     </TableCell>
@@ -200,7 +185,6 @@ export default function ContractTypesPage() {
         onClose={() => setDialogOpen(false)}
         onSubmit={handleSubmit}
         defaultValues={editing}
-        models={taskModels}
       />
     </Stack>
   )

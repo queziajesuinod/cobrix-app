@@ -498,116 +498,98 @@ async function initDb() {
       ) WHERE mt.created_by IS NULL;
     `);
 
-    // ===================== GERENCIADOR DE TAREFAS (Kanban por equipe) =====================
-    // Equipe: unidade que tem um quadro. Só Admin cria; membros têm papel gerente/membro.
+    // ===================== GERENCIADOR DE TAREFAS (rotinas → tarefas → subtarefas) =====================
+    // Modelo do fluxograma: board HÍBRIDO (raias = grupos/rotinas × colunas = etapas),
+    // árvore de tarefas recursiva (parent_id), prioridade em 4 níveis, recorrência
+    // mensal/anual e papel Gestor (permissão tasks.gestor).
+
+    // Remove o modelo antigo (Kanban por equipe/coluna/modelos). CASCADE limpa dependências.
+    await c.query(`ALTER TABLE ${schema}.contract_types DROP COLUMN IF EXISTS default_task_model_id;`);
+    for (const t of ['task_activity', 'task_items', 'task_cards', 'task_model_items', 'task_models', 'task_columns', 'task_team_members', 'task_teams']) {
+      await c.query(`DROP TABLE IF EXISTS ${schema}.${t} CASCADE;`);
+    }
+
+    // Etapas de progresso (colunas do Kanban). Por empresa, ordenadas; is_done = etapa final.
     await c.query(`
-      CREATE TABLE IF NOT EXISTS ${schema}.task_teams (
+      CREATE TABLE IF NOT EXISTS ${schema}.task_stages (
         id SERIAL PRIMARY KEY,
         company_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
-        name TEXT NOT NULL,
-        created_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        UNIQUE (company_id, name)
-      );
-    `);
-    await c.query(`
-      CREATE TABLE IF NOT EXISTS ${schema}.task_team_members (
-        team_id INTEGER NOT NULL REFERENCES ${schema}.task_teams(id) ON DELETE CASCADE,
-        user_id INTEGER NOT NULL REFERENCES ${schema}.users(id) ON DELETE CASCADE,
-        role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('manager','member')),
-        PRIMARY KEY (team_id, user_id)
-      );
-    `);
-    // Colunas do quadro (livres, ordenadas). is_done_col marca a coluna final (entrega).
-    await c.query(`
-      CREATE TABLE IF NOT EXISTS ${schema}.task_columns (
-        id SERIAL PRIMARY KEY,
-        company_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
-        team_id INTEGER NOT NULL REFERENCES ${schema}.task_teams(id) ON DELETE CASCADE,
         name TEXT NOT NULL,
         position INTEGER NOT NULL DEFAULT 0,
-        is_done_col BOOLEAN NOT NULL DEFAULT false,
+        is_done BOOLEAN NOT NULL DEFAULT false,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
     `);
-    // Modelos de tarefa reutilizáveis (micros padronizadas por etapa) + itens.
+    // Grupos/Rotinas = raias do board. recurring=true → rotina fixa. Tarefa com
+    // group_id nulo aparece na raia "Avulsas".
     await c.query(`
-      CREATE TABLE IF NOT EXISTS ${schema}.task_models (
+      CREATE TABLE IF NOT EXISTS ${schema}.task_groups (
         id SERIAL PRIMARY KEY,
         company_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
-        team_id INTEGER REFERENCES ${schema}.task_teams(id) ON DELETE SET NULL,
         name TEXT NOT NULL,
-        title TEXT,
-        due_days INTEGER,
-        created_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
-    `);
-    await c.query(`
-      CREATE TABLE IF NOT EXISTS ${schema}.task_model_items (
-        id SERIAL PRIMARY KEY,
-        model_id INTEGER NOT NULL REFERENCES ${schema}.task_models(id) ON DELETE CASCADE,
-        stage_name TEXT NOT NULL,
-        title TEXT NOT NULL,
-        position INTEGER NOT NULL DEFAULT 0
-      );
-    `);
-    // Cartão (tarefa macro). competence = 1º dia do mês vigente; due_date = prazo (SLA).
-    await c.query(`
-      CREATE TABLE IF NOT EXISTS ${schema}.task_cards (
-        id SERIAL PRIMARY KEY,
-        company_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
-        team_id INTEGER NOT NULL REFERENCES ${schema}.task_teams(id) ON DELETE CASCADE,
-        column_id INTEGER REFERENCES ${schema}.task_columns(id) ON DELETE SET NULL,
-        title TEXT NOT NULL,
         description TEXT,
-        assignee_id INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
-        due_date DATE,
-        competence DATE NOT NULL,
-        months_rolled INTEGER NOT NULL DEFAULT 0,
-        priority TEXT NOT NULL DEFAULT 'normal',
-        status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','done','archived')),
+        recurring BOOLEAN NOT NULL DEFAULT true,
+        default_assignee_id INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        default_priority TEXT NOT NULL DEFAULT 'media' CHECK (default_priority IN ('baixa','media','alta','urgente')),
         position INTEGER NOT NULL DEFAULT 0,
-        contract_id INTEGER REFERENCES ${schema}.contracts(id) ON DELETE SET NULL,
-        model_id INTEGER REFERENCES ${schema}.task_models(id) ON DELETE SET NULL,
-        started_at TIMESTAMPTZ,
-        done_at TIMESTAMPTZ,
         created_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         updated_at TIMESTAMPTZ
       );
     `);
-    // Micro-tarefa: pertence a uma etapa/coluna. O cartão só sai da coluna com todas fechadas.
+    // Tarefas E subtarefas numa ÁRVORE (parent_id, profundidade livre). kind: avulsa|fixa.
+    // Recorrência: none|monthly|yearly (+ dia/mês). is_template = definição da rotina;
+    // as ocorrências geradas apontam para a definição via source_node_id.
     await c.query(`
-      CREATE TABLE IF NOT EXISTS ${schema}.task_items (
+      CREATE TABLE IF NOT EXISTS ${schema}.task_nodes (
         id SERIAL PRIMARY KEY,
-        card_id INTEGER NOT NULL REFERENCES ${schema}.task_cards(id) ON DELETE CASCADE,
-        stage_column_id INTEGER REFERENCES ${schema}.task_columns(id) ON DELETE SET NULL,
+        company_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
+        group_id INTEGER REFERENCES ${schema}.task_groups(id) ON DELETE CASCADE,
+        parent_id INTEGER REFERENCES ${schema}.task_nodes(id) ON DELETE CASCADE,
+        stage_id INTEGER REFERENCES ${schema}.task_stages(id) ON DELETE SET NULL,
+        kind TEXT NOT NULL DEFAULT 'avulsa' CHECK (kind IN ('avulsa','fixa')),
         title TEXT NOT NULL,
-        done BOOLEAN NOT NULL DEFAULT false,
-        done_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        description TEXT,
+        assignee_id INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        priority TEXT NOT NULL DEFAULT 'media' CHECK (priority IN ('baixa','media','alta','urgente')),
+        due_date DATE,
+        recurrence TEXT NOT NULL DEFAULT 'none' CHECK (recurrence IN ('none','monthly','yearly')),
+        recurrence_day INTEGER,
+        recurrence_month INTEGER,
+        is_template BOOLEAN NOT NULL DEFAULT false,
+        source_node_id INTEGER REFERENCES ${schema}.task_nodes(id) ON DELETE SET NULL,
+        status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','done')),
+        position INTEGER NOT NULL DEFAULT 0,
+        client_id INTEGER REFERENCES ${schema}.clients(id) ON DELETE SET NULL,
+        contract_id INTEGER REFERENCES ${schema}.contracts(id) ON DELETE SET NULL,
+        started_at TIMESTAMPTZ,
         done_at TIMESTAMPTZ,
-        position INTEGER NOT NULL DEFAULT 0
+        done_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        created_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ
       );
     `);
-    // Histórico: quem fez o quê no cartão (criou, moveu de/para, fechou micro, rolou de mês…).
+    // Histórico por tarefa (criou, moveu de etapa, concluiu, gerou ocorrência…).
     await c.query(`
-      CREATE TABLE IF NOT EXISTS ${schema}.task_activity (
+      CREATE TABLE IF NOT EXISTS ${schema}.task_node_activity (
         id SERIAL PRIMARY KEY,
-        card_id INTEGER NOT NULL REFERENCES ${schema}.task_cards(id) ON DELETE CASCADE,
+        node_id INTEGER NOT NULL REFERENCES ${schema}.task_nodes(id) ON DELETE CASCADE,
         user_id INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
         action TEXT NOT NULL,
-        from_column_id INTEGER,
-        to_column_id INTEGER,
         detail TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
     `);
-    // Tipo de contrato pode sugerir um modelo padrão ao cadastrar o contrato.
-    await c.query(`ALTER TABLE ${schema}.contract_types ADD COLUMN IF NOT EXISTS default_task_model_id INTEGER REFERENCES ${schema}.task_models(id) ON DELETE SET NULL;`);
-    await c.query(`CREATE INDEX IF NOT EXISTS idx_task_cards_team_comp ON ${schema}.task_cards (company_id, team_id, competence);`);
-    await c.query(`CREATE INDEX IF NOT EXISTS idx_task_items_card ON ${schema}.task_items (card_id);`);
-    await c.query(`CREATE INDEX IF NOT EXISTS idx_task_activity_card ON ${schema}.task_activity (card_id, created_at DESC);`);
+    // Vínculo opcional a cliente/contrato é SÓ da tarefa (rotina é geral do quadro).
+    await c.query(`ALTER TABLE ${schema}.task_nodes ADD COLUMN IF NOT EXISTS client_id INTEGER REFERENCES ${schema}.clients(id) ON DELETE SET NULL;`);
+    await c.query(`ALTER TABLE ${schema}.task_groups DROP COLUMN IF EXISTS client_id;`);
+    await c.query(`ALTER TABLE ${schema}.task_groups DROP COLUMN IF EXISTS contract_id;`);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_task_nodes_group ON ${schema}.task_nodes (company_id, group_id);`);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_task_nodes_parent ON ${schema}.task_nodes (parent_id);`);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_task_nodes_assignee ON ${schema}.task_nodes (assignee_id, status);`);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_task_stages_company ON ${schema}.task_stages (company_id, position);`);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_task_node_activity ON ${schema}.task_node_activity (node_id, created_at DESC);`);
   });
 }
 

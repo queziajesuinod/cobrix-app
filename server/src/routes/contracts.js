@@ -311,7 +311,7 @@ router.post('/', requireAuth, companyScope(true), requirePermission('contracts.c
     const hasClient = await query('SELECT id FROM clients WHERE id=$1 AND company_id=$2', [client_id, req.companyId]);
     if (!hasClient.rows[0]) return res.status(400).json({ error: 'Cliente não encontrado nesta empresa' });
 
-    const typeExists = await query(`SELECT id, default_task_model_id FROM ${SCHEMA}.contract_types WHERE id=$1 AND company_id=$2`, [contract_type_id, req.companyId]);
+    const typeExists = await query(`SELECT id FROM ${SCHEMA}.contract_types WHERE id=$1 AND company_id=$2`, [contract_type_id, req.companyId]);
     if (!typeExists.rows[0]) return res.status(400).json({ error: 'Tipo de contrato inválido' });
 
     await ensureUniqueContractDescription(req.companyId, client_id, description, null);
@@ -321,15 +321,6 @@ router.post('/', requireAuth, companyScope(true), requirePermission('contracts.c
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *
     `, [req.companyId, client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, billing_interval_days, billing_mode, cancellation_date, req.user.id]);
 
-    // Gatilho: gera a tarefa macro se um modelo foi escolhido no cadastro (ou se o
-    // tipo de contrato tem um modelo padrão). Nunca quebra o cadastro do contrato.
-    const taskModelId = Number(req.body?.task_model_id) || typeExists.rows[0].default_task_model_id || null;
-    if (taskModelId) {
-      try {
-        const { generateCardFromModel } = require('../services/task-generation');
-        await generateCardFromModel({ companyId: req.companyId, modelId: taskModelId, contractId: r.rows[0].id, createdBy: req.user.id });
-      } catch (e) { console.error('[contracts] geração de tarefa falhou:', e.message); }
-    }
     res.status(201).json(r.rows[0]);
   } catch (err) {
     respondError(res, err);
