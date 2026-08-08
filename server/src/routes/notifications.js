@@ -20,6 +20,7 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
          LEFT JOIN ${SCHEMA}.notification_reads nr
            ON nr.notification_id = n.id AND nr.user_id = $2
         WHERE n.company_id = $1
+          AND (n.user_id IS NULL OR n.user_id = $2)
           AND nr.notification_id IS NULL
         ORDER BY n.created_at DESC, n.id DESC
         LIMIT 50`,
@@ -37,7 +38,7 @@ router.post('/read-all', requireAuth, companyScope(true), async (req, res) => {
     await query(
       `INSERT INTO ${SCHEMA}.notification_reads (notification_id, user_id)
        SELECT n.id, $2 FROM ${SCHEMA}.notifications n
-        WHERE n.company_id = $1
+        WHERE n.company_id = $1 AND (n.user_id IS NULL OR n.user_id = $2)
        ON CONFLICT (notification_id, user_id) DO NOTHING`,
       [req.companyId, req.user.id]
     );

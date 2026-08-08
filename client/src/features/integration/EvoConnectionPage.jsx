@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { Box, Button, Stack, Typography, Alert, CircularProgress, Divider, IconButton, Tooltip } from '@mui/material'
+import { Box, Button, Stack, Typography, Alert, CircularProgress, Divider, IconButton, Tooltip, TextField } from '@mui/material'
+import AddLinkIcon from '@mui/icons-material/AddLink'
 import RefreshIcon from '@mui/icons-material/Refresh'
 import QrCodeIcon from '@mui/icons-material/QrCode'
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline'
@@ -31,6 +32,7 @@ export default function EvoConnectionPage() {
   const [errorMessage, setErrorMessage] = useState(null)
   const [qrCountdown, setQrCountdown] = useState(null)
   const [testResult, setTestResult] = useState(null)
+  const [newInstanceName, setNewInstanceName] = useState('')
 
   const enabled = useMemo(() => Number.isInteger(selectedCompanyId), [selectedCompanyId])
 
@@ -50,7 +52,9 @@ export default function EvoConnectionPage() {
   const connectionStatusLower = String(connectionStatus || '').toLowerCase()
   const isConnected = connectionStatusLower === 'open'
   const isClosed = connectionStatusLower === 'close' || connectionStatusLower === 'closed'
-  const shouldPollQr = enabled && !isConnected
+  // Empresa sem instância criada (ex.: provisionada pelo signup público).
+  const isMissing = connectionStatusLower === 'missing' || statusQuery.data?.instance === null
+  const shouldPollQr = enabled && !isConnected && !isMissing
 
   const qrQuery = useQuery({
     queryKey: ['company_evo_qr', selectedCompanyId],
@@ -98,6 +102,17 @@ export default function EvoConnectionPage() {
     onError: (err) => {
       setErrorMessage(err?.response?.data?.error || err?.message || 'Falha ao gerar QR Code')
     }
+  })
+  const createMutation = useMutation({
+    mutationFn: () => companyIntegrationService.createInstance(selectedCompanyId, newInstanceName.trim() || undefined),
+    onMutate: () => { setErrorMessage(null) },
+    onSuccess: () => {
+      setNewInstanceName('')
+      statusQuery.refetch()
+    },
+    onError: (err) => {
+      setErrorMessage(err?.response?.data?.error || err?.message || 'Falha ao criar a instância.')
+    },
   })
   const testMutation = useMutation({
     mutationFn: () => companyIntegrationService.testEvo(selectedCompanyId, {
@@ -230,12 +245,14 @@ export default function EvoConnectionPage() {
                   </Alert>
                 ) : (
                   <Stack spacing={1}>
-                    <Typography variant="body2">Instância: <strong>{instanceName}</strong></Typography>
+                    <Typography variant="body2">Instância: <strong>{isMissing ? 'não criada' : instanceName}</strong></Typography>
                     <Typography variant="body2">Status: <strong>{connectionStatus.toUpperCase()}</strong></Typography>
                     <Alert severity={isConnected ? 'success' : 'warning'} icon={isConnected ? <CheckCircleOutlineIcon fontSize="inherit" /> : <ErrorOutlineIcon fontSize="inherit" />}>
                       {isConnected
                         ? 'O WhatsApp está conectado. Nenhuma ação é necessária agora.'
-                        : 'O WhatsApp NÃO está conectado. Gere um novo QR Code e escaneie com o app da empresa.'}
+                        : isMissing
+                          ? 'Esta empresa ainda não tem uma instância. Crie uma no bloco abaixo para conectar o WhatsApp.'
+                          : 'O WhatsApp NÃO está conectado. Gere um novo QR Code e escaneie com o app da empresa.'}
                     </Alert>
                   </Stack>
                 )}
@@ -249,7 +266,7 @@ export default function EvoConnectionPage() {
                   >
                     Atualizar status
                   </Button>
-                  {isClosed ? (
+                  {!isMissing && (isClosed ? (
                     <Button
                       variant="outlined"
                       startIcon={<QrCodeIcon />}
@@ -269,21 +286,23 @@ export default function EvoConnectionPage() {
                     >
                       {isConnected ? 'Gerar QR Code mesmo assim' : 'Reiniciar conexão'}
                     </Button>
+                  ))}
+                  {!isMissing && (
+                    <Tooltip
+                      title={isConnected ? 'Envia uma mensagem automática para validar o WhatsApp' : 'Conecte o WhatsApp antes de testar o envio'}
+                    >
+                      <span>
+                        <Button
+                          variant="outlined"
+                          color="secondary"
+                          onClick={() => testMutation.mutate()}
+                          disabled={!isConnected || testMutation.isPending}
+                        >
+                          {testMutation.isPending ? 'Enviando teste…' : 'Enviar msg de teste'}
+                        </Button>
+                      </span>
+                    </Tooltip>
                   )}
-                  <Tooltip
-                    title={isConnected ? 'Envia uma mensagem automática para validar o WhatsApp' : 'Conecte o WhatsApp antes de testar o envio'}
-                  >
-                    <span>
-                      <Button
-                        variant="outlined"
-                        color="secondary"
-                        onClick={() => testMutation.mutate()}
-                        disabled={!isConnected || testMutation.isPending}
-                      >
-                        {testMutation.isPending ? 'Enviando teste…' : 'Enviar msg de teste'}
-                      </Button>
-                    </span>
-                  </Tooltip>
                 </Stack>
                 {testResult && (
                   <Alert severity={testResult.severity} sx={{ mt: 1 }}>
@@ -292,6 +311,39 @@ export default function EvoConnectionPage() {
                 )}
             </Stack>
           </PapperBlock>
+
+          {isMissing && !statusQuery.isLoading && (
+            <PapperBlock
+              title="Criar instância do WhatsApp"
+              subtitle="Esta empresa ainda não tem uma instância. Crie uma para gerar o QR Code e conectar o WhatsApp."
+              icon={<AddLinkIcon />}
+              iconColor="primary.main"
+            >
+              <Stack spacing={2}>
+                <Alert severity="info">
+                  Empresas cadastradas pela página de assinatura não têm a instância criada automaticamente. Clique abaixo para criar agora.
+                </Alert>
+                <TextField
+                  label="Nome da instância (opcional)"
+                  helperText="Deixe em branco para gerar automaticamente a partir do nome da empresa."
+                  value={newInstanceName}
+                  onChange={(e) => setNewInstanceName(e.target.value)}
+                  size="small"
+                  fullWidth
+                />
+                <Box>
+                  <Button
+                    variant="contained"
+                    startIcon={<AddLinkIcon />}
+                    onClick={() => createMutation.mutate()}
+                    disabled={createMutation.isPending}
+                  >
+                    {createMutation.isPending ? 'Criando…' : 'Criar instância'}
+                  </Button>
+                </Box>
+              </Stack>
+            </PapperBlock>
+          )}
 
           {(restartMutation.isPending || connectMutation.isPending) && (
             <Alert severity="info">Solicitando QR Code…</Alert>
@@ -342,7 +394,7 @@ export default function EvoConnectionPage() {
 
 
 
-          {!qrPayload?.qrcode && !isConnected && !(restartMutation.isPending || connectMutation.isPending) && (
+          {!qrPayload?.qrcode && !isConnected && !isMissing && !(restartMutation.isPending || connectMutation.isPending) && (
             <Alert severity="warning">
               Gere um QR Code e escaneie para finalizar a conexão.
             </Alert>

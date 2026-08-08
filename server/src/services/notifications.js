@@ -21,14 +21,15 @@ function formatBrDate(value) {
 }
 
 // Insere uma notificação (idempotente via dedup_key único por empresa).
-async function createNotification({ companyId, type, title, body = null, refType = null, refId = null, link = null, dedupKey }) {
+// userId opcional: nulo = notificação da empresa; preenchido = pessoal.
+async function createNotification({ companyId, type, title, body = null, refType = null, refId = null, link = null, dedupKey, userId = null }) {
   if (!companyId || !type || !title || !dedupKey) return null;
   const r = await query(
-    `INSERT INTO ${SCHEMA}.notifications (company_id, type, title, body, ref_type, ref_id, link, dedup_key)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+    `INSERT INTO ${SCHEMA}.notifications (company_id, user_id, type, title, body, ref_type, ref_id, link, dedup_key)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
      ON CONFLICT (company_id, dedup_key) DO NOTHING
      RETURNING id`,
-    [Number(companyId), String(type), String(title), body, refType, refId, link, String(dedupKey)]
+    [Number(companyId), userId ? Number(userId) : null, String(type), String(title), body, refType, refId, link, String(dedupKey)]
   );
   return r.rows[0]?.id || null;
 }

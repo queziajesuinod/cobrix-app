@@ -3,6 +3,8 @@ const { query, withClient } = require("../db");
 const { sendWhatsapp } = require("../services/messenger");
 const { msgPre, msgDue, msgLate } = require("../services/message-templates");
 const { ensureGatewayPaymentLink } = require("../services/payment-gateway");
+const { resolvePixPayment } = require("../services/pix-resolver");
+const { sendBillingEmail } = require("../services/mailer");
 const { ensureDateOnly, formatISODate, addDays } = require("../utils/date-only");
 const SCHEMA = process.env.DB_SCHEMA || "public";
 
@@ -329,7 +331,7 @@ async function sendPreReminders(now = new Date(), companyId = null) {
   }
   const rows = await query(`
     SELECT c.id, c.company_id, c.client_id, c.description, c.value, c.billing_day, c.start_date, c.billing_interval_months, c.billing_mode, c.billing_interval_days,
-           cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone,
+           cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone, cl.email AS client_email,
            cl.document_cpf AS client_document_cpf, cl.document_cnpj AS client_document_cnpj,
            cms.status AS month_status
     FROM ${SCHEMA}.contracts c
@@ -374,7 +376,7 @@ async function sendPreReminders(now = new Date(), companyId = null) {
         cpf: c.client_document_cpf || null,
         cnpj: c.client_document_cnpj || null,
       };
-      const gatewayPayment = await ensureGatewayPaymentLink({
+      const gatewayPayment = await resolvePixPayment({
         companyId: c.company_id,
         contractId: c.id,
         billingId: null,
@@ -406,9 +408,23 @@ async function sendPreReminders(now = new Date(), companyId = null) {
       let evo = { ok: false, error: "no-phone" };
       try { evo = await sendWhatsapp(c.company_id, { number: c.client_phone, text }, { throttle: true }); }
       catch (e) { evo = { ok: false, error: e.message }; }
+      let email = { ok: false, skipped: true };
+      if (c.client_email) {
+        try {
+          email = await sendBillingEmail(c.company_id, {
+            to: c.client_email, type: "pre",
+            ctx: {
+              client_name: c.client_name, responsavel: c.client_responsavel,
+              tipoContrato: c.description, mesRefDate, vencimentoDate: due, valor: amount,
+              payment_code: copyPaste, payment_qrcode: gatewayPayment?.qrCodeImage || null,
+            },
+          });
+        } catch (e) { email = { ok: false, error: e.message }; }
+      }
       const providerResponse = {
         messenger: evo.data ?? null,
         messengerStatus: evo.status ?? null,
+        email: { ok: Boolean(email.ok), status: email.status ?? null, error: email.error ?? null },
         gateway: gatewaySummary,
       };
 
@@ -453,7 +469,7 @@ async function sendDueReminders(now = new Date(), companyId = null, opts = {}) {
   const rows = await query(`
     SELECT b.id AS billing_id, b.contract_id, b.amount, b.status,
            c.company_id, c.client_id, c.description, c.billing_mode,
-           cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone,
+           cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone, cl.email AS client_email,
            cl.document_cpf AS client_document_cpf, cl.document_cnpj AS client_document_cnpj,
            cms.status AS month_status
     FROM ${SCHEMA}.billings b
@@ -489,7 +505,7 @@ async function sendDueReminders(now = new Date(), companyId = null, opts = {}) {
         cpf: r.client_document_cpf || null,
         cnpj: r.client_document_cnpj || null,
       };
-      const gatewayPayment = await ensureGatewayPaymentLink({
+      const gatewayPayment = await resolvePixPayment({
         companyId: r.company_id,
         contractId: r.contract_id,
         billingId: r.billing_id || null,
@@ -522,9 +538,23 @@ async function sendDueReminders(now = new Date(), companyId = null, opts = {}) {
       let evo = { ok: false, error: "no-phone" };
       try { evo = await sendWhatsapp(r.company_id, { number: r.client_phone, text }, { throttle: true }); }
       catch (e) { evo = { ok: false, error: e.message }; }
+      let email = { ok: false, skipped: true };
+      if (r.client_email) {
+        try {
+          email = await sendBillingEmail(r.company_id, {
+            to: r.client_email, type: "due",
+            ctx: {
+              client_name: r.client_name, responsavel: r.client_responsavel,
+              tipoContrato: r.description, mesRefDate, vencimentoDate: ensureDateOnly(todayStr), valor: r.amount,
+              payment_code: copyPaste, payment_qrcode: gatewayPayment?.qrCodeImage || null,
+            },
+          });
+        } catch (e) { email = { ok: false, error: e.message }; }
+      }
       const providerResponse = {
         messenger: evo.data ?? null,
         messengerStatus: evo.status ?? null,
+        email: { ok: Boolean(email.ok), status: email.status ?? null, error: email.error ?? null },
         gateway: gatewaySummary,
       };
 
@@ -572,7 +602,7 @@ async function sendLateRemindersForTarget(now, target, companyId, modeFilter, op
   const rows = await query(`
     SELECT b.id AS billing_id, b.contract_id, b.amount, b.status, b.billing_date,
            c.company_id, c.client_id, c.description, c.billing_mode,
-           cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone,
+           cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone, cl.email AS client_email,
            cl.document_cpf AS client_document_cpf, cl.document_cnpj AS client_document_cnpj,
            cms.status AS month_status
     FROM ${SCHEMA}.billings b
@@ -607,7 +637,7 @@ async function sendLateRemindersForTarget(now, target, companyId, modeFilter, op
         cpf: r.client_document_cpf || null,
         cnpj: r.client_document_cnpj || null,
       };
-      const gatewayPayment = await ensureGatewayPaymentLink({
+      const gatewayPayment = await resolvePixPayment({
         companyId: r.company_id,
         contractId: r.contract_id,
         billingId: r.billing_id || null,
@@ -640,9 +670,23 @@ async function sendLateRemindersForTarget(now, target, companyId, modeFilter, op
       let evo = { ok: false, error: "no-phone" };
       try { evo = await sendWhatsapp(r.company_id, { number: r.client_phone, text }, { throttle: true }); }
       catch (e) { evo = { ok: false, error: e.message }; }
+      let email = { ok: false, skipped: true };
+      if (r.client_email) {
+        try {
+          email = await sendBillingEmail(r.company_id, {
+            to: r.client_email, type: "late",
+            ctx: {
+              client_name: r.client_name, responsavel: r.client_responsavel,
+              tipoContrato: r.description, mesRefDate, vencimentoDate: ensureDateOnly(targetStr), valor: r.amount,
+              payment_code: copyPaste, payment_qrcode: gatewayPayment?.qrCodeImage || null,
+            },
+          });
+        } catch (e) { email = { ok: false, error: e.message }; }
+      }
       const providerResponse = {
         messenger: evo.data ?? null,
         messengerStatus: evo.status ?? null,
+        email: { ok: Boolean(email.ok), status: email.status ?? null, error: email.error ?? null },
         gateway: gatewaySummary,
       };
 

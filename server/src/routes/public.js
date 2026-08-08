@@ -7,7 +7,7 @@
 const express = require('express');
 const { query, withClient } = require('../db');
 const { ensureDateOnly, formatISODate } = require('../utils/date-only');
-const { ensureGatewayPaymentLink } = require('../services/payment-gateway');
+const { resolvePixPayment } = require('../services/pix-resolver');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 const router = express.Router();
@@ -187,12 +187,12 @@ router.post('/signup', async (req, res) => {
       }
     });
 
-    // Gera o PIX da 1ª cobrança FORA da transação (é uma chamada HTTP à Efí).
-    // Best-effort: se o gateway do owner não estiver configurado, segue sem PIX
-    // e o cliente é orientado a aguardar/entrar em contato.
+    // Gera o PIX da 1ª cobrança FORA da transação. resolvePixPayment usa a Efí
+    // (dinâmico) quando o owner tem gateway; senão cai no PIX estático da chave
+    // PIX do owner. Best-effort: sem gateway nem chave, segue sem PIX.
     let pix = null;
     if (result.firstBillingId) {
-      const link = await ensureGatewayPaymentLink({
+      const link = await resolvePixPayment({
         companyId: ownerId,
         contractId: result.contractId,
         billingId: result.firstBillingId,

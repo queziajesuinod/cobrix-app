@@ -5,6 +5,7 @@ const { requireAuth, companyScope } = require('./auth');
 const { requirePermission, getEffectivePermissions } = require('../services/permissions');
 const { assertContractLimit } = require('../utils/company-limits');
 const { respondError } = require('../utils/http-error');
+const { cancelSubscriptionImmediate } = require('../services/subscription-service');
 
 const router = express.Router();
 const DATE_ISO = /^\d{4}-\d{2}-\d{2}$/;
@@ -310,7 +311,7 @@ router.post('/', requireAuth, companyScope(true), requirePermission('contracts.c
     const hasClient = await query('SELECT id FROM clients WHERE id=$1 AND company_id=$2', [client_id, req.companyId]);
     if (!hasClient.rows[0]) return res.status(400).json({ error: 'Cliente não encontrado nesta empresa' });
 
-    const typeExists = await query(`SELECT id FROM ${SCHEMA}.contract_types WHERE id=$1 AND company_id=$2`, [contract_type_id, req.companyId]);
+    const typeExists = await query(`SELECT id, default_task_model_id FROM ${SCHEMA}.contract_types WHERE id=$1 AND company_id=$2`, [contract_type_id, req.companyId]);
     if (!typeExists.rows[0]) return res.status(400).json({ error: 'Tipo de contrato inválido' });
 
     await ensureUniqueContractDescription(req.companyId, client_id, description, null);
@@ -319,6 +320,16 @@ router.post('/', requireAuth, companyScope(true), requirePermission('contracts.c
       INSERT INTO contracts (company_id, client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, billing_interval_days, billing_mode, cancellation_date, created_by)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *
     `, [req.companyId, client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, billing_interval_days, billing_mode, cancellation_date, req.user.id]);
+
+    // Gatilho: gera a tarefa macro se um modelo foi escolhido no cadastro (ou se o
+    // tipo de contrato tem um modelo padrão). Nunca quebra o cadastro do contrato.
+    const taskModelId = Number(req.body?.task_model_id) || typeExists.rows[0].default_task_model_id || null;
+    if (taskModelId) {
+      try {
+        const { generateCardFromModel } = require('../services/task-generation');
+        await generateCardFromModel({ companyId: req.companyId, modelId: taskModelId, contractId: r.rows[0].id, createdBy: req.user.id });
+      } catch (e) { console.error('[contracts] geração de tarefa falhou:', e.message); }
+    }
     res.status(201).json(r.rows[0]);
   } catch (err) {
     respondError(res, err);
@@ -460,6 +471,12 @@ router.patch('/:id/status', requireAuth, companyScope(true), requirePermission('
     if (active) await assertContractLimit(req.companyId);
     const r = await query('UPDATE contracts SET active=$1, updated_by=$2, updated_at=now() WHERE id=$3 AND company_id=$4 RETURNING *', [active, req.user.id, req.params.id, req.companyId]);
     if (!r.rows[0]) return res.status(404).json({ error: 'Contrato não encontrado' });
+    // Cascata SaaS: se este contrato é de uma assinatura e foi desativado,
+    // cancela a assinatura e inativa a empresa-cliente. No-op se não for.
+    if (!active) {
+      try { await cancelSubscriptionImmediate({ contractId: Number(req.params.id) }); }
+      catch (e) { console.error('[contracts] cascata de cancelamento falhou id=%s err=%s', req.params.id, e.message); }
+    }
     res.json(r.rows[0]);
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
@@ -470,6 +487,9 @@ router.delete('/:id', requireAuth, companyScope(true), requirePermission('contra
   try {
     const r = await query('UPDATE contracts SET active=false WHERE id=$1 AND company_id=$2 RETURNING *', [req.params.id, req.companyId]);
     if (!r.rows[0]) return res.status(404).json({ error: 'Contrato não encontrado' });
+    // Cascata SaaS: cancela a assinatura ligada a este contrato (se houver).
+    try { await cancelSubscriptionImmediate({ contractId: Number(req.params.id) }); }
+    catch (e) { console.error('[contracts] cascata de cancelamento falhou id=%s err=%s', req.params.id, e.message); }
     res.json({ ok: true, active: false });
   } catch (err) {
     respondError(res, err);

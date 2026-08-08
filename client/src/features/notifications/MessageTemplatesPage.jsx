@@ -13,12 +13,16 @@ import {
   Snackbar,
   Stack,
   TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Typography,
 } from '@mui/material'
 import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined'
 import RestoreIcon from '@mui/icons-material/Restore'
 import DragIndicatorIcon from '@mui/icons-material/DragIndicator'
 import EditNoteIcon from '@mui/icons-material/EditNote'
+import WhatsAppIcon from '@mui/icons-material/WhatsApp'
+import EmailIcon from '@mui/icons-material/Email'
 
 const TEMPLATE_TYPES = [
   { key: 'pre', title: 'Pré-vencimento (sem gateway)', description: 'Aviso enviado três dias antes para empresas sem link Pix.' },
@@ -38,7 +42,17 @@ const TEMPLATE_TYPES = [
   { key: 'paid', title: 'Pagamento confirmado', description: 'Mensagem enviada quando o pagamento é confirmado.' },
 ];
 
-const TEMPLATE_KEYS = TEMPLATE_TYPES.map((item) => item.key);
+// Modelos de E-mail — corpo (texto) da mensagem. Valor, vencimento, PIX e QR Code
+// são adicionados automaticamente pelo layout HTML do e-mail.
+const EMAIL_TEMPLATE_TYPES = [
+  { key: 'pre_email', title: 'E-mail · Pré-vencimento', description: 'Corpo do e-mail enviado antes do vencimento.' },
+  { key: 'due_email', title: 'E-mail · Dia do vencimento', description: 'Corpo do e-mail enviado no dia do vencimento.' },
+  { key: 'late_email', title: 'E-mail · Em atraso', description: 'Corpo do e-mail enviado quando a cobrança está em atraso.' },
+  { key: 'paid_email', title: 'E-mail · Pagamento confirmado', description: 'Corpo do e-mail enviado quando o pagamento é confirmado.' },
+];
+
+const ALL_TYPES = [...TEMPLATE_TYPES, ...EMAIL_TEMPLATE_TYPES];
+const TEMPLATE_KEYS = ALL_TYPES.map((item) => item.key);
 const INITIAL_VALUES = TEMPLATE_KEYS.reduce((acc, key) => ({ ...acc, [key]: '' }), {});
 const tokenFromKey = (key) => `{{${key}}}`
 const isGatewayKey = (key) => key.endsWith('_gateway')
@@ -53,15 +67,17 @@ export default function MessageTemplatesPage() {
 
   const [values, setValues] = useState({ ...INITIAL_VALUES })
   const [activeType, setActiveType] = useState(TEMPLATE_TYPES[0]?.key || 'pre')
+  const [channel, setChannel] = useState('whatsapp')
   const [snack, setSnack] = useState(null)
 
   const visibleTypes = useMemo(() => {
+    if (channel === 'email') return EMAIL_TEMPLATE_TYPES
     if (!data) return TEMPLATE_TYPES
     if (data.gatewayReady) {
       return TEMPLATE_TYPES.filter(({ key }) => isGatewayKey(key) || alwaysVisibleKeys.has(key))
     }
     return TEMPLATE_TYPES.filter(({ key }) => !isGatewayKey(key))
-  }, [data])
+  }, [data, channel])
 
   useEffect(() => {
     if (!visibleTypes.length) return
@@ -168,7 +184,7 @@ export default function MessageTemplatesPage() {
 
   const isDirty = useMemo(() => {
     if (!data?.templates) return false
-    return TEMPLATE_TYPES.some(({ key }) => (values[key] ?? '') !== (data.templates[key] ?? ''))
+    return ALL_TYPES.some(({ key }) => (values[key] ?? '') !== (data.templates[key] ?? ''))
   }, [data, values])
 
   if (isLoading) {
@@ -188,6 +204,27 @@ export default function MessageTemplatesPage() {
         title="Mensagens automáticas"
         subtitle="Monte os textos das notificações arrastando os campos disponí­veis. Use os tokens para preencher dados automaticamente."
       />
+
+      <ToggleButtonGroup
+        exclusive size="small" color="primary"
+        value={channel}
+        onChange={(_, v) => v && setChannel(v)}
+      >
+        <ToggleButton value="whatsapp" sx={{ px: 3, fontWeight: 700 }}>
+          <WhatsAppIcon fontSize="small" sx={{ mr: 1 }} /> WhatsApp
+        </ToggleButton>
+        <ToggleButton value="email" sx={{ px: 3, fontWeight: 700 }}>
+          <EmailIcon fontSize="small" sx={{ mr: 1 }} /> E-mail
+        </ToggleButton>
+      </ToggleButtonGroup>
+
+      {channel === 'email' && (
+        <Alert severity="info">
+          Aqui você edita apenas o <strong>texto</strong> do e-mail. O layout, o valor, o vencimento, o
+          <strong> PIX copia-e-cola</strong> e o <strong>QR Code</strong> são adicionados automaticamente ao redor da sua mensagem.
+        </Alert>
+      )}
+
       {data?.audit?.updated_at && (
         <Typography variant="caption" color="text.secondary">
           Última edição{data.audit.updated_by_name ? ` por ${data.audit.updated_by_name}` : ''} · {new Date(data.audit.updated_at).toLocaleString('pt-BR')}

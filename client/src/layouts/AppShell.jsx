@@ -41,6 +41,8 @@ import LockOutlinedIcon from '@mui/icons-material/LockOutlined'
 import GroupIcon from '@mui/icons-material/Group'
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance'
 import QueryStatsIcon from '@mui/icons-material/QueryStats'
+import ViewKanbanIcon from '@mui/icons-material/ViewKanban'
+import ReceiptLongIcon from '@mui/icons-material/ReceiptLong'
 
 const drawerWidth = 268
 
@@ -99,6 +101,12 @@ const buildSections = (role) => [
     ],
   },
   {
+    label: 'Tarefas',
+    items: [
+      { to: '/tasks', label: 'Gerenciador de Tarefas', icon: <ViewKanbanIcon />, perm: 'tasks.view', since: '2026-08-04' },
+    ],
+  },
+  {
     label: 'Financeiro',
     items: [
       { to: '/finance/dashboard', label: 'Dashboard Financeiro', icon: <QueryStatsIcon />, perm: 'finance.dashboard.view', since: '2026-07-30' },
@@ -111,6 +119,7 @@ const buildSections = (role) => [
         items: [
           { to: '/companies', label: 'Empresas', icon: <BusinessIcon /> },
           { to: '/admin/plans', label: 'Planos', icon: <LayersIcon /> },
+          { to: '/admin/subscriptions', label: 'Assinaturas', icon: <ReceiptLongIcon />, since: '2026-08-04' },
           { to: '/admin/permissions', label: 'Perfis e permissões', icon: <AdminPanelSettingsIcon /> },
           { to: '/system/health', label: 'Saúde do sistema', icon: <MonitorHeartIcon /> },
         ],
@@ -442,6 +451,12 @@ export default function AppShell({ children }) {
               <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block' }}>{userEmail}</Typography>
             </Box>
             <Divider />
+            {user?.role !== 'master' && (
+              <MenuItem onClick={() => { setAnchorEl(null); navigate('/minha-assinatura') }}>
+                <ListItemIcon><ReceiptLongIcon fontSize="small" /></ListItemIcon>
+                Minha assinatura
+              </MenuItem>
+            )}
             <MenuItem onClick={() => { setAnchorEl(null); logout(); navigate('/login') }}>
               <ListItemIcon><LogoutIcon fontSize="small" /></ListItemIcon>
               Sair

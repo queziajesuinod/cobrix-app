@@ -192,12 +192,35 @@ router.get('/upcoming', requireAuth, companyScope(true), async (req, res) => {
       }
     }
 
+    // Cobranças já pagas/canceladas por mês. O widget é "cobranças pendentes", então
+    // exclui também pelo billings (não só pelo contract_month_status): se qualquer
+    // uma das fontes disser que o mês foi pago, o contrato não é "a vencer".
+    const billMap = new Map()
+    if (contracts.length) {
+      const ids = contracts.map((c) => c.id)
+      const billResult = await query(
+        `SELECT contract_id,
+                EXTRACT(YEAR FROM billing_date)::int AS year,
+                EXTRACT(MONTH FROM billing_date)::int AS month,
+                LOWER(status) AS status
+         FROM ${SCHEMA}.billings
+         WHERE company_id = $1 AND contract_id = ANY($2::int[])
+           AND LOWER(status) IN ('paid', 'canceled')`,
+        [companyId, ids]
+      )
+      for (const row of billResult.rows) {
+        billMap.set(`${row.contract_id}:${row.year}:${row.month}`, String(row.status || '').toLowerCase())
+      }
+    }
+
     const items = []
     for (const c of contracts) {
       const dueDate = findNextDueDate(c, today, horizon)
       if (!dueDate) continue
-      const status = cmsMap.get(`${c.id}:${dueDate.getFullYear()}:${dueDate.getMonth() + 1}`)
-      if (status === 'paid' || status === 'canceled') continue
+      const key = `${c.id}:${dueDate.getFullYear()}:${dueDate.getMonth() + 1}`
+      const status = cmsMap.get(key)
+      const billStatus = billMap.get(key)
+      if (status === 'paid' || status === 'canceled' || billStatus === 'paid' || billStatus === 'canceled') continue
       const daysUntil = Math.round((dueDate - today) / 86400000)
       items.push({
         contractId: c.id,

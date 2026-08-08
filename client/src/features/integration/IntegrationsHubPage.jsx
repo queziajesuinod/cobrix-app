@@ -13,6 +13,7 @@ import ArrowForwardIcon from '@mui/icons-material/ArrowForward'
 import PageHeader from '@/components/PageHeader'
 import { useAuth } from '@/features/auth/AuthContext'
 import { companyIntegrationService } from '@/features/companies/company.integration.service'
+import { emailIntegrationService } from '@/features/companies/email.integration.service'
 
 // Categorias das integrações — usadas para o chip colorido do card.
 const CATEGORY_COLOR = {
@@ -53,10 +54,11 @@ const INTEGRATIONS = [
     key: 'email',
     name: 'E-mail',
     category: 'Notificações',
-    description: 'Dispare lembretes e comprovantes por e-mail via SMTP, Resend ou SendGrid.',
+    description: 'Dispare lembretes e comprovantes por e-mail (SMTP da empresa), com PIX e QR Code no template.',
     icon: <EmailIcon />,
     color: '#1976D2',
-    status: 'soon',
+    status: 'active',
+    to: '/integration/email',
   },
   {
     key: 'nfse',
@@ -215,6 +217,20 @@ export default function IntegrationsHubPage() {
     return s === 'open'
   }, [evoStatus.data])
 
+  // Status ao vivo do e-mail: "conectado" = habilitado e com credenciais salvas.
+  const emailStatus = useQuery({
+    queryKey: ['company_email_config', selectedCompanyId],
+    queryFn: () => emailIntegrationService.getConfig(selectedCompanyId),
+    enabled,
+    refetchOnWindowFocus: false,
+  })
+  const emailConnected = useMemo(() => {
+    const d = emailStatus.data
+    return Boolean(d && d.enabled && d.has_password && d.user && d.from && d.host)
+  }, [emailStatus.data])
+
+  const connectedMap = { whatsapp: whatsappConnected, email: emailConnected }
+
   const activeCount = visibleIntegrations.filter(i => i.status === 'active').length
   const soonCount = visibleIntegrations.length - activeCount
 
@@ -237,7 +253,7 @@ export default function IntegrationsHubPage() {
           <Grid item xs={12} sm={6} md={4} key={item.key}>
             <IntegrationCard
               item={item}
-              connected={item.key === 'whatsapp' && whatsappConnected}
+              connected={Boolean(connectedMap[item.key])}
               onOpen={() => item.to && navigate(item.to)}
             />
           </Grid>

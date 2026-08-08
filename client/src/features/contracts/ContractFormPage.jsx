@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Alert, Skeleton, Snackbar } from '@mui/material'
+import { Alert, Box, MenuItem, Skeleton, Snackbar, TextField } from '@mui/material'
 import AssignmentIcon from '@mui/icons-material/Assignment'
 import PageHeader from '@/components/PageHeader'
 import PapperBlock from '@/components/PapperBlock'
@@ -9,6 +9,7 @@ import CompanyRequiredAlert from '@/components/CompanyRequiredAlert'
 import { useAuth } from '@/features/auth/AuthContext'
 import { contractsService } from './contracts.service'
 import { contractTypesService } from './contractTypes.service'
+import { tasksService } from '@/features/tasks/tasks.service'
 import { ContractDialog, normalizePayloadDates, parseNumberInput, toDateInput } from './ContractsPage'
 
 const NEW_DEFAULTS = {
@@ -25,7 +26,17 @@ export default function ContractFormPage() {
   const { selectedCompanyId } = useAuth()
   const enabled = Number.isInteger(selectedCompanyId)
   const [errorToast, setErrorToast] = useState(null)
+  const [taskModelId, setTaskModelId] = useState('')
   const showError = (e) => setErrorToast(e?.response?.data?.error || e?.message || 'Falha na operação')
+
+  // Modelos de tarefa disponíveis (para gerar a tarefa ao criar o contrato).
+  const modelsQ = useQuery({
+    queryKey: ['task-models-select', selectedCompanyId],
+    queryFn: () => tasksService.modelsSelect(),
+    enabled: enabled && !editing,
+    retry: false,
+  })
+  const taskModels = modelsQ.data?.items || []
 
   const typesQ = useQuery({
     queryKey: ['contract_types', selectedCompanyId],
@@ -87,6 +98,7 @@ export default function ContractFormPage() {
       }
 
       const payload = normalizePayloadDates(form)
+      if (!editing && taskModelId) payload.task_model_id = Number(taskModelId)
       let contractId = editing ? Number(id) : undefined
       if (editing) {
         await update.mutateAsync({ id, payload })
@@ -118,14 +130,28 @@ export default function ContractFormPage() {
         ) : editing && contractQ.isError ? (
           <Alert severity="error">Não foi possível carregar o contrato.</Alert>
         ) : (
-          <ContractDialog
-            inline
-            open
-            defaultValues={editing ? contractQ.data : NEW_DEFAULTS}
-            contractTypes={typesQ.data || []}
-            onSubmit={onSubmit}
-            onClose={() => navigate('/contracts')}
-          />
+          <>
+            {!editing && taskModels.length > 0 && (
+              <Box sx={{ mb: 2, maxWidth: 460 }}>
+                <TextField
+                  select fullWidth label="Modelo de tarefa (opcional)"
+                  value={taskModelId} onChange={(e) => setTaskModelId(e.target.value)}
+                  helperText="Ao salvar, gera uma tarefa no quadro da equipe do modelo. Deixe em branco para não gerar."
+                >
+                  <MenuItem value=""><em>Nenhum</em></MenuItem>
+                  {taskModels.map((m) => <MenuItem key={m.id} value={m.id}>{m.name}{m.team_name ? ` · ${m.team_name}` : ''}</MenuItem>)}
+                </TextField>
+              </Box>
+            )}
+            <ContractDialog
+              inline
+              open
+              defaultValues={editing ? contractQ.data : NEW_DEFAULTS}
+              contractTypes={typesQ.data || []}
+              onSubmit={onSubmit}
+              onClose={() => navigate('/contracts')}
+            />
+          </>
         )}
       </PapperBlock>
 

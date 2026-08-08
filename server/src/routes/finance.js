@@ -695,7 +695,7 @@ router.get('/summary/annual', requireAuth, companyScope(true),
 // ===================== DASHBOARD FINANCEIRO =====================
 // Fuso usado para derivar o "mês corrente" (competência aberta). As colunas de data
 // no banco são DATE (sem hora), então só o "agora" precisa do fuso.
-const TZ = 'America/Campo_Grande';
+const TZ = process.env.TZ || 'America/Campo_Grande';
 
 function parseAno(v) {
   const n = Number(v);

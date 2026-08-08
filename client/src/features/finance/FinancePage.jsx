@@ -1,4 +1,5 @@
 import React from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Alert, Autocomplete, Box, Button, Card, CardContent, Checkbox, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
@@ -985,6 +986,21 @@ export default function FinancePage() {
   const [tab, setTab] = React.useState(0)
   const [toast, setToast] = React.useState(null)
   const notify = (msg, severity = 'success') => setToast({ msg, severity })
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  // Abas visíveis (mesma ordem/condições de tabDefs abaixo) — usadas para abrir
+  // uma aba específica via ?tab=<chave> (ex.: /finance?tab=paid).
+  const tabKeys = []
+  if (canRevView) tabKeys.push('rev')
+  if (canExpView) tabKeys.push('exp')
+  if (canRevView) tabKeys.push('paid')
+  if (canResumoView) tabKeys.push('resumo')
+  React.useEffect(() => {
+    const key = searchParams.get('tab')
+    if (!key) return
+    const i = tabKeys.indexOf(key)
+    if (i >= 0) setTab(i)
+  }, [searchParams, canRevView, canExpView, canResumoView]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const nowYear = new Date().getFullYear()
   const [periodType, setPeriodType] = React.useState('month')
@@ -1072,7 +1088,7 @@ export default function FinancePage() {
 
       <PapperBlock title="Lançamentos" subtitle="Receitas e despesas no período" icon={<AccountBalanceIcon />} iconColor="linear-gradient(135deg,#059669,#10b981)" noPadding>
         <Box sx={{ px: 2, pt: 1 }}>
-          <Tabs value={activeTab} onChange={(_e, v) => setTab(v)}>
+          <Tabs value={activeTab} onChange={(_e, v) => { setTab(v); if (searchParams.get('tab')) setSearchParams({}, { replace: true }) }}>
             {tabDefs.map((t) => <Tab key={t.key} label={t.label} />)}
           </Tabs>
         </Box>

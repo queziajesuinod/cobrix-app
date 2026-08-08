@@ -5,7 +5,10 @@ const { runDaily } = require('../jobs/billing-cron');
 const { sendWhatsapp } = require('../services/messenger');
 const { msgPre, msgDue, msgLate } = require('../services/message-templates');
 const { ensureGatewayPaymentLink } = require('../services/payment-gateway');
+const { resolvePixPayment } = require('../services/pix-resolver');
+const { sendBillingEmail } = require('../services/mailer');
 const { notifyBillingPaid } = require('../services/payment-notifications');
+const { activateSubscriptionForContract } = require('../jobs/gateway-reconcile');
 const { isGatewayConfigured } = require('../services/company-gateway');
 const { ensureDateOnly, formatISODate } = require('../utils/date-only');
 const { normalizeBillingIntervalMonths, isBillingMonthFor } = require('../jobs/billing-cron');
@@ -386,7 +389,10 @@ router.post('/notify', requireAuth, companyScope(true), requirePermission('billi
         cpf: row.client_document_cpf || null,
         cnpj: row.client_document_cnpj || null,
       };
-      const gatewayPayment = gatewayReady ? await ensureGatewayPaymentLink({
+      // resolvePixPayment escolhe Efí (dinâmico) quando configurado, senão cai no
+      // PIX estático (chave PIX). gatewayReady segue informando o template se há
+      // baixa automática, mas não bloqueia mais a geração do PIX estático.
+      const gatewayPayment = await resolvePixPayment({
         companyId: req.companyId,
         contractId: Number(contract_id),
         billingId,
@@ -395,7 +401,7 @@ router.post('/notify', requireAuth, companyScope(true), requirePermission('billi
         contractDescription: row.description,
         clientName: recipientName,
         clientDocument,
-      }) : null;
+      });
       const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
       const copyPaste = gatewaySummary?.copyPaste || null;
       const text = await map[typ]({
@@ -419,9 +425,25 @@ router.post('/notify', requireAuth, companyScope(true), requirePermission('billi
       // envia via EVO com config da empresa (fora de qualquer lock/conexão retida)
       const evo = await sendWhatsapp(req.companyId, { number: row.client_phone, text });
 
+      // canal de e-mail (best-effort) com o mesmo conteúdo/PIX
+      let email = { ok: false, skipped: true };
+      if (row.client_email) {
+        try {
+          email = await sendBillingEmail(req.companyId, {
+            to: row.client_email, type: typ,
+            ctx: {
+              client_name: row.client_name, responsavel: row.client_responsavel,
+              tipoContrato: row.description, mesRefDate, vencimentoDate: due, valor: amount,
+              payment_code: copyPaste, payment_qrcode: gatewayPayment?.qrCodeImage || null,
+            },
+          });
+        } catch (e) { email = { ok: false, error: e.message }; }
+      }
+
       const providerResponse = {
         messenger: evo.data ?? null,
         messengerStatus: evo.status ?? null,
+        email: { ok: Boolean(email.ok), status: email.status ?? null, error: email.error ?? null },
         gateway: gatewaySummary,
       };
 
@@ -503,6 +525,15 @@ router.put('/:id/status', requireAuth, companyScope(true), requirePermission('bi
       } catch (notifyErr) {
         console.error('[billing-status] falha ao notificar pagamento manual billing=%s err=%s', billingId, notifyErr.message);
       }
+      // SaaS: se esta cobrança é a 1ª mensalidade de uma assinatura pendente,
+      // ativar a empresa-cliente (libera o acesso). Idempotente e no-op para
+      // cobranças que não são de assinatura — fecha o buraco em que o pagamento
+      // manual notificava mas mantinha a empresa em pending_payment.
+      try {
+        await activateSubscriptionForContract(row.contract_id);
+      } catch (activateErr) {
+        console.error('[billing-status] falha ao ativar assinatura billing=%s err=%s', billingId, activateErr.message);
+      }
     }
 
     res.json(updated.rows[0]);
@@ -546,8 +577,9 @@ router.put('/by-contract/:contractId/month/:year/:month/status', requireAuth, co
   if (!contractId || !year || !month) return res.status(400).json({ error: 'parâmetros inválidos' });
 
   try {
-    const c = await query(`SELECT id FROM ${SCHEMA}.contracts WHERE id=$1 AND company_id=$2`, [contractId, req.companyId]);
+    const c = await query(`SELECT id, value, billing_day FROM ${SCHEMA}.contracts WHERE id=$1 AND company_id=$2`, [contractId, req.companyId]);
     if (!c.rows[0]) return res.status(404).json({ error: 'Contrato não encontrado' });
+    const contract = c.rows[0];
 
     await query(`
       INSERT INTO ${SCHEMA}.contract_month_status (contract_id, company_id, year, month, status)
@@ -569,7 +601,28 @@ router.put('/by-contract/:contractId/month/:year/:month/status', requireAuth, co
       RETURNING b.id
     `, [status, contractId, year, month]);
 
-    res.json({ updated: r.rowCount, ids: r.rows.map(x => x.id) });
+    // Se marcou o mês como PAGO mas não havia nenhuma cobrança gerada (ex.: o
+    // usuário marcou antes do dia de vencimento, ou o cron ainda não rodou),
+    // cria a cobrança já PAGA. Sem isso o mês some da lista automática, mas a
+    // receita nunca aparece na aba "Contratos pagos" do financeiro — e o cron
+    // não gera mais nada, pois pula meses já 'paid'.
+    let created = null;
+    if (status === 'paid' && r.rowCount === 0) {
+      const lastDay = new Date(year, month, 0).getDate();
+      const effDay = Math.min(Math.max(Number(contract.billing_day) || 1, 1), lastDay);
+      const billingDate = `${year}-${String(month).padStart(2, '0')}-${String(effDay).padStart(2, '0')}`;
+      const amount = Number(contract.value || 0);
+      const ins = await query(`
+        INSERT INTO ${SCHEMA}.billings (company_id, contract_id, billing_date, amount, status, gateway_paid_at)
+        VALUES ($1,$2,$3,$4,'paid',NOW())
+        ON CONFLICT (contract_id, billing_date)
+        DO UPDATE SET status='paid', gateway_paid_at=COALESCE(${SCHEMA}.billings.gateway_paid_at, NOW()), updated_at=now()
+        RETURNING id
+      `, [req.companyId, contractId, billingDate, amount]);
+      created = ins.rows[0]?.id || null;
+    }
+
+    res.json({ updated: r.rowCount, ids: r.rows.map(x => x.id), created });
   } catch (e) {
     respondError(res, e);
   }

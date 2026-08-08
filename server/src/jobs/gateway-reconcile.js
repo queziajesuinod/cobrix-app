@@ -24,8 +24,8 @@ async function fetchPending(limit) {
   return r.rows;
 }
 
-async function updateContractMonthStatus(contractId, billingDate) {
-  if (!contractId || !billingDate) return;
+async function updateContractMonthStatus(companyId, contractId, billingDate) {
+  if (!companyId || !contractId || !billingDate) return;
   // new Date('YYYY-MM-DD') interpreta como UTC midnight → em UTC-3/UTC-4 vira
   // o dia anterior, marcando o mês errado como pago. ensureDateOnly() parseia
   // a string via regex e cria Date no horário local, sem shift de timezone.
@@ -33,11 +33,16 @@ async function updateContractMonthStatus(contractId, billingDate) {
   if (!d) return;
   const year = d.getFullYear();
   const month = d.getMonth() + 1;
+  // Upsert (não UPDATE puro): pagamentos que chegam antes de existir a linha do
+  // mês (PIX estático, cobrança criada por outro caminho, confirmação de
+  // assinatura) precisam CRIAR o registro 'paid'. Um UPDATE simples afetaria 0
+  // linhas e o contrato continuaria aparecendo na listagem /notifications/auto.
   await query(
-    `UPDATE ${SCHEMA}.contract_month_status
-        SET status='paid'
-      WHERE contract_id=$1 AND year=$2 AND month=$3`,
-    [contractId, year, month]
+    `INSERT INTO ${SCHEMA}.contract_month_status (company_id, contract_id, year, month, status)
+     VALUES ($1,$2,$3,$4,'paid')
+     ON CONFLICT (contract_id, year, month)
+     DO UPDATE SET status='paid', updated_at=NOW()`,
+    [Number(companyId), Number(contractId), year, month]
   ).catch(() => {});
 }
 
@@ -69,6 +74,7 @@ async function markBillingPaid({ companyId, contractId, dueDate, billingId, txid
   }
   if (updatedBilling) {
     await updateContractMonthStatus(
+      companyId,
       updatedBilling.contract_id || contractId,
       updatedBilling.billing_date || dueDate
     );
@@ -232,4 +238,10 @@ async function runGatewayReconcile(limit = DEFAULT_BATCH) {
 module.exports = {
   runGatewayReconcile,
   processWebhookPayment,
+  // Exportados para reuso na confirmação manual (rota master de assinaturas e
+  // marcação manual de cobrança). Idempotentes — produzem os mesmos efeitos de
+  // um webhook real: cobrança paga → notificação → assinatura/empresa ativa.
+  handleConfirmedPayment,
+  markBillingPaid,
+  activateSubscriptionForContract,
 };

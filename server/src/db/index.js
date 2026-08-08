@@ -7,6 +7,12 @@ const { AsyncLocalStorage } = require('async_hooks');
 // Solução: receber DATE como string 'YYYY-MM-DD' — ensureDateOnly() já trata isso.
 types.setTypeParser(1082, (val) => val);
 
+// Fuso da aplicação (padrão Campo Grande, UTC-4). Toda conexão do pool nasce nele
+// via startup option — assim now()::date, current_date e timestamptz::date usam a
+// data LOCAL. Sem isso o banco fica em UTC e um pagamento marcado à noite (ex.: 21h)
+// é gravado no dia seguinte (e, na virada, no mês seguinte).
+const APP_TZ = process.env.TZ || 'America/Campo_Grande';
+
 const pool = new Pool({
   user: process.env.DB_USER,
   password: process.env.DB_PASS,
@@ -17,6 +23,7 @@ const pool = new Pool({
   idleTimeoutMillis: 30000,
   // Falha rápido em vez de pendurar a request se o pool estiver esgotado.
   connectionTimeoutMillis: Number(process.env.DB_POOL_CONN_TIMEOUT_MS || 10000),
+  options: `-c timezone=${APP_TZ}`,
 });
 const schema = (process.env.DB_SCHEMA || 'public').replace(/[^a-zA-Z0-9_]/g,'');
 
@@ -46,6 +53,16 @@ async function initDb() {
     await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS contracts_limit INTEGER;`);
     await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS efi_client_id_enc TEXT;`);
     await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS efi_client_secret_enc TEXT;`);
+    // Integração de e-mail (SMTP por empresa) — senha cifrada via secret-box.
+    // email_provider: 'smtp' (manual) ou 'gmail' (preset smtp.gmail.com + senha de app).
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS email_provider TEXT NOT NULL DEFAULT 'smtp';`);
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS email_smtp_host TEXT;`);
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS email_smtp_port INTEGER;`);
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS email_smtp_user TEXT;`);
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS email_smtp_pass_enc TEXT;`);
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS email_from TEXT;`);
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS email_secure BOOLEAN NOT NULL DEFAULT false;`);
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS email_enabled BOOLEAN NOT NULL DEFAULT false;`);
     await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS efi_cert_base64_enc TEXT;`);
     // Usuários e vínculo com empresas (idempotente — a definição vivia no init legado).
     await c.query(`
@@ -112,6 +129,10 @@ async function initDb() {
         activated_at TIMESTAMPTZ
       );
     `);
+    // Cancelamento com carência: 'canceling' mantém o acesso até access_until;
+    // o cron subscription-lifecycle efetiva a inativação depois dessa data.
+    await c.query(`ALTER TABLE ${schema}.company_subscriptions ADD COLUMN IF NOT EXISTS access_until DATE;`);
+    await c.query(`ALTER TABLE ${schema}.company_subscriptions ADD COLUMN IF NOT EXISTS cancel_requested_at TIMESTAMPTZ;`);
     await c.query(`
       CREATE TABLE IF NOT EXISTS clients (
         id SERIAL PRIMARY KEY,
@@ -151,11 +172,16 @@ async function initDb() {
         gateway_txid TEXT,
         gateway_paid_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ DEFAULT now(),
+        updated_at TIMESTAMPTZ,
         UNIQUE(contract_id, billing_date)
       );
     `);
     await c.query(`ALTER TABLE ${schema}.billings ADD COLUMN IF NOT EXISTS gateway_txid TEXT;`);
     await c.query(`ALTER TABLE ${schema}.billings ADD COLUMN IF NOT EXISTS gateway_paid_at TIMESTAMPTZ;`);
+    // billings.js/finance.js gravam updated_at ao marcar pago/editar/estornar. Sem
+    // esta coluna essas escritas lançavam erro — e, como não há transação, o mês
+    // ficava 'paid' em contract_month_status SEM cobrança paga (não gerava receita).
+    await c.query(`ALTER TABLE ${schema}.billings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;`);
     await c.query(`
       CREATE TABLE IF NOT EXISTS ${schema}.billing_gateway_links (
         id SERIAL PRIMARY KEY,
@@ -327,6 +353,9 @@ async function initDb() {
         PRIMARY KEY (notification_id, user_id)
       );
     `);
+    // Destinatário opcional: user_id nulo = notificação da empresa (todos veem);
+    // preenchido = notificação PESSOAL (só aquele usuário vê no sininho).
+    await c.query(`ALTER TABLE ${schema}.notifications ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES ${schema}.users(id) ON DELETE CASCADE;`);
 
     // Perfis e permissões (RBAC configurável). Perfis são GLOBAIS; o vínculo do
     // usuário ao perfil fica em users.profile_id; overrides por usuário afinam
@@ -468,6 +497,117 @@ async function initDb() {
         WHERE uc.company_id = mt.company_id ORDER BY (u.role='master') DESC, u.id ASC LIMIT 1
       ) WHERE mt.created_by IS NULL;
     `);
+
+    // ===================== GERENCIADOR DE TAREFAS (Kanban por equipe) =====================
+    // Equipe: unidade que tem um quadro. Só Admin cria; membros têm papel gerente/membro.
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.task_teams (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        created_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (company_id, name)
+      );
+    `);
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.task_team_members (
+        team_id INTEGER NOT NULL REFERENCES ${schema}.task_teams(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES ${schema}.users(id) ON DELETE CASCADE,
+        role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('manager','member')),
+        PRIMARY KEY (team_id, user_id)
+      );
+    `);
+    // Colunas do quadro (livres, ordenadas). is_done_col marca a coluna final (entrega).
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.task_columns (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
+        team_id INTEGER NOT NULL REFERENCES ${schema}.task_teams(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        position INTEGER NOT NULL DEFAULT 0,
+        is_done_col BOOLEAN NOT NULL DEFAULT false,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    // Modelos de tarefa reutilizáveis (micros padronizadas por etapa) + itens.
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.task_models (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
+        team_id INTEGER REFERENCES ${schema}.task_teams(id) ON DELETE SET NULL,
+        name TEXT NOT NULL,
+        title TEXT,
+        due_days INTEGER,
+        created_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.task_model_items (
+        id SERIAL PRIMARY KEY,
+        model_id INTEGER NOT NULL REFERENCES ${schema}.task_models(id) ON DELETE CASCADE,
+        stage_name TEXT NOT NULL,
+        title TEXT NOT NULL,
+        position INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+    // Cartão (tarefa macro). competence = 1º dia do mês vigente; due_date = prazo (SLA).
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.task_cards (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
+        team_id INTEGER NOT NULL REFERENCES ${schema}.task_teams(id) ON DELETE CASCADE,
+        column_id INTEGER REFERENCES ${schema}.task_columns(id) ON DELETE SET NULL,
+        title TEXT NOT NULL,
+        description TEXT,
+        assignee_id INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        due_date DATE,
+        competence DATE NOT NULL,
+        months_rolled INTEGER NOT NULL DEFAULT 0,
+        priority TEXT NOT NULL DEFAULT 'normal',
+        status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','done','archived')),
+        position INTEGER NOT NULL DEFAULT 0,
+        contract_id INTEGER REFERENCES ${schema}.contracts(id) ON DELETE SET NULL,
+        model_id INTEGER REFERENCES ${schema}.task_models(id) ON DELETE SET NULL,
+        started_at TIMESTAMPTZ,
+        done_at TIMESTAMPTZ,
+        created_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ
+      );
+    `);
+    // Micro-tarefa: pertence a uma etapa/coluna. O cartão só sai da coluna com todas fechadas.
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.task_items (
+        id SERIAL PRIMARY KEY,
+        card_id INTEGER NOT NULL REFERENCES ${schema}.task_cards(id) ON DELETE CASCADE,
+        stage_column_id INTEGER REFERENCES ${schema}.task_columns(id) ON DELETE SET NULL,
+        title TEXT NOT NULL,
+        done BOOLEAN NOT NULL DEFAULT false,
+        done_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        done_at TIMESTAMPTZ,
+        position INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+    // Histórico: quem fez o quê no cartão (criou, moveu de/para, fechou micro, rolou de mês…).
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.task_activity (
+        id SERIAL PRIMARY KEY,
+        card_id INTEGER NOT NULL REFERENCES ${schema}.task_cards(id) ON DELETE CASCADE,
+        user_id INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        action TEXT NOT NULL,
+        from_column_id INTEGER,
+        to_column_id INTEGER,
+        detail TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    // Tipo de contrato pode sugerir um modelo padrão ao cadastrar o contrato.
+    await c.query(`ALTER TABLE ${schema}.contract_types ADD COLUMN IF NOT EXISTS default_task_model_id INTEGER REFERENCES ${schema}.task_models(id) ON DELETE SET NULL;`);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_task_cards_team_comp ON ${schema}.task_cards (company_id, team_id, competence);`);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_task_items_card ON ${schema}.task_items (card_id);`);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_task_activity_card ON ${schema}.task_activity (card_id, created_at DESC);`);
   });
 }
 

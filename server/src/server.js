@@ -24,6 +24,11 @@ for (const candidate of ENV_CANDIDATES) {
   }
 }
 
+// Fuso do processo: define antes de qualquer uso de Date, para que `new Date()` e
+// formatISODate() produzam a data LOCAL (Campo Grande, UTC-4) mesmo se o servidor
+// rodar em UTC. Casa com o timezone da sessão do banco (ver db/index.js).
+process.env.TZ = process.env.TZ || 'America/Campo_Grande';
+
 const express = require('express');
 const cron = require('node-cron');
 
@@ -34,6 +39,8 @@ const app = require('./app');
 const { runDueOnly, runPreOnly, runLateOnly, runRenewOnly } = require('./jobs/billing-cron');
 const { runGatewayReconcile } = require('./jobs/gateway-reconcile');
 const { runNotificationRetry } = require('./jobs/notification-retry');
+const { runTasksDaily } = require('./jobs/tasks-cron');
+const { runSubscriptionLifecycle } = require('./jobs/subscription-lifecycle');
 const { withCronLock } = require('./utils/cron-lock');
 const { sendOpsAlert } = require('./services/alerts');
 const logger = require('./utils/logger');
@@ -91,6 +98,10 @@ scheduleCronJob('LATE', process.env.CRON_LATE, runLateOnly);
 scheduleCronJob('RENEW', process.env.CRON_RENEW, runRenewOnly);
 // Notification retry (default: every 30 min)
 scheduleCronJob('RETRY', process.env.CRON_RETRY || '*/30 * * * *', runNotificationRetry);
+// Tarefas: rolagem de mês + notificações de prazo (default: 8h todo dia)
+scheduleCronJob('TASKS_DAILY', process.env.CRON_TASKS || '0 8 * * *', runTasksDaily);
+// Assinaturas: efetiva cancelamentos com carência vencida (default: 6h todo dia)
+scheduleCronJob('SUBSCRIPTION', process.env.CRON_SUBSCRIPTION || '0 6 * * *', runSubscriptionLifecycle);
 
 // Gateway fallback polling
 const gatewayPollMs = Number(process.env.GATEWAY_POLL_MS || 300000);

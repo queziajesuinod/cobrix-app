@@ -128,6 +128,44 @@ Obrigado pela parceria!
 Atenciosamente,
 Equipe Financeira
 {{company_name}}`,
+
+  // ===== Corpo (texto) dos e-mails de cobrança. O valor, vencimento, PIX e QR
+  // Code são adicionados automaticamente pelo layout HTML — aqui é só a mensagem.
+  pre_email: `Olá {{client_name}}, tudo bem?
+
+Passando para lembrar que a sua cobrança referente ao {{contract_type}} ({{reference_month}}) vence em {{due_date}}.
+
+Você pode pagar de forma rápida pelo PIX abaixo. Qualquer dúvida, é só responder este e-mail.
+
+Atenciosamente,
+{{company_name}}`,
+
+  due_email: `Olá {{client_name}}, tudo bem?
+
+Sua cobrança referente ao {{contract_type}} ({{reference_month}}) vence HOJE, {{due_date}}.
+
+Para manter tudo em dia, pague pelo PIX abaixo. Estamos à disposição!
+
+Atenciosamente,
+{{company_name}}`,
+
+  late_email: `Olá {{client_name}}, tudo bem?
+
+Identificamos que a cobrança referente ao {{contract_type}} ({{reference_month}}), vencida em {{due_date}}, ainda está em aberto.
+
+Para regularizar, pague pelo PIX abaixo. Se já tiver pago, por favor desconsidere este e-mail.
+
+Atenciosamente,
+{{company_name}}`,
+
+  paid_email: `Olá {{client_name}}, tudo bem?
+
+Confirmamos o recebimento do pagamento referente ao {{contract_type}} ({{reference_month}}).
+
+Obrigado pela parceria! 💚
+
+Atenciosamente,
+{{company_name}}`,
 };
 
 DEFAULT_TEMPLATES.due_weekly = DEFAULT_TEMPLATES.due;
@@ -445,6 +483,8 @@ module.exports = {
   upsertTemplate,
   clearTemplateCache,
   clearCompanyCache,
+  buildBindings,
+  applyTemplate,
 };
 
 

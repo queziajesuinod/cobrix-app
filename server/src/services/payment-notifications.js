@@ -1,5 +1,6 @@
 const { query } = require('../db');
 const { sendWhatsapp } = require('./messenger');
+const { sendBillingEmail } = require('./mailer');
 const { msgPaid } = require('./message-templates');
 const { ensureDateOnly, formatISODate } = require('../utils/date-only');
 
@@ -30,7 +31,8 @@ async function fetchBillingSummary(billingId) {
             cl.id AS client_id_ref,
             cl.name AS client_name,
             cl.responsavel AS client_responsavel,
-            cl.phone AS client_phone
+            cl.phone AS client_phone,
+            cl.email AS client_email
        FROM ${SCHEMA}.billings b
        JOIN ${SCHEMA}.contracts c ON c.id = b.contract_id
        JOIN ${SCHEMA}.clients cl ON cl.id = c.client_id
@@ -49,6 +51,7 @@ async function fetchBillingSummary(billingId) {
     client_name: row.client_name,
     client_responsavel: row.client_responsavel,
     client_phone: row.client_phone,
+    client_email: row.client_email,
     contract_description: row.contract_description,
   };
 }
@@ -151,8 +154,9 @@ async function notifyBillingPaid({
   if (companyId && Number(summary.company_id) !== Number(companyId)) {
     return { sent: false, skipped: true, reason: 'company-mismatch' };
   }
-  if (!summary.client_phone) {
-    return { sent: false, skipped: true, reason: 'no-phone' };
+  // Precisa de ao menos um canal: telefone (WhatsApp) ou e-mail.
+  if (!summary.client_phone && !summary.client_email) {
+    return { sent: false, skipped: true, reason: 'no-channel' };
   }
   if (!force) {
     const alreadySent = await hasPaidNotification(summary.billing_id);
@@ -185,32 +189,60 @@ async function notifyBillingPaid({
     payment_txid: resolvedTxid,
   });
 
-  let evo = { ok: false, error: 'no-phone' };
-  try {
-    evo = await sendWhatsapp(summary.company_id, { number: summary.client_phone, text });
-  } catch (err) {
-    evo = { ok: false, error: err.message };
+  let evo = { ok: false, skipped: true, error: 'no-phone' };
+  if (summary.client_phone) {
+    try {
+      evo = await sendWhatsapp(summary.company_id, { number: summary.client_phone, text });
+    } catch (err) {
+      evo = { ok: false, error: err.message };
+    }
+  }
+
+  // Canal de e-mail (best-effort) — confirmação de pagamento também por e-mail.
+  let email = { ok: false, skipped: true, error: 'no-email' };
+  if (summary.client_email) {
+    try {
+      email = await sendBillingEmail(summary.company_id, {
+        to: summary.client_email,
+        type: 'paid',
+        ctx: {
+          client_name: summary.client_name,
+          responsavel: summary.client_responsavel,
+          tipoContrato: summary.contract_description,
+          mesRefDate,
+          vencimentoDate: dueDateObj,
+          valor: resolvedAmount,
+          payment_amount: resolvedAmount,
+          payment_date: paidAt,
+          payment_txid: resolvedTxid,
+        },
+      });
+    } catch (err) {
+      email = { ok: false, error: err.message };
+    }
   }
 
   const providerResponse = {
     messenger: evo.data ?? null,
     messengerStatus: evo.status ?? null,
+    email: { ok: Boolean(email.ok), status: email.status ?? null, error: email.error ?? null },
     gateway: detail ?? (resolvedTxid ? { txid: resolvedTxid } : null),
   };
 
+  const anySent = Boolean(evo.ok || email.ok);
   await savePaidNotification({
     companyId: summary.company_id,
     billingId: summary.billing_id,
     contractId: summary.contract_id,
     clientId: summary.client_id,
-    toNumber: summary.client_phone,
+    toNumber: summary.client_phone || summary.client_email || '',
     message: text,
     dueDate: dueDateObj ? formatISODate(dueDateObj) : null,
-    evoResult: evo,
+    evoResult: { ok: anySent, status: evo.status ?? (email.ok ? 200 : null), error: anySent ? null : (evo.error || email.error || null) },
     providerResponse,
   });
 
-  return { sent: Boolean(evo.ok), skipped: false, reason: null, response: evo };
+  return { sent: anySent, skipped: false, reason: null, response: { evo, email } };
 }
 
 module.exports = {

@@ -5,4 +5,5 @@ export const companyIntegrationService = {
   restartInstance: async (id) => (await api.post(`/companies/${id}/integration/evo/restart`)).data,
   connectInstance: async (id) => (await api.post(`/companies/${id}/integration/evo/connect`)).data,
   testEvo: async (id, payload) => (await api.post(`/companies/${id}/integration/evo/test`, payload)).data,
+  createInstance: async (id, instanceName) => (await api.post(`/companies/${id}/integration/evo/create`, instanceName ? { instanceName } : {})).data,
 }

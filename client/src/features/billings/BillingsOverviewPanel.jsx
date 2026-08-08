@@ -100,10 +100,18 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
   })
   const bulk = useMutation({
     mutationFn: ({ contractId, y, m, status }) => billingsService.setMonthStatus(contractId, y, m, status),
-    onSuccess: () => {
+    onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ['billings_overview'] })
       qc.invalidateQueries({ queryKey: ['billings'] })
-    }
+      qc.invalidateQueries({ queryKey: ['kpis'] })
+      qc.invalidateQueries({ queryKey: ['paid_contracts'] })
+      setSnack(vars?.status === 'paid'
+        ? `Contrato #${vars.contractId} marcado como PAGO`
+        : `Cobrança do contrato #${vars?.contractId} cancelada`)
+    },
+    onError: (err) => {
+      setSnack(err?.response?.data?.error || 'Falha ao atualizar o status do mês')
+    },
   })
   const [snack, setSnack] = useState(null)
   const [expandedIds, setExpandedIds] = useState(() => new Set())
@@ -257,12 +265,12 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
                 <Stack direction="row" spacing={1} sx={{ mb: 1.5, flexWrap: 'wrap', gap: 1 }}>
                   <Tooltip title="Marcar o mês inteiro como PAGO">
                     <span>
-                      <Button size="small" variant="contained" disabled={allPaid || isCanceled} onClick={() => bulk.mutateAsync({ contractId: it.contract_id, y, m, status: 'paid' })}>Marcar mês PAGO</Button>
+                      <Button size="small" variant="contained" disabled={allPaid || isCanceled || bulk.isPending} onClick={() => bulk.mutate({ contractId: it.contract_id, y, m, status: 'paid' })}>Marcar mês PAGO</Button>
                     </span>
                   </Tooltip>
                   <Tooltip title="Cancelar cobrança do mês">
                     <span>
-                      <Button size="small" variant="outlined" color="error" disabled={allPaid || isCanceled} onClick={() => bulk.mutateAsync({ contractId: it.contract_id, y, m, status: 'canceled' })}>Cancelar cobrança</Button>
+                      <Button size="small" variant="outlined" color="error" disabled={allPaid || isCanceled || bulk.isPending} onClick={() => bulk.mutate({ contractId: it.contract_id, y, m, status: 'canceled' })}>Cancelar cobrança</Button>
                     </span>
                   </Tooltip>
                   {forceType && forceDate && (
@@ -272,7 +280,7 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
                           size="small"
                           variant="outlined"
                           color="info"
-                          disabled={forceMutation.isLoading}
+                          disabled={forceMutation.isPending}
                           onClick={() =>
                             forceMutation.mutate({
                               contractId: it.contract_id,

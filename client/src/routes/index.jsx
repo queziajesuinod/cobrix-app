@@ -5,6 +5,7 @@ import AppShell from '@/layouts/AppShell'
 const AutoNotificationsPage = lazy(() => import('@/features/notifications/AutoNotificationsPage'))
 const MessageTemplatesPage = lazy(() => import('@/features/notifications/MessageTemplatesPage'))
 const EvoConnectionPage = lazy(() => import('@/features/integration/EvoConnectionPage'))
+const EmailConnectionPage = lazy(() => import('@/features/integration/EmailConnectionPage'))
 const IntegrationsHubPage = lazy(() => import('@/features/integration/IntegrationsHubPage'))
 const CompanyCreatePage = lazy(() => import('@/features/companies/CompanyCreatePage'))
 const LoginPage = lazy(() => import('@/features/auth/LoginPage'))
@@ -16,13 +17,15 @@ const CadastroPage = lazy(() => import('@/features/cadastro/CadastroPage'))
 const ContractsPage = lazy(() => import('@/features/contracts/ContractsPage'))
 const ContractFormPage = lazy(() => import('@/features/contracts/ContractFormPage'))
 const ContractTypesPage = lazy(() => import('@/features/contracts/ContractTypesPage'))
-const PaidContractsPage = lazy(() => import('@/features/billings/PaidContractsPage'))
 const OverdueClientsPage = lazy(() => import('@/features/reports/OverdueClientsPage'))
 const RiskPortfolioPage = lazy(() => import('@/features/reports/RiskPortfolioPage'))
 const PermissionsAdminPage = lazy(() => import('@/features/admin/PermissionsAdminPage'))
 const PlansAdminPage = lazy(() => import('@/features/admin/PlansAdminPage'))
+const SubscriptionsAdminPage = lazy(() => import('@/features/admin/SubscriptionsAdminPage'))
+const MySubscriptionPage = lazy(() => import('@/features/account/MySubscriptionPage'))
 const UsersPage = lazy(() => import('@/features/admin/UsersPage'))
 const FinancePage = lazy(() => import('@/features/finance/FinancePage'))
+const TasksPage = lazy(() => import('@/features/tasks/TasksPage'))
 const FinanceDashboardPage = lazy(() => import('@/features/finance/FinanceDashboardPage'))
 const SystemHealthPage = lazy(() => import('@/features/system/SystemHealthPage'))
 const CompanyListPage = lazy(() => import('@/features/companies/CompanyListPage'))
@@ -50,17 +53,21 @@ export default function AppRouter() {
         <Route path="/contracts/types" element={<ProtectedRoute><AppShell><ContractTypesPage /></AppShell></ProtectedRoute>} />
         <Route path="/notifications/auto" element={<ProtectedRoute><AppShell><AutoNotificationsPage /></AppShell></ProtectedRoute>} />
         <Route path="/notifications/templates" element={<ProtectedRoute><AppShell><MessageTemplatesPage /></AppShell></ProtectedRoute>} />
-        <Route path="/billings/paid" element={<ProtectedRoute><AppShell><PaidContractsPage /></AppShell></ProtectedRoute>} />
+        <Route path="/billings/paid" element={<Navigate to="/finance?tab=paid" replace />} />
         <Route path="/reports/overdue-clients" element={<ProtectedRoute><AppShell><OverdueClientsPage /></AppShell></ProtectedRoute>} />
         <Route path="/reports/risk" element={<ProtectedRoute><AppShell><RiskPortfolioPage /></AppShell></ProtectedRoute>} />
         <Route path="/system/health" element={<ProtectedRoute><AppShell><SystemHealthPage /></AppShell></ProtectedRoute>} />
         <Route path="/admin/permissions" element={<ProtectedRoute><AppShell><PermissionsAdminPage /></AppShell></ProtectedRoute>} />
         <Route path="/admin/plans" element={<ProtectedRoute><AppShell><PlansAdminPage /></AppShell></ProtectedRoute>} />
+        <Route path="/admin/subscriptions" element={<ProtectedRoute><AppShell><SubscriptionsAdminPage /></AppShell></ProtectedRoute>} />
+        <Route path="/minha-assinatura" element={<ProtectedRoute><AppShell><MySubscriptionPage /></AppShell></ProtectedRoute>} />
         <Route path="/admin/users" element={<ProtectedRoute><AppShell><UsersPage /></AppShell></ProtectedRoute>} />
         <Route path="/finance" element={<ProtectedRoute><AppShell><FinancePage /></AppShell></ProtectedRoute>} />
         <Route path="/finance/dashboard" element={<ProtectedRoute><AppShell><FinanceDashboardPage /></AppShell></ProtectedRoute>} />
+        <Route path="/tasks" element={<ProtectedRoute><AppShell><TasksPage /></AppShell></ProtectedRoute>} />
         <Route path="/integrations" element={<ProtectedRoute><AppShell><IntegrationsHubPage /></AppShell></ProtectedRoute>} />
         <Route path="/integration/evo" element={<ProtectedRoute><AppShell><EvoConnectionPage /></AppShell></ProtectedRoute>} />
+        <Route path="/integration/email" element={<ProtectedRoute><AppShell><EmailConnectionPage /></AppShell></ProtectedRoute>} />
 
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
