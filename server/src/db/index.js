@@ -581,15 +581,59 @@ async function initDb() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
     `);
+    // Etiquetas/labels por empresa + vínculo N:N com as tarefas (categorização transversal).
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.task_labels (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        color TEXT NOT NULL DEFAULT '#64748b',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.task_node_labels (
+        node_id INTEGER NOT NULL REFERENCES ${schema}.task_nodes(id) ON DELETE CASCADE,
+        label_id INTEGER NOT NULL REFERENCES ${schema}.task_labels(id) ON DELETE CASCADE,
+        PRIMARY KEY (node_id, label_id)
+      );
+    `);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_task_node_labels_label ON ${schema}.task_node_labels (label_id);`);
+    // Comentários (discussão) da tarefa — separado do histórico de sistema.
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.task_comments (
+        id SERIAL PRIMARY KEY,
+        node_id INTEGER NOT NULL REFERENCES ${schema}.task_nodes(id) ON DELETE CASCADE,
+        user_id INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        body TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ
+      );
+    `);
     // Vínculo opcional a cliente/contrato é SÓ da tarefa (rotina é geral do quadro).
     await c.query(`ALTER TABLE ${schema}.task_nodes ADD COLUMN IF NOT EXISTS client_id INTEGER REFERENCES ${schema}.clients(id) ON DELETE SET NULL;`);
     await c.query(`ALTER TABLE ${schema}.task_groups DROP COLUMN IF EXISTS client_id;`);
     await c.query(`ALTER TABLE ${schema}.task_groups DROP COLUMN IF EXISTS contract_id;`);
+    // Recorrência: passa a aceitar semanal/quinzenal (recurrence_day = dia da semana 0-6
+    // quando weekly/biweekly) e permite pausar a geração de novas ocorrências.
+    await c.query(`ALTER TABLE ${schema}.task_nodes DROP CONSTRAINT IF EXISTS task_nodes_recurrence_check;`);
+    await c.query(`ALTER TABLE ${schema}.task_nodes ADD CONSTRAINT task_nodes_recurrence_check CHECK (recurrence IN ('none','weekly','biweekly','monthly','yearly'));`);
+    await c.query(`ALTER TABLE ${schema}.task_nodes ADD COLUMN IF NOT EXISTS recurrence_paused BOOLEAN NOT NULL DEFAULT false;`);
     await c.query(`CREATE INDEX IF NOT EXISTS idx_task_nodes_group ON ${schema}.task_nodes (company_id, group_id);`);
     await c.query(`CREATE INDEX IF NOT EXISTS idx_task_nodes_parent ON ${schema}.task_nodes (parent_id);`);
     await c.query(`CREATE INDEX IF NOT EXISTS idx_task_nodes_assignee ON ${schema}.task_nodes (assignee_id, status);`);
     await c.query(`CREATE INDEX IF NOT EXISTS idx_task_stages_company ON ${schema}.task_stages (company_id, position);`);
     await c.query(`CREATE INDEX IF NOT EXISTS idx_task_node_activity ON ${schema}.task_node_activity (node_id, created_at DESC);`);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_task_comments_node ON ${schema}.task_comments (node_id, created_at);`);
+    // Menções (@) num comentário → concede acesso à tarefa e gera notificação pessoal.
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.task_comment_mentions (
+        comment_id INTEGER NOT NULL REFERENCES ${schema}.task_comments(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES ${schema}.users(id) ON DELETE CASCADE,
+        PRIMARY KEY (comment_id, user_id)
+      );
+    `);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_task_comment_mentions_user ON ${schema}.task_comment_mentions (user_id);`);
   });
 }
 

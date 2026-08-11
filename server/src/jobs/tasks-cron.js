@@ -8,7 +8,7 @@
 //     virar atrasada (1 aviso cada, via dedup_key).
 const { query } = require('../db');
 const { createNotification } = require('../services/notifications');
-const { ensureDateOnly, formatISODate } = require('../utils/date-only');
+const { formatISODate } = require('../utils/date-only');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 const pad = (n) => String(n).padStart(2, '0');
@@ -19,6 +19,41 @@ function occurrenceISO(year, month, day) {
   const last = new Date(year, month, 0).getDate();
   const d = Math.min(Math.max(Number(day) || 1, 1), last);
   return `${year}-${pad(month)}-${pad(d)}`;
+}
+
+// Soma dias a uma data AAAA-MM-DD (local, imune a fuso).
+function addDaysISO(iso, days) {
+  const [y, m, d] = String(iso).split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + days);
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+}
+
+// Próxima data (≥ hoje) cujo dia da semana é `weekday` (0=domingo … 6=sábado).
+function nextWeekdayISO(now, weekday) {
+  const dt = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const diff = ((Number(weekday) || 0) - dt.getDay() + 7) % 7; // 0 = hoje
+  dt.setDate(dt.getDate() + diff);
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+}
+
+// Ocorrência do período ATUAL de um template (a 1ª, quando ainda não há nenhuma).
+function currentPeriodISO(t, now) {
+  const y = now.getFullYear();
+  if (t.recurrence === 'weekly' || t.recurrence === 'biweekly') return nextWeekdayISO(now, t.recurrence_day || 1);
+  if (t.recurrence === 'yearly') return occurrenceISO(y, t.recurrence_month || 1, t.recurrence_day || 1);
+  return occurrenceISO(y, now.getMonth() + 1, t.recurrence_day || 1);
+}
+
+// Próxima ocorrência DEPOIS de um prazo (conforme a recorrência).
+function nextOccurrenceISO(t, afterISO) {
+  if (t.recurrence === 'weekly') return addDaysISO(afterISO, 7);
+  if (t.recurrence === 'biweekly') return addDaysISO(afterISO, 14);
+  const [y, m] = String(afterISO).split('-').map(Number); // ano, mês (1-12)
+  if (t.recurrence === 'yearly') return occurrenceISO(y + 1, t.recurrence_month || 1, t.recurrence_day || 1);
+  const nm = m === 12 ? 1 : m + 1;
+  const ny = m === 12 ? y + 1 : y;
+  return occurrenceISO(ny, nm, t.recurrence_day || 1);
 }
 
 async function firstStageId(companyId) {
@@ -71,35 +106,45 @@ async function ensureOccurrence(t, dueISO) {
   return 1;
 }
 
-// Materializa as ocorrências de todas as rotinas recorrentes de uma empresa até o
-// período atual. Idempotente. Backfill limitado (12 meses / 2 anos) para não explodir.
+// Modelo "roll-forward": mantém 1 ocorrência ativa por rotina. Cria a 1ª quando não
+// há nenhuma; e avança para a PRÓXIMA quando a última já foi concluída OU venceu o
+// prazo (não pré-gera várias). Idempotente por (source_node_id, due_date).
 async function generateOccurrences(companyId, now = new Date()) {
   const tps = await query(
-    `SELECT * FROM ${SCHEMA}.task_nodes WHERE company_id=$1 AND is_template=true AND recurrence<>'none'`,
+    `SELECT * FROM ${SCHEMA}.task_nodes WHERE company_id=$1 AND is_template=true AND recurrence<>'none' AND recurrence_paused=false`,
     [companyId]
   );
-  const curY = now.getFullYear();
-  const curIdx = curY * 12 + now.getMonth(); // mês atual (0-based)
+  const today = formatISODate(now);
   let count = 0;
   for (const t of tps.rows) {
-    const created = ensureDateOnly(t.created_at) || now;
-    if (t.recurrence === 'monthly') {
-      const day = t.recurrence_day || 1;
-      const createdIdx = created.getFullYear() * 12 + created.getMonth();
-      const startIdx = Math.max(createdIdx, curIdx - 11);
-      for (let idx = startIdx; idx <= curIdx; idx++) {
-        count += await ensureOccurrence(t, occurrenceISO(Math.floor(idx / 12), (idx % 12) + 1, day));
-      }
-    } else if (t.recurrence === 'yearly') {
-      const day = t.recurrence_day || 1;
-      const mon = t.recurrence_month || 1;
-      const startY = Math.max(created.getFullYear(), curY - 2);
-      for (let y = startY; y <= curY; y++) {
-        count += await ensureOccurrence(t, occurrenceISO(y, mon, day));
-      }
+    const last = await query(
+      `SELECT due_date, status FROM ${SCHEMA}.task_nodes
+        WHERE source_node_id=$1 AND parent_id IS NULL ORDER BY due_date DESC NULLS LAST LIMIT 1`,
+      [t.id]
+    );
+    const latest = last.rows[0];
+    if (!latest) { count += await ensureOccurrence(t, currentPeriodISO(t, now)); continue; }
+    const latestISO = formatISODate(latest.due_date);
+    if (latestISO && (latest.status === 'done' || latestISO < today)) {
+      count += await ensureOccurrence(t, nextOccurrenceISO(t, latestISO));
     }
   }
   return count;
+}
+
+// Ao concluir/vencer uma ocorrência recorrente, materializa a PRÓXIMA imediatamente.
+// occ = a ocorrência (tarefa de topo com source_node_id apontando para o template).
+async function rollNextOccurrence(companyId, occ) {
+  if (!occ || occ.parent_id != null || !occ.source_node_id) return 0;
+  const tr = await query(
+    `SELECT * FROM ${SCHEMA}.task_nodes WHERE id=$1 AND company_id=$2 AND is_template=true AND recurrence<>'none' AND recurrence_paused=false`,
+    [occ.source_node_id, companyId]
+  );
+  const t = tr.rows[0];
+  if (!t) return 0;
+  const dueISO = formatISODate(occ.due_date);
+  if (!dueISO) return 0;
+  return ensureOccurrence(t, nextOccurrenceISO(t, dueISO));
 }
 
 // Avisos de prazo (cadência "essencial", 1 vez cada via dedup_key):
@@ -154,4 +199,4 @@ async function runTasksDaily() {
   return { generated, notified };
 }
 
-module.exports = { runTasksDaily, notifyDeadlines, generateOccurrences, generateAllCompanies };
+module.exports = { runTasksDaily, notifyDeadlines, generateOccurrences, generateAllCompanies, rollNextOccurrence, nextOccurrenceISO };

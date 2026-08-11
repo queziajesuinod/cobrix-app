@@ -10,6 +10,12 @@ import PendingActionsIcon from '@mui/icons-material/PendingActions'
 import WarningAmberIcon from '@mui/icons-material/WarningAmber'
 import AccessTimeIcon from '@mui/icons-material/AccessTime'
 import LeaderboardIcon from '@mui/icons-material/Leaderboard'
+import BarChartIcon from '@mui/icons-material/BarChart'
+import DonutLargeIcon from '@mui/icons-material/DonutLarge'
+import TimelineIcon from '@mui/icons-material/Timeline'
+import { BarChart } from '@mui/x-charts/BarChart'
+import { LineChart } from '@mui/x-charts/LineChart'
+import { PieChart } from '@mui/x-charts/PieChart'
 import PageHeader from '@/components/PageHeader'
 import PapperBlock from '@/components/PapperBlock'
 import CompanyRequiredAlert from '@/components/CompanyRequiredAlert'
@@ -19,6 +25,18 @@ import { tasksService } from './tasks.service'
 
 const pct = (x) => (x == null ? '—' : `${(x * 100).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}%`)
 const onTimeColor = (x) => (x == null ? 'text.secondary' : x >= 0.8 ? 'success.main' : x >= 0.5 ? 'warning.main' : 'error.main')
+const pad = (n) => String(n).padStart(2, '0')
+const weekLabel = (iso) => { const [, m, d] = iso.split('-'); return `${d}/${m}` }
+// Segundas-feiras das últimas n semanas (casa com date_trunc('week') do Postgres).
+function lastNWeeks(n) {
+  const now = new Date()
+  const day = now.getDay() // 0=Dom
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() + (day === 0 ? -6 : 1 - day))
+  return Array.from({ length: n }, (_, i) => {
+    const w = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() - (n - 1 - i) * 7)
+    return `${w.getFullYear()}-${pad(w.getMonth() + 1)}-${pad(w.getDate())}`
+  })
+}
 
 function StatTile({ label, value, color, icon }) {
   return (
@@ -71,6 +89,21 @@ export default function ProductivityPage() {
   const sumDoneWithDue = filtered.reduce((a, i) => a + (i.doneWithDue || 0), 0)
   const onTimeAgg = sumDoneWithDue ? sumOnTime / sumDoneWithDue : null
 
+  // Dados dos gráficos (empresa toda; independem do filtro por usuário).
+  const series = q.data?.series || []
+  const distribution = q.data?.distribution || { open: 0, done: 0, overdue: 0 }
+  const weeks = lastNWeeks(12)
+  const byWk = new Map(series.map((s) => [s.wk, s]))
+  const wkLabels = weeks.map(weekLabel)
+  const doneSeries = weeks.map((w) => byWk.get(w)?.done || 0)
+  const onTimeSeries = weeks.map((w) => { const s = byWk.get(w); const den = (s?.on_time || 0) + (s?.late || 0); return den ? Math.round((s.on_time / den) * 100) : null })
+  const hasSeriesData = doneSeries.some((v) => v > 0)
+  const pieData = [
+    { id: 0, value: distribution.done, label: 'Concluídas', color: '#10b981' },
+    { id: 1, value: Math.max((distribution.open || 0) - (distribution.overdue || 0), 0), label: 'Abertas', color: '#3b82f6' },
+    { id: 2, value: distribution.overdue, label: 'Atrasadas', color: '#ef4444' },
+  ].filter((d) => d.value > 0)
+
   const filterControl = (
     <TextField select size="small" label="Usuário" value={userId} onChange={(e) => setUserId(e.target.value)} sx={{ minWidth: 200 }}>
       <MenuItem value="">Todos</MenuItem>
@@ -90,6 +123,42 @@ export default function ProductivityPage() {
         <Grid item xs={6} md={3}><StatTile label="Atrasadas" value={totalOverdue} color="error" icon={<WarningAmberIcon />} /></Grid>
         <Grid item xs={6} md={3}><StatTile label="No prazo" value={pct(onTimeAgg)} color="primary" icon={<AccessTimeIcon />} /></Grid>
       </Grid>
+
+      <Grid container spacing={2.5}>
+        <Grid item xs={12} md={7}>
+          <PapperBlock title="Throughput" subtitle="Tarefas concluídas por semana (12 semanas)" icon={<BarChartIcon />} noPadding>
+            <Box sx={{ p: 2 }}>
+              {hasSeriesData ? (
+                <BarChart height={300} xAxis={[{ scaleType: 'band', data: wkLabels }]}
+                  series={[{ data: doneSeries, label: 'Concluídas', color: '#3b82f6' }]}
+                  margin={{ top: 20, right: 10, bottom: 24, left: 40 }} slotProps={{ legend: { hidden: true } }} />
+              ) : <Box sx={{ py: 6, textAlign: 'center', color: 'text.secondary' }}>Sem conclusões nas últimas 12 semanas.</Box>}
+            </Box>
+          </PapperBlock>
+        </Grid>
+        <Grid item xs={12} md={5}>
+          <PapperBlock title="Distribuição" subtitle="Situação atual das tarefas" icon={<DonutLargeIcon />} noPadding>
+            <Box sx={{ p: 2 }}>
+              {pieData.length ? (
+                <PieChart height={300} series={[{ data: pieData, innerRadius: 50, paddingAngle: 2, cornerRadius: 4 }]}
+                  margin={{ top: 10, right: 10, bottom: 40, left: 10 }}
+                  slotProps={{ legend: { direction: 'row', position: { vertical: 'bottom', horizontal: 'middle' } } }} />
+              ) : <Box sx={{ py: 6, textAlign: 'center', color: 'text.secondary' }}>Sem tarefas.</Box>}
+            </Box>
+          </PapperBlock>
+        </Grid>
+      </Grid>
+
+      <PapperBlock title="% no prazo por semana" subtitle="Concluídas dentro do prazo ÷ concluídas com prazo" icon={<TimelineIcon />} noPadding>
+        <Box sx={{ p: 2 }}>
+          {hasSeriesData ? (
+            <LineChart height={280} xAxis={[{ scaleType: 'point', data: wkLabels }]}
+              yAxis={[{ min: 0, max: 100, valueFormatter: (v) => `${v}%` }]}
+              series={[{ data: onTimeSeries, label: '% no prazo', color: '#10b981', area: true, connectNulls: false, valueFormatter: (v) => (v == null ? '—' : `${v}%`) }]}
+              margin={{ top: 20, right: 16, bottom: 24, left: 44 }} slotProps={{ legend: { hidden: true } }} />
+          ) : <Box sx={{ py: 6, textAlign: 'center', color: 'text.secondary' }}>Sem dados de prazo ainda.</Box>}
+        </Box>
+      </PapperBlock>
 
       <PapperBlock title="Por usuário" subtitle="Concluídas, carga, atrasadas, % no prazo e tempo médio de entrega" icon={<LeaderboardIcon />} noPadding>
         <Box sx={{ overflowX: 'auto' }}>

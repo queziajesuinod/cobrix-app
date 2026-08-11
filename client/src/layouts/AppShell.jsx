@@ -14,6 +14,7 @@ import CompanySelector from '@/components/CompanySelector'
 import { notificationsService } from '@/features/notifications/notifications.service'
 import { tasksService } from '@/features/tasks/tasks.service'
 import AssignmentTurnedInIcon from '@mui/icons-material/AssignmentTurnedIn'
+import AlternateEmailIcon from '@mui/icons-material/AlternateEmail'
 import LeaderboardIcon from '@mui/icons-material/Leaderboard'
 import { menuService } from '@/features/menu/menu.service'
 
@@ -202,6 +203,8 @@ export default function AppShell({ children }) {
     if (type === 'client_created') return <PersonAddAlt1Icon fontSize="small" color="primary" />
     if (type === 'contract_due_today') return <AssignmentIcon fontSize="small" color="info" />
     if (type === 'billing_overdue_60') return <WarningAmberIcon fontSize="small" color="warning" />
+    if (type === 'task_mention') return <AlternateEmailIcon fontSize="small" color="primary" />
+    if (type === 'task_assigned' || type === 'task_comment' || type === 'task_due') return <AssignmentTurnedInIcon fontSize="small" color="info" />
     return <NotificationsNoneIcon fontSize="small" />
   }
 
@@ -441,7 +444,7 @@ export default function AppShell({ children }) {
                       {g.list.map((t) => {
                         const p = TASK_PRIO[t.priority] || TASK_PRIO.media
                         return (
-                          <MenuItem key={t.id} onClick={() => { setMyTasksAnchor(null); navigate('/tasks') }} sx={{ whiteSpace: 'normal', alignItems: 'flex-start', gap: 1, py: 1 }}>
+                          <MenuItem key={t.id} onClick={() => { setMyTasksAnchor(null); navigate(`/tasks?open=${t.id}`) }} sx={{ whiteSpace: 'normal', alignItems: 'flex-start', gap: 1, py: 1 }}>
                             <Box sx={{ minWidth: 0, flex: 1 }}>
                               <Typography variant="body2" sx={{ fontWeight: 600 }}>{t.title}</Typography>
                               <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>

@@ -1,10 +1,10 @@
 const express = require('express');
 const { query } = require('../db');
 const { requireAuth, companyScope } = require('./auth');
-const { requirePermission } = require('../services/permissions');
+const { requirePermission, getEffectivePermissions } = require('../services/permissions');
 const { respondError } = require('../utils/http-error');
 const { createNotification } = require('../services/notifications');
-const { generateOccurrences } = require('../jobs/tasks-cron');
+const { generateOccurrences, rollNextOccurrence } = require('../jobs/tasks-cron');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 const router = express.Router();
@@ -13,7 +13,7 @@ const err = (msg, status = 400) => { const e = new Error(msg); e.status = status
 const PRIORITIES = ['baixa', 'media', 'alta', 'urgente'];
 const parsePriority = (v, fallback = 'media') => (PRIORITIES.includes(String(v || '').toLowerCase()) ? String(v).toLowerCase() : fallback);
 const parseKind = (v) => (String(v || '').toLowerCase() === 'fixa' ? 'fixa' : 'avulsa');
-const parseRecurrence = (v) => (['monthly', 'yearly'].includes(String(v || '').toLowerCase()) ? String(v).toLowerCase() : 'none');
+const parseRecurrence = (v) => (['weekly', 'biweekly', 'monthly', 'yearly'].includes(String(v || '').toLowerCase()) ? String(v).toLowerCase() : 'none');
 const optId = (v) => (Number.isInteger(Number(v)) && Number(v) > 0 ? Number(v) : null);
 const optDate = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null);
 const optInt = (v, min, max) => { const n = Number(v); return Number.isInteger(n) && n >= min && n <= max ? n : null; };
@@ -29,12 +29,30 @@ const AUTHOR = `(SELECT COALESCE(NULLIF(au.name,''), au.email) FROM ${SCHEMA}.us
 const LINKS = `
   (SELECT cli.name FROM ${SCHEMA}.clients cli WHERE cli.id = n.client_id) AS client_name,
   (SELECT con.description FROM ${SCHEMA}.contracts con WHERE con.id = n.contract_id) AS contract_description`;
+// Etiquetas de uma tarefa (alias de tabela `n`) como json array.
+const NODE_LABELS = `(SELECT COALESCE(json_agg(json_build_object('id', l.id, 'name', l.name, 'color', l.color) ORDER BY l.name), '[]'::json)
+  FROM ${SCHEMA}.task_node_labels nl JOIN ${SCHEMA}.task_labels l ON l.id = nl.label_id WHERE nl.node_id = n.id) AS labels`;
 
 async function logActivity(nodeId, userId, action, detail = null) {
   await query(
     `INSERT INTO ${SCHEMA}.task_node_activity (node_id, user_id, action, detail) VALUES ($1,$2,$3,$4)`,
     [nodeId, userId, action, detail]
   ).catch(() => {});
+}
+
+// Define as etiquetas de uma tarefa (substitui o conjunto). Valida que as labels
+// pertencem à empresa.
+async function setNodeLabels(nodeId, companyId, labelIds) {
+  const ids = Array.isArray(labelIds) ? [...new Set(labelIds.map(Number).filter((n) => Number.isInteger(n) && n > 0))] : [];
+  let valid = [];
+  if (ids.length) {
+    const r = await query(`SELECT id FROM ${SCHEMA}.task_labels WHERE company_id=$1 AND id = ANY($2::int[])`, [companyId, ids]);
+    valid = r.rows.map((x) => x.id);
+  }
+  await query(`DELETE FROM ${SCHEMA}.task_node_labels WHERE node_id=$1`, [nodeId]);
+  for (const lid of valid) {
+    await query(`INSERT INTO ${SCHEMA}.task_node_labels (node_id, label_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [nodeId, lid]);
+  }
 }
 
 // Semeia as etapas padrão do quadro na 1ª vez que a empresa acessa o board.
@@ -55,10 +73,119 @@ async function firstStageId(companyId) {
   return r.rows[0]?.id || null;
 }
 
+// A coluna "Concluído" (is_done) fica sempre por ÚLTIMO. Reencaixa posições: colunas
+// abertas primeiro (na ordem atual), depois as de conclusão.
+async function normalizeStagePositions(companyId) {
+  const r = await query(
+    `SELECT id FROM ${SCHEMA}.task_stages WHERE company_id=$1 ORDER BY is_done ASC, position ASC, id ASC`,
+    [companyId]
+  );
+  let pos = 0;
+  for (const row of r.rows) {
+    await query(`UPDATE ${SCHEMA}.task_stages SET position=$1 WHERE id=$2`, [pos, row.id]);
+    pos += 1;
+  }
+}
+
+async function doneStageId(companyId) {
+  const r = await query(`SELECT id FROM ${SCHEMA}.task_stages WHERE company_id=$1 AND is_done=true ORDER BY position, id LIMIT 1`, [companyId]);
+  return r.rows[0]?.id || null;
+}
+
+async function firstOpenStageId(companyId) {
+  const r = await query(`SELECT id FROM ${SCHEMA}.task_stages WHERE company_id=$1 AND is_done=false ORDER BY position, id LIMIT 1`, [companyId]);
+  return r.rows[0]?.id || null;
+}
+
+// Garante (barato) que "Concluído" está por último; só reencaixa se houver desvio.
+async function ensureDoneLast(companyId) {
+  const last = await query(`SELECT is_done FROM ${SCHEMA}.task_stages WHERE company_id=$1 ORDER BY position DESC, id DESC LIMIT 1`, [companyId]);
+  if (!last.rows.length || last.rows[0].is_done) return;
+  const anyDone = await query(`SELECT 1 FROM ${SCHEMA}.task_stages WHERE company_id=$1 AND is_done=true LIMIT 1`, [companyId]);
+  if (anyDone.rows[0]) await normalizeStagePositions(companyId);
+}
+
+// Migração p/ o board plano: cada rotina (task_group) vira uma COLUNA (task_stage).
+// As tarefas de topo ABERTAS do grupo passam para a nova coluna; as concluídas ficam
+// na etapa "Concluído" (preserva o estado). Zera group_id (FK é ON DELETE CASCADE:
+// apagar o grupo sem zerar apagaria as tarefas) e remove o grupo. Idempotente: quando
+// não há mais grupos, é no-op.
+async function ensureUnifiedColumns(companyId) {
+  // Pré-checagem barata: no caminho comum (já migrado) não abre transação.
+  const pre = await query(`SELECT 1 FROM ${SCHEMA}.task_groups WHERE company_id=$1 LIMIT 1`, [companyId]);
+  if (!pre.rows.length) return;
+  await query('BEGIN');
+  try {
+    // Serializa migrações concorrentes da mesma empresa (evita colunas duplicadas
+    // se dois loads do board correrem em paralelo). Relê os grupos dentro do lock.
+    await query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`task-cols-${companyId}`]);
+    const groups = await query(`SELECT id, name FROM ${SCHEMA}.task_groups WHERE company_id=$1 ORDER BY position, id`, [companyId]);
+    for (const g of groups.rows) {
+      const pos = await query(`SELECT COALESCE(MAX(position),-1)+1 AS p FROM ${SCHEMA}.task_stages WHERE company_id=$1`, [companyId]);
+      const st = await query(
+        `INSERT INTO ${SCHEMA}.task_stages (company_id, name, position, is_done) VALUES ($1,$2,$3,false) RETURNING id`,
+        [companyId, g.name, pos.rows[0].p]
+      );
+      const newStageId = st.rows[0].id;
+      await query(
+        `UPDATE ${SCHEMA}.task_nodes n
+            SET stage_id=$1
+          WHERE n.group_id=$2 AND n.parent_id IS NULL AND n.is_template=false
+            AND n.stage_id NOT IN (SELECT id FROM ${SCHEMA}.task_stages WHERE company_id=$3 AND is_done=true)`,
+        [newStageId, g.id, companyId]
+      );
+      // Zera group_id ANTES de apagar (FK é ON DELETE CASCADE — apagar sem zerar apagaria as tarefas).
+      await query(`UPDATE ${SCHEMA}.task_nodes SET group_id=NULL WHERE group_id=$1`, [g.id]);
+      await query(`DELETE FROM ${SCHEMA}.task_groups WHERE id=$1`, [g.id]);
+    }
+    // As colunas de rotina entraram no fim; reencaixa deixando "Concluído" por último.
+    await normalizeStagePositions(companyId);
+    await query('COMMIT');
+  } catch (e) {
+    await query('ROLLBACK').catch(() => {});
+    throw e;
+  }
+}
+
 async function getNode(companyId, id) {
   const r = await query(`SELECT * FROM ${SCHEMA}.task_nodes WHERE id=$1 AND company_id=$2`, [id, companyId]);
   if (!r.rows[0]) err('Tarefa não encontrada', 404);
   return r.rows[0];
+}
+
+// Gestor/admin (tasks.gestor) ou master enxergam tudo.
+async function isGestorReq(req) {
+  if (req.user.role === 'master') return true;
+  const perms = await getEffectivePermissions(req.user, req.companyId);
+  return perms.includes('tasks.gestor');
+}
+
+// Usuário comum só acessa a tarefa se algum nó da subárvore for atribuído/criado por ele,
+// ou se ele foi mencionado num comentário da subárvore. Gestor/master: sempre.
+async function canAccessNode(req, node) {
+  if (await isGestorReq(req)) return true;
+  const uid = req.user.id;
+  const r = await query(
+    `WITH RECURSIVE tree AS (
+       SELECT id, assignee_id, created_by FROM ${SCHEMA}.task_nodes WHERE id=$1
+       UNION ALL
+       SELECT c.id, c.assignee_id, c.created_by FROM ${SCHEMA}.task_nodes c JOIN tree t ON c.parent_id=t.id
+     )
+     SELECT
+       EXISTS(SELECT 1 FROM tree WHERE assignee_id=$2 OR created_by=$2) AS mine,
+       EXISTS(SELECT 1 FROM tree t
+                JOIN ${SCHEMA}.task_comments cm ON cm.node_id=t.id
+                JOIN ${SCHEMA}.task_comment_mentions m ON m.comment_id=cm.id
+               WHERE m.user_id=$2) AS mentioned`,
+    [node.id, uid]
+  );
+  return Boolean(r.rows[0]?.mine || r.rows[0]?.mentioned);
+}
+
+async function getAccessibleNode(req, id) {
+  const node = await getNode(req.companyId, id);
+  if (!(await canAccessNode(req, node))) err('Sem acesso a esta tarefa', 403);
+  return node;
 }
 
 // ===================== ETAPAS (colunas) =====================
@@ -79,7 +206,29 @@ router.post('/stages', ...manage, async (req, res) => {
       `INSERT INTO ${SCHEMA}.task_stages (company_id, name, position, is_done) VALUES ($1,$2,$3,$4) RETURNING *`,
       [req.companyId, name, pos.rows[0].p, Boolean(req.body?.is_done)]
     );
+    // Mantém "Concluído" por último mesmo tendo inserido no fim.
+    await normalizeStagePositions(req.companyId);
     res.status(201).json(r.rows[0]);
+  } catch (e) { respondError(res, e); }
+});
+
+// Reordena as colunas de uma vez (drag-and-drop). Registrar ANTES de '/stages/:id'
+// para não casar 'reorder' como :id. Aplica a nova posição pelo índice no array.
+router.put('/stages/reorder', ...manage, async (req, res) => {
+  try {
+    const order = Array.isArray(req.body?.order) ? req.body.order.map(Number).filter(Number.isInteger) : [];
+    if (!order.length) err('Ordem inválida');
+    const own = await query(`SELECT id FROM ${SCHEMA}.task_stages WHERE company_id=$1`, [req.companyId]);
+    const ownIds = new Set(own.rows.map((r) => r.id));
+    let pos = 0;
+    for (const id of order) {
+      if (!ownIds.has(id)) continue;
+      await query(`UPDATE ${SCHEMA}.task_stages SET position=$1 WHERE id=$2 AND company_id=$3`, [pos, id, req.companyId]);
+      pos += 1;
+    }
+    // Reencaixa e garante "Concluído" por último (o front envia só as colunas abertas).
+    await normalizeStagePositions(req.companyId);
+    res.json({ ok: true });
   } catch (e) { respondError(res, e); }
 });
 
@@ -189,21 +338,53 @@ router.delete('/groups/:id', ...manage, async (req, res) => {
 router.get('/board', ...view, async (req, res) => {
   try {
     await ensureStages(req.companyId);
+    await ensureUnifiedColumns(req.companyId);
+    await ensureDoneLast(req.companyId);
     const stages = await query(`SELECT id, name, position, is_done FROM ${SCHEMA}.task_stages WHERE company_id=$1 ORDER BY position, id`, [req.companyId]);
     const groups = await query(
       `SELECT id, name, description, recurring, default_assignee_id, default_priority, position
          FROM ${SCHEMA}.task_groups WHERE company_id=$1 ORDER BY position, name`,
       [req.companyId]
     );
+    // Visibilidade: gestor/master veem tudo; comum só o que é dele (atribuído/criado)
+    // ou onde foi mencionado — considerando a subárvore. `sub_links` agrega os
+    // clientes/contratos da subárvore (para a busca casar vínculos só de subtarefas).
+    const gestor = await isGestorReq(req);
+    const uid = req.user.id;
     const nodes = await query(
-      `SELECT n.id, n.group_id, n.stage_id, n.kind, n.title, n.description, n.priority, n.due_date, n.status,
-              n.assignee_id, n.client_id, n.contract_id, n.recurrence, n.position, ${AUTHOR}, ${LINKS},
+      `WITH RECURSIVE tree AS (
+         SELECT r.id AS root_id, r.id, r.assignee_id, r.created_by, r.client_id, r.contract_id
+           FROM ${SCHEMA}.task_nodes r WHERE r.company_id=$1 AND r.parent_id IS NULL AND r.is_template=false
+         UNION ALL
+         SELECT t.root_id, c.id, c.assignee_id, c.created_by, c.client_id, c.contract_id
+           FROM ${SCHEMA}.task_nodes c JOIN tree t ON c.parent_id=t.id
+       ),
+       mn AS (
+         SELECT DISTINCT cm.node_id FROM ${SCHEMA}.task_comments cm
+           JOIN ${SCHEMA}.task_comment_mentions m ON m.comment_id=cm.id WHERE m.user_id=$2
+       ),
+       agg AS (
+         SELECT t.root_id,
+                bool_or(t.assignee_id=$2 OR t.created_by=$2) AS mine,
+                bool_or(mnj.node_id IS NOT NULL) AS mentioned,
+                string_agg(DISTINCT NULLIF(TRIM(COALESCE(cli.name,'')||' '||COALESCE(con.description,'')),''), ' | ') AS sub_links
+           FROM tree t
+           LEFT JOIN ${SCHEMA}.clients cli ON cli.id=t.client_id
+           LEFT JOIN ${SCHEMA}.contracts con ON con.id=t.contract_id
+           LEFT JOIN mn mnj ON mnj.node_id=t.id
+          GROUP BY t.root_id
+       )
+       SELECT n.id, n.group_id, n.stage_id, n.kind, n.title, n.description, n.priority, n.due_date, n.status,
+              n.assignee_id, n.client_id, n.contract_id, n.recurrence, n.source_node_id, n.position, ${AUTHOR}, ${LINKS}, ${NODE_LABELS},
+              a.sub_links,
               (SELECT COUNT(*) FROM ${SCHEMA}.task_nodes c WHERE c.parent_id=n.id)::int AS sub_total,
               (SELECT COUNT(*) FROM ${SCHEMA}.task_nodes c WHERE c.parent_id=n.id AND c.status='done')::int AS sub_done
          FROM ${SCHEMA}.task_nodes n
+         JOIN agg a ON a.root_id=n.id
         WHERE n.company_id=$1 AND n.parent_id IS NULL AND n.is_template=false
+          AND ($3::boolean OR a.mine OR a.mentioned)
         ORDER BY n.position, n.id`,
-      [req.companyId]
+      [req.companyId, uid, gestor]
     );
     res.json({ stages: stages.rows, groups: groups.rows, nodes: nodes.rows });
   } catch (e) { respondError(res, e); }
@@ -213,7 +394,7 @@ router.get('/board', ...view, async (req, res) => {
 // Detalhe de uma tarefa: a própria + toda a subárvore (flat, com parent_id) + histórico.
 router.get('/nodes/:id', ...view, async (req, res) => {
   try {
-    const node = await getNode(req.companyId, Number(req.params.id));
+    const node = await getAccessibleNode(req, Number(req.params.id));
     const subtree = await query(
       `WITH RECURSIVE tree AS (
          SELECT * FROM ${SCHEMA}.task_nodes WHERE parent_id=$1
@@ -240,7 +421,19 @@ router.get('/nodes/:id', ...view, async (req, res) => {
         WHERE a.node_id=$1 ORDER BY a.created_at DESC, a.id DESC LIMIT 200`,
       [node.id]
     );
-    res.json({ node: { ...node, assignee_name: assignee, client_name: links?.client_name || null, contract_description: links?.contract_description || null }, children: subtree.rows, activity: activity.rows });
+    const comments = await query(
+      `SELECT c.id, c.body, c.created_at, c.user_id, COALESCE(NULLIF(u.name,''), u.email) AS user_name,
+              (SELECT COALESCE(json_agg(json_build_object('user_id', mu.id, 'name', COALESCE(NULLIF(mu.name,''), mu.email)) ORDER BY mu.name), '[]'::json)
+                 FROM ${SCHEMA}.task_comment_mentions mm JOIN ${SCHEMA}.users mu ON mu.id=mm.user_id WHERE mm.comment_id=c.id) AS mentions
+         FROM ${SCHEMA}.task_comments c LEFT JOIN ${SCHEMA}.users u ON u.id=c.user_id
+        WHERE c.node_id=$1 ORDER BY c.created_at ASC, c.id ASC`,
+      [node.id]
+    );
+    const nodeLabels = await query(
+      `SELECT l.id, l.name, l.color FROM ${SCHEMA}.task_node_labels nl JOIN ${SCHEMA}.task_labels l ON l.id=nl.label_id WHERE nl.node_id=$1 ORDER BY l.name`,
+      [node.id]
+    );
+    res.json({ node: { ...node, assignee_name: assignee, client_name: links?.client_name || null, contract_description: links?.contract_description || null, labels: nodeLabels.rows }, children: subtree.rows, activity: activity.rows, comments: comments.rows });
   } catch (e) { respondError(res, e); }
 });
 
@@ -262,7 +455,7 @@ router.post('/nodes', ...manage, async (req, res) => {
     const parentId = optId(req.body?.parent_id);
     // Subitem herda a rotina (grupo) do pai quando não for informada.
     let parent = null;
-    if (parentId) { parent = await getNode(req.companyId, parentId); if (!groupId) groupId = parent.group_id; }
+    if (parentId) { parent = await getNode(req.companyId, parentId); if (!(await canAccessNode(req, parent))) err('Sem acesso a esta tarefa', 403); if (!groupId) groupId = parent.group_id; }
     // Herda defaults do grupo (responsável/prioridade) quando não informados.
     let group = null;
     if (groupId) {
@@ -283,7 +476,9 @@ router.post('/nodes', ...manage, async (req, res) => {
     const dueDate = optDate(req.body?.due_date);
     // Recorrência só faz sentido em tarefa de topo; subitem nunca recorre sozinho.
     const recurrence = parentId ? 'none' : parseRecurrence(req.body?.recurrence);
-    const recDay = recurrence !== 'none' ? optInt(req.body?.recurrence_day, 1, 31) : null;
+    const isWeekly = recurrence === 'weekly' || recurrence === 'biweekly';
+    // recurrence_day = dia da semana (0-6) p/ semanal/quinzenal; dia do mês (1-31) p/ mensal/anual.
+    const recDay = recurrence !== 'none' ? optInt(req.body?.recurrence_day, isWeekly ? 0 : 1, isWeekly ? 6 : 31) : null;
     const recMonth = recurrence === 'yearly' ? optInt(req.body?.recurrence_month, 1, 12) : null;
     // Um nó recorrente é TEMPLATE (oculto do board); subitens de um template também
     // herdam is_template (fazem parte da definição, não são tarefas reais).
@@ -304,6 +499,9 @@ router.post('/nodes', ...manage, async (req, res) => {
        recurrence, recDay, recMonth, isTemplate, clientId, contractId, pos.rows[0].p, req.user.id]
     );
     const node = r.rows[0];
+    if (req.body?.label_ids !== undefined) {
+      try { await setNodeLabels(node.id, req.companyId, req.body.label_ids); } catch (e) { console.error('[tasks] labels (post):', e.message); }
+    }
     await logActivity(node.id, req.user.id, 'created', parentId ? 'subtarefa criada' : 'tarefa criada');
     if (recurrence !== 'none') {
       try { await generateOccurrences(req.companyId, new Date()); } catch (e) { console.error('[tasks] geração imediata:', e.message); }
@@ -314,9 +512,34 @@ router.post('/nodes', ...manage, async (req, res) => {
   } catch (e) { respondError(res, e); }
 });
 
+// Reordena manualmente os cartões de uma etapa (drag dentro/entre colunas). Basta
+// tasks.view. Registrar ANTES de '/nodes/:id' para não casar 'reorder' como :id.
+router.put('/nodes/reorder', ...view, async (req, res) => {
+  try {
+    const stageId = Number(req.body?.stage_id);
+    const order = Array.isArray(req.body?.order) ? req.body.order.map(Number).filter(Number.isInteger) : [];
+    const st = await query(`SELECT 1 FROM ${SCHEMA}.task_stages WHERE id=$1 AND company_id=$2`, [stageId, req.companyId]);
+    if (!st.rows[0]) err('Etapa inválida');
+    if (!order.length) return res.json({ ok: true });
+    const own = await query(`SELECT id FROM ${SCHEMA}.task_nodes WHERE company_id=$1 AND stage_id=$2 AND parent_id IS NULL`, [req.companyId, stageId]);
+    const ownIds = new Set(own.rows.map((r) => r.id));
+    await query('BEGIN');
+    try {
+      let pos = 0;
+      for (const id of order) {
+        if (!ownIds.has(id)) continue;
+        await query(`UPDATE ${SCHEMA}.task_nodes SET position=$1 WHERE id=$2 AND company_id=$3`, [pos, id, req.companyId]);
+        pos += 1;
+      }
+      await query('COMMIT');
+    } catch (e) { await query('ROLLBACK').catch(() => {}); throw e; }
+    res.json({ ok: true });
+  } catch (e) { respondError(res, e); }
+});
+
 router.put('/nodes/:id', ...manage, async (req, res) => {
   try {
-    const node = await getNode(req.companyId, Number(req.params.id));
+    const node = await getAccessibleNode(req, Number(req.params.id));
     const title = req.body?.title != null ? String(req.body.title).trim() : node.title;
     if (title.length < 2) err('Título inválido');
     const description = req.body?.description !== undefined ? (String(req.body.description || '').trim() || null) : node.description;
@@ -326,17 +549,22 @@ router.put('/nodes/:id', ...manage, async (req, res) => {
     // Recorrência só em tarefa de topo. Subitem mantém none e o is_template do pai.
     const isTopLevel = node.parent_id == null;
     const recurrence = !isTopLevel ? 'none' : (req.body?.recurrence != null ? parseRecurrence(req.body.recurrence) : node.recurrence);
-    const recDay = recurrence !== 'none' ? (req.body?.recurrence_day !== undefined ? optInt(req.body.recurrence_day, 1, 31) : node.recurrence_day) : null;
+    const isWeekly = recurrence === 'weekly' || recurrence === 'biweekly';
+    const recDay = recurrence !== 'none' ? (req.body?.recurrence_day !== undefined ? optInt(req.body.recurrence_day, isWeekly ? 0 : 1, isWeekly ? 6 : 31) : node.recurrence_day) : null;
     const recMonth = recurrence === 'yearly' ? (req.body?.recurrence_month !== undefined ? optInt(req.body.recurrence_month, 1, 12) : node.recurrence_month) : null;
     const isTemplate = isTopLevel ? (recurrence !== 'none') : node.is_template;
+    // Pausar/retomar a recorrência (só faz sentido em template de topo).
+    const recPaused = (isTopLevel && recurrence !== 'none' && req.body?.recurrence_paused !== undefined)
+      ? Boolean(req.body.recurrence_paused) : (recurrence !== 'none' ? node.recurrence_paused : false);
     const clientId = req.body?.client_id !== undefined ? optId(req.body.client_id) : node.client_id;
     const contractId = req.body?.contract_id !== undefined ? optId(req.body.contract_id) : node.contract_id;
     const r = await query(
       `UPDATE ${SCHEMA}.task_nodes
           SET title=$1, description=$2, assignee_id=$3, priority=$4, due_date=$5,
-              recurrence=$6, recurrence_day=$7, recurrence_month=$8, is_template=$9, client_id=$10, contract_id=$11, updated_at=now()
-        WHERE id=$12 RETURNING *`,
-      [title, description, assigneeId, priority, dueDate, recurrence, recDay, recMonth, isTemplate, clientId, contractId, node.id]
+              recurrence=$6, recurrence_day=$7, recurrence_month=$8, is_template=$9, client_id=$10, contract_id=$11,
+              recurrence_paused=$12, updated_at=now()
+        WHERE id=$13 RETURNING *`,
+      [title, description, assigneeId, priority, dueDate, recurrence, recDay, recMonth, isTemplate, clientId, contractId, recPaused, node.id]
     );
     // Ao virar (ou deixar de ser) template, a subárvore acompanha (definição vs tarefas reais).
     if (isTopLevel && isTemplate !== node.is_template) {
@@ -355,7 +583,7 @@ router.put('/nodes/:id', ...manage, async (req, res) => {
     } else {
       await logActivity(node.id, req.user.id, 'edited', null);
     }
-    if (isTemplate && recurrence !== 'none') {
+    if (isTemplate && recurrence !== 'none' && !recPaused) {
       try { await generateOccurrences(req.companyId, new Date()); } catch (e) { console.error('[tasks] geração (put):', e.message); }
     }
     res.json(r.rows[0]);
@@ -364,7 +592,7 @@ router.put('/nodes/:id', ...manage, async (req, res) => {
 
 router.delete('/nodes/:id', ...manage, async (req, res) => {
   try {
-    const node = await getNode(req.companyId, Number(req.params.id));
+    const node = await getAccessibleNode(req, Number(req.params.id));
     await query(`DELETE FROM ${SCHEMA}.task_nodes WHERE id=$1`, [node.id]); // subárvore via ON DELETE CASCADE
     res.json({ ok: true });
   } catch (e) { respondError(res, e); }
@@ -374,7 +602,7 @@ router.delete('/nodes/:id', ...manage, async (req, res) => {
 // sair de uma etapa final reabre. Basta tasks.view (mover a própria tarefa).
 router.post('/nodes/:id/move', ...view, async (req, res) => {
   try {
-    const node = await getNode(req.companyId, Number(req.params.id));
+    const node = await getAccessibleNode(req, Number(req.params.id));
     const toStageId = Number(req.body?.to_stage_id);
     const st = await query(`SELECT id, is_done FROM ${SCHEMA}.task_stages WHERE id=$1 AND company_id=$2`, [toStageId, req.companyId]);
     if (!st.rows[0]) err('Etapa de destino inválida');
@@ -391,6 +619,10 @@ router.post('/nodes/:id/move', ...view, async (req, res) => {
       [toStageId, enteringDone, req.user.id, node.id]
     );
     await logActivity(node.id, req.user.id, 'moved', enteringDone ? 'concluída' : 'movida');
+    // Ocorrência recorrente concluída → materializa a próxima (mês/ano seguinte).
+    if (enteringDone && node.parent_id == null && node.source_node_id) {
+      try { await rollNextOccurrence(req.companyId, node); } catch (e) { console.error('[tasks] roll (move):', e.message); }
+    }
     res.json(r.rows[0]);
   } catch (e) { respondError(res, e); }
 });
@@ -398,20 +630,154 @@ router.post('/nodes/:id/move', ...view, async (req, res) => {
 // Concluir/reabrir diretamente (checkbox). Basta tasks.view.
 router.patch('/nodes/:id/done', ...view, async (req, res) => {
   try {
-    const node = await getNode(req.companyId, Number(req.params.id));
+    const node = await getAccessibleNode(req, Number(req.params.id));
     const done = Boolean(req.body?.done);
+    // Tarefa de topo: concluir move p/ "Concluído"; reabrir volta p/ a 1ª coluna aberta.
+    let stageId = node.stage_id;
+    if (node.parent_id == null) {
+      const target = done ? await doneStageId(req.companyId) : await firstOpenStageId(req.companyId);
+      if (target) stageId = target;
+    }
     const r = await query(
       `UPDATE ${SCHEMA}.task_nodes
           SET status = CASE WHEN $1 THEN 'done' ELSE 'open' END,
+              stage_id = $4,
               started_at = COALESCE(started_at, now()),
               done_at = CASE WHEN $1 THEN now() ELSE NULL END,
               done_by = CASE WHEN $1 THEN $2::int ELSE NULL END,
               updated_at = now()
         WHERE id=$3 RETURNING *`,
-      [done, req.user.id, node.id]
+      [done, req.user.id, node.id, stageId]
     );
     await logActivity(node.id, req.user.id, done ? 'done' : 'reopened', null);
+    // Ocorrência recorrente concluída → materializa a próxima (mês/ano seguinte).
+    if (done && node.parent_id == null && node.source_node_id) {
+      try { await rollNextOccurrence(req.companyId, node); } catch (e) { console.error('[tasks] roll (done):', e.message); }
+    }
     res.json(r.rows[0]);
+  } catch (e) { respondError(res, e); }
+});
+
+// ===================== COMENTÁRIOS (discussão) =====================
+router.post('/nodes/:id/comments', ...view, async (req, res) => {
+  try {
+    const node = await getAccessibleNode(req, Number(req.params.id));
+    const body = String(req.body?.body || '').trim();
+    if (body.length < 1) err('Comentário vazio');
+    const r = await query(
+      `INSERT INTO ${SCHEMA}.task_comments (node_id, user_id, body) VALUES ($1,$2,$3) RETURNING id, body, created_at, user_id`,
+      [node.id, req.user.id, body]
+    );
+    const commentId = r.rows[0].id;
+    // Menções: valida que são usuários da empresa e grava o vínculo (concede acesso à tarefa).
+    const mentionIds = Array.isArray(req.body?.mention_ids)
+      ? [...new Set(req.body.mention_ids.map(Number).filter((n) => Number.isInteger(n) && n > 0))] : [];
+    let validMentions = [];
+    if (mentionIds.length) {
+      const vm = await query(
+        `SELECT u.id, COALESCE(NULLIF(u.name,''), u.email) AS name FROM ${SCHEMA}.users u
+           JOIN ${SCHEMA}.user_companies uc ON uc.user_id=u.id
+          WHERE uc.company_id=$1 AND u.id = ANY($2::int[])`,
+        [req.companyId, mentionIds]
+      );
+      validMentions = vm.rows;
+      for (const m of validMentions) {
+        await query(`INSERT INTO ${SCHEMA}.task_comment_mentions (comment_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [commentId, m.id]);
+      }
+    }
+    const mentionedSet = new Set(validMentions.map((m) => Number(m.id)));
+    // Notifica cada mencionado (≠ autor): deep-link abre a tarefa e rola até o comentário.
+    for (const m of validMentions) {
+      if (Number(m.id) === Number(req.user.id)) continue;
+      await createNotification({
+        companyId: req.companyId, userId: m.id, type: 'task_mention',
+        title: `Você foi mencionado em: ${node.title}`, body: body.slice(0, 140),
+        refType: 'task_node', refId: node.id, link: `/tasks?open=${node.id}&comment=${commentId}`,
+        dedupKey: `task-mention:${commentId}:${m.id}`,
+      }).catch(() => {});
+    }
+    // Responsável recebe aviso de comentário, exceto se for o autor ou já mencionado.
+    if (node.assignee_id && Number(node.assignee_id) !== Number(req.user.id) && !mentionedSet.has(Number(node.assignee_id))) {
+      await createNotification({
+        companyId: req.companyId, userId: node.assignee_id, type: 'task_comment',
+        title: `Novo comentário em: ${node.title}`, body: body.slice(0, 140),
+        refType: 'task_node', refId: node.id, link: `/tasks?open=${node.id}&comment=${commentId}`, dedupKey: `task-comment:${commentId}`,
+      }).catch(() => {});
+    }
+    const name = (await query(`SELECT COALESCE(NULLIF(name,''), email) AS n FROM ${SCHEMA}.users WHERE id=$1`, [req.user.id])).rows[0]?.n || null;
+    res.status(201).json({ ...r.rows[0], user_name: name, mentions: validMentions.map((m) => ({ user_id: m.id, name: m.name })) });
+  } catch (e) { respondError(res, e); }
+});
+
+// Excluir comentário: o autor sempre pode; outros precisam de tasks.manage.
+router.delete('/comments/:id', ...view, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const c = await query(
+      `SELECT c.id, c.user_id FROM ${SCHEMA}.task_comments c
+         JOIN ${SCHEMA}.task_nodes n ON n.id=c.node_id
+        WHERE c.id=$1 AND n.company_id=$2`,
+      [id, req.companyId]
+    );
+    if (!c.rows[0]) err('Comentário não encontrado', 404);
+    const isAuthor = Number(c.rows[0].user_id) === Number(req.user.id);
+    if (!isAuthor && req.user.role !== 'master') {
+      const perms = await getEffectivePermissions(req.user, req.companyId);
+      if (!perms.includes('tasks.manage')) err('Sem permissão para excluir este comentário', 403);
+    }
+    await query(`DELETE FROM ${SCHEMA}.task_comments WHERE id=$1`, [id]);
+    res.json({ ok: true });
+  } catch (e) { respondError(res, e); }
+});
+
+// ===================== ETIQUETAS (labels) =====================
+router.get('/labels', ...view, async (req, res) => {
+  try {
+    const r = await query(`SELECT id, name, color FROM ${SCHEMA}.task_labels WHERE company_id=$1 ORDER BY name`, [req.companyId]);
+    res.json({ items: r.rows });
+  } catch (e) { respondError(res, e); }
+});
+
+router.post('/labels', ...manage, async (req, res) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    if (name.length < 1) err('Informe o nome da etiqueta');
+    const color = /^#[0-9a-fA-F]{6}$/.test(String(req.body?.color || '')) ? req.body.color : '#64748b';
+    const r = await query(`INSERT INTO ${SCHEMA}.task_labels (company_id, name, color) VALUES ($1,$2,$3) RETURNING id, name, color`, [req.companyId, name, color]);
+    res.status(201).json(r.rows[0]);
+  } catch (e) { respondError(res, e); }
+});
+
+router.put('/labels/:id', ...manage, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const cur = await query(`SELECT * FROM ${SCHEMA}.task_labels WHERE id=$1 AND company_id=$2`, [id, req.companyId]);
+    if (!cur.rows[0]) err('Etiqueta não encontrada', 404);
+    const name = req.body?.name != null ? String(req.body.name).trim() : cur.rows[0].name;
+    if (name.length < 1) err('Nome inválido');
+    const color = /^#[0-9a-fA-F]{6}$/.test(String(req.body?.color || '')) ? req.body.color : cur.rows[0].color;
+    const r = await query(`UPDATE ${SCHEMA}.task_labels SET name=$1, color=$2 WHERE id=$3 RETURNING id, name, color`, [name, color, id]);
+    res.json(r.rows[0]);
+  } catch (e) { respondError(res, e); }
+});
+
+router.delete('/labels/:id', ...manage, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const cur = await query(`SELECT id FROM ${SCHEMA}.task_labels WHERE id=$1 AND company_id=$2`, [id, req.companyId]);
+    if (!cur.rows[0]) err('Etiqueta não encontrada', 404);
+    await query(`DELETE FROM ${SCHEMA}.task_labels WHERE id=$1`, [id]); // vínculos caem por CASCADE
+    res.json({ ok: true });
+  } catch (e) { respondError(res, e); }
+});
+
+// Define as etiquetas de uma tarefa. Basta tasks.view (etiquetar é colaborativo).
+router.put('/nodes/:id/labels', ...view, async (req, res) => {
+  try {
+    const node = await getAccessibleNode(req, Number(req.params.id));
+    await setNodeLabels(node.id, req.companyId, req.body?.label_ids);
+    const r = await query(`SELECT l.id, l.name, l.color FROM ${SCHEMA}.task_node_labels nl JOIN ${SCHEMA}.task_labels l ON l.id=nl.label_id WHERE nl.node_id=$1 ORDER BY l.name`, [node.id]);
+    res.json({ labels: r.rows });
   } catch (e) { respondError(res, e); }
 });
 
@@ -419,15 +785,36 @@ router.patch('/nodes/:id/done', ...view, async (req, res) => {
 // Definições recorrentes (ocultas do board). Cada uma gera ocorrências por período.
 router.get('/templates', ...view, async (req, res) => {
   try {
+    // Mesma visibilidade do board: comum só vê rotinas suas/atribuídas/mencionadas.
+    const gestor = await isGestorReq(req);
+    const uid = req.user.id;
     const r = await query(
-      `SELECT n.id, n.title, n.description, n.priority, n.recurrence, n.recurrence_day, n.recurrence_month,
+      `WITH RECURSIVE ttree AS (
+         SELECT r.id AS root_id, r.id, r.assignee_id, r.created_by
+           FROM ${SCHEMA}.task_nodes r WHERE r.company_id=$1 AND r.is_template=true AND r.recurrence<>'none' AND r.parent_id IS NULL
+         UNION ALL
+         SELECT t.root_id, c.id, c.assignee_id, c.created_by
+           FROM ${SCHEMA}.task_nodes c JOIN ttree t ON c.parent_id=t.id
+       ),
+       mn AS (
+         SELECT DISTINCT cm.node_id FROM ${SCHEMA}.task_comments cm
+           JOIN ${SCHEMA}.task_comment_mentions m ON m.comment_id=cm.id WHERE m.user_id=$2
+       ),
+       vis AS (
+         SELECT t.root_id, bool_or(t.assignee_id=$2 OR t.created_by=$2 OR mnj.node_id IS NOT NULL) AS ok
+           FROM ttree t LEFT JOIN mn mnj ON mnj.node_id=t.id GROUP BY t.root_id
+       )
+       SELECT n.id, n.title, n.description, n.priority, n.recurrence, n.recurrence_day, n.recurrence_month, n.recurrence_paused,
               n.group_id, g.name AS group_name, ${AUTHOR},
-              (SELECT COUNT(*) FROM ${SCHEMA}.task_nodes o WHERE o.source_node_id=n.id AND o.parent_id IS NULL)::int AS occurrences
+              (SELECT COUNT(*) FROM ${SCHEMA}.task_nodes o WHERE o.source_node_id=n.id AND o.parent_id IS NULL)::int AS occurrences,
+              (SELECT MAX(o.due_date) FROM ${SCHEMA}.task_nodes o WHERE o.source_node_id=n.id AND o.parent_id IS NULL) AS last_due
          FROM ${SCHEMA}.task_nodes n
+         JOIN vis v ON v.root_id=n.id
          LEFT JOIN ${SCHEMA}.task_groups g ON g.id=n.group_id
         WHERE n.company_id=$1 AND n.is_template=true AND n.recurrence<>'none' AND n.parent_id IS NULL
+          AND ($3::boolean OR v.ok)
         ORDER BY n.title`,
-      [req.companyId]
+      [req.companyId, uid, gestor]
     );
     res.json({ items: r.rows });
   } catch (e) { respondError(res, e); }
@@ -498,7 +885,26 @@ router.get('/productivity', ...gestor, async (req, res) => {
       onTimePct: s.done_with_due ? Number((s.on_time / s.done_with_due).toFixed(4)) : null,
       avgDays: s.avg_days == null ? null : Number(Number(s.avg_days).toFixed(1)),
     }));
-    res.json({ items });
+    // Série semanal (últimas 12 semanas): concluídas, no prazo e atrasadas por semana.
+    const series = await query(
+      `SELECT to_char(date_trunc('week', n.done_at), 'YYYY-MM-DD') AS wk,
+              COUNT(*)::int AS done,
+              COUNT(*) FILTER (WHERE n.due_date IS NOT NULL AND n.done_at::date <= n.due_date)::int AS on_time,
+              COUNT(*) FILTER (WHERE n.due_date IS NOT NULL AND n.done_at::date > n.due_date)::int AS late
+         FROM ${SCHEMA}.task_nodes n
+        WHERE n.company_id=$1 AND n.is_template=false AND n.status='done' AND n.done_at >= (CURRENT_DATE - INTERVAL '12 weeks')
+        GROUP BY 1 ORDER BY 1`,
+      [req.companyId]
+    );
+    // Distribuição atual por status (para o gráfico de pizza).
+    const dist = await query(
+      `SELECT COUNT(*) FILTER (WHERE status='open')::int AS open,
+              COUNT(*) FILTER (WHERE status='done')::int AS done,
+              COUNT(*) FILTER (WHERE status='open' AND due_date IS NOT NULL AND due_date < CURRENT_DATE)::int AS overdue
+         FROM ${SCHEMA}.task_nodes WHERE company_id=$1 AND is_template=false`,
+      [req.companyId]
+    );
+    res.json({ items, series: series.rows, distribution: dist.rows[0] || { open: 0, done: 0, overdue: 0 } });
   } catch (e) { respondError(res, e); }
 });
 
@@ -509,6 +915,26 @@ router.get('/company-users', ...manage, async (req, res) => {
       `SELECT u.id, COALESCE(NULLIF(u.name,''), u.email) AS name, u.email
          FROM ${SCHEMA}.users u JOIN ${SCHEMA}.user_companies uc ON uc.user_id = u.id
         WHERE uc.company_id = $1 AND u.role <> 'master'
+        ORDER BY name`,
+      [req.companyId]
+    );
+    res.json({ items: r.rows });
+  } catch (e) { respondError(res, e); }
+});
+
+// Usuários mencionáveis = quem tem acesso ao quadro (tasks.view efetivo) na empresa.
+// Perm view (qualquer um do quadro pode mencionar). Replica perfil ∪ grants − revokes.
+router.get('/mentionable-users', ...view, async (req, res) => {
+  try {
+    const r = await query(
+      `SELECT u.id, COALESCE(NULLIF(u.name,''), u.email) AS name, u.email
+         FROM ${SCHEMA}.users u JOIN ${SCHEMA}.user_companies uc ON uc.user_id = u.id
+        WHERE uc.company_id = $1 AND u.role <> 'master'
+          AND (
+            EXISTS (SELECT 1 FROM ${SCHEMA}.profile_permissions pp WHERE pp.profile_id = u.profile_id AND pp.permission_key = 'tasks.view')
+            OR EXISTS (SELECT 1 FROM ${SCHEMA}.user_permission_overrides o WHERE o.user_id = u.id AND o.permission_key = 'tasks.view' AND o.allowed = true)
+          )
+          AND NOT EXISTS (SELECT 1 FROM ${SCHEMA}.user_permission_overrides o WHERE o.user_id = u.id AND o.permission_key = 'tasks.view' AND o.allowed = false)
         ORDER BY name`,
       [req.companyId]
     );
