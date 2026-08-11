@@ -21,6 +21,7 @@ export const tasksService = {
   deleteNode: async (id) => (await api.delete(`/tasks/nodes/${id}`)).data,
   moveNode: async (id, toStageId) => (await api.post(`/tasks/nodes/${id}/move`, { to_stage_id: toStageId })).data,
   toggleNode: async (id, done) => (await api.patch(`/tasks/nodes/${id}/done`, { done })).data,
+  expand: async (id, payload) => (await api.post(`/tasks/nodes/${id}/expand`, payload)).data,
   reorderNodes: async (stageId, order) => (await api.put('/tasks/nodes/reorder', { stage_id: stageId, order })).data,
   // Comentários (discussão)
   addComment: async (id, body, mentionIds = []) => (await api.post(`/tasks/nodes/${id}/comments`, { body, mention_ids: mentionIds })).data,
@@ -32,6 +33,12 @@ export const tasksService = {
   updateLabel: async (id, payload) => (await api.put(`/tasks/labels/${id}`, payload)).data,
   deleteLabel: async (id) => (await api.delete(`/tasks/labels/${id}`)).data,
   setNodeLabels: async (id, labelIds) => (await api.put(`/tasks/nodes/${id}/labels`, { label_ids: labelIds })).data,
+  // Modelos de checklist (passo-a-passo reutilizável)
+  checklists: async () => (await api.get('/tasks/checklists')).data,
+  createChecklist: async (payload) => (await api.post('/tasks/checklists', payload)).data,
+  updateChecklist: async (id, payload) => (await api.put(`/tasks/checklists/${id}`, payload)).data,
+  deleteChecklist: async (id) => (await api.delete(`/tasks/checklists/${id}`)).data,
+  applyChecklist: async (id, checklistId) => (await api.post(`/tasks/nodes/${id}/apply-checklist`, { checklist_id: checklistId })).data,
   // Rotinas recorrentes (templates)
   templates: async () => (await api.get('/tasks/templates')).data,
   generate: async () => (await api.post('/tasks/generate')).data,

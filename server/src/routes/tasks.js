@@ -658,6 +658,139 @@ router.patch('/nodes/:id/done', ...view, async (req, res) => {
   } catch (e) { respondError(res, e); }
 });
 
+// Gera subtarefas em massa a partir de clientes/contratos, com o MESMO passo-a-passo
+// em cada uma (sub-subtarefas). Idempotente (pula alvos já existentes). Feito num
+// template recorrente, as ocorrências clonam tudo por período.
+router.post('/nodes/:id/expand', ...manage, async (req, res) => {
+  try {
+    const parent = await getAccessibleNode(req, Number(req.params.id));
+    const clientIds = [...new Set((Array.isArray(req.body?.client_ids) ? req.body.client_ids : []).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+    const granularity = req.body?.granularity === 'contract' ? 'contract' : 'client';
+    const steps = (Array.isArray(req.body?.steps) ? req.body.steps : []).map((s) => String(s || '').trim()).filter(Boolean);
+    if (!clientIds.length) err('Selecione ao menos um cliente');
+    const cl = await query(`SELECT id, name FROM ${SCHEMA}.clients WHERE company_id=$1 AND id = ANY($2::int[]) ORDER BY name`, [req.companyId, clientIds]);
+    if (!cl.rows.length) err('Nenhum cliente válido');
+
+    // Monta os alvos (título + vínculo) conforme a granularidade.
+    const targets = [];
+    if (granularity === 'client') {
+      for (const c of cl.rows) targets.push({ title: c.name, client_id: c.id, contract_id: null });
+    } else {
+      const cons = await query(
+        `SELECT id, client_id, description FROM ${SCHEMA}.contracts WHERE company_id=$1 AND client_id = ANY($2::int[]) ORDER BY client_id, id`,
+        [req.companyId, cl.rows.map((c) => c.id)]
+      );
+      const nameById = new Map(cl.rows.map((c) => [c.id, c.name]));
+      for (const con of cons.rows) targets.push({ title: `${nameById.get(con.client_id) || 'Cliente'} — ${con.description || ('Contrato #' + con.id)}`, client_id: con.client_id, contract_id: con.id });
+      if (!targets.length) err('Os clientes selecionados não têm contratos cadastrados');
+    }
+
+    // Alvos já existentes sob este pai (por cliente sem contrato, ou por contrato).
+    const ex = await query(`SELECT client_id, contract_id FROM ${SCHEMA}.task_nodes WHERE parent_id=$1`, [parent.id]);
+    const hasClient = new Set(ex.rows.filter((r) => r.contract_id == null && r.client_id != null).map((r) => r.client_id));
+    const hasContract = new Set(ex.rows.filter((r) => r.contract_id != null).map((r) => r.contract_id));
+
+    let createdTargets = 0; let createdSteps = 0;
+    await query('BEGIN');
+    try {
+      let pos = (await query(`SELECT COALESCE(MAX(position),-1)+1 AS p FROM ${SCHEMA}.task_nodes WHERE company_id=$1 AND parent_id=$2`, [req.companyId, parent.id])).rows[0].p;
+      for (const t of targets) {
+        if (t.contract_id ? hasContract.has(t.contract_id) : hasClient.has(t.client_id)) continue;
+        const child = await query(
+          `INSERT INTO ${SCHEMA}.task_nodes (company_id, group_id, parent_id, stage_id, kind, title, assignee_id, priority, is_template, client_id, contract_id, position, created_by)
+           VALUES ($1,$2,$3,$4,'fixa',$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+          [req.companyId, parent.group_id, parent.id, parent.stage_id, t.title, parent.assignee_id, parent.priority, parent.is_template, t.client_id, t.contract_id, pos++, req.user.id]
+        );
+        const childId = child.rows[0].id; createdTargets++;
+        let sp = 0;
+        for (const step of steps) {
+          await query(
+            `INSERT INTO ${SCHEMA}.task_nodes (company_id, group_id, parent_id, stage_id, kind, title, assignee_id, priority, is_template, client_id, contract_id, position, created_by)
+             VALUES ($1,$2,$3,$4,'fixa',$5,$6,$7,$8,$9,$10,$11,$12)`,
+            [req.companyId, parent.group_id, childId, parent.stage_id, step, parent.assignee_id, parent.priority, parent.is_template, t.client_id, t.contract_id, sp++, req.user.id]
+          );
+          createdSteps++;
+        }
+      }
+      await query('COMMIT');
+    } catch (e) { await query('ROLLBACK').catch(() => {}); throw e; }
+    res.json({ ok: true, createdTargets, createdSteps });
+  } catch (e) { respondError(res, e); }
+});
+
+// ===================== MODELOS DE CHECKLIST =====================
+router.get('/checklists', ...view, async (req, res) => {
+  try {
+    const r = await query(`SELECT id, name, steps FROM ${SCHEMA}.task_checklists WHERE company_id=$1 ORDER BY name`, [req.companyId]);
+    res.json({ items: r.rows });
+  } catch (e) { respondError(res, e); }
+});
+
+router.post('/checklists', ...manage, async (req, res) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    if (name.length < 1) err('Informe o nome do checklist');
+    const steps = (Array.isArray(req.body?.steps) ? req.body.steps : []).map((s) => String(s || '').trim()).filter(Boolean);
+    const r = await query(`INSERT INTO ${SCHEMA}.task_checklists (company_id, name, steps) VALUES ($1,$2,$3) RETURNING id, name, steps`, [req.companyId, name, steps]);
+    res.status(201).json(r.rows[0]);
+  } catch (e) { respondError(res, e); }
+});
+
+router.put('/checklists/:id', ...manage, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const cur = await query(`SELECT * FROM ${SCHEMA}.task_checklists WHERE id=$1 AND company_id=$2`, [id, req.companyId]);
+    if (!cur.rows[0]) err('Checklist não encontrado', 404);
+    const name = req.body?.name != null ? String(req.body.name).trim() : cur.rows[0].name;
+    if (name.length < 1) err('Nome inválido');
+    const steps = req.body?.steps !== undefined
+      ? (Array.isArray(req.body.steps) ? req.body.steps : []).map((s) => String(s || '').trim()).filter(Boolean)
+      : cur.rows[0].steps;
+    const r = await query(`UPDATE ${SCHEMA}.task_checklists SET name=$1, steps=$2, updated_at=now() WHERE id=$3 RETURNING id, name, steps`, [name, steps, id]);
+    res.json(r.rows[0]);
+  } catch (e) { respondError(res, e); }
+});
+
+router.delete('/checklists/:id', ...manage, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const cur = await query(`SELECT id FROM ${SCHEMA}.task_checklists WHERE id=$1 AND company_id=$2`, [id, req.companyId]);
+    if (!cur.rows[0]) err('Checklist não encontrado', 404);
+    await query(`DELETE FROM ${SCHEMA}.task_checklists WHERE id=$1`, [id]);
+    res.json({ ok: true });
+  } catch (e) { respondError(res, e); }
+});
+
+// Aplica um checklist como subtarefas diretas do nó (idempotente por título). Herda
+// cliente/contrato/responsável do pai (útil p/ tarefa avulsa que segue um modelo).
+router.post('/nodes/:id/apply-checklist', ...manage, async (req, res) => {
+  try {
+    const parent = await getAccessibleNode(req, Number(req.params.id));
+    const clId = Number(req.body?.checklist_id);
+    const cl = await query(`SELECT steps FROM ${SCHEMA}.task_checklists WHERE id=$1 AND company_id=$2`, [clId, req.companyId]);
+    if (!cl.rows[0]) err('Checklist não encontrado', 404);
+    const steps = cl.rows[0].steps || [];
+    const ex = await query(`SELECT LOWER(title) AS t FROM ${SCHEMA}.task_nodes WHERE parent_id=$1`, [parent.id]);
+    const has = new Set(ex.rows.map((r) => r.t));
+    let created = 0;
+    await query('BEGIN');
+    try {
+      let pos = (await query(`SELECT COALESCE(MAX(position),-1)+1 AS p FROM ${SCHEMA}.task_nodes WHERE company_id=$1 AND parent_id=$2`, [req.companyId, parent.id])).rows[0].p;
+      for (const step of steps) {
+        if (has.has(String(step).toLowerCase())) continue;
+        await query(
+          `INSERT INTO ${SCHEMA}.task_nodes (company_id, group_id, parent_id, stage_id, kind, title, assignee_id, priority, is_template, client_id, contract_id, position, created_by)
+           VALUES ($1,$2,$3,$4,'fixa',$5,$6,$7,$8,$9,$10,$11,$12)`,
+          [req.companyId, parent.group_id, parent.id, parent.stage_id, step, parent.assignee_id, parent.priority, parent.is_template, parent.client_id, parent.contract_id, pos++, req.user.id]
+        );
+        created++;
+      }
+      await query('COMMIT');
+    } catch (e) { await query('ROLLBACK').catch(() => {}); throw e; }
+    res.json({ ok: true, created });
+  } catch (e) { respondError(res, e); }
+});
+
 // ===================== COMENTÁRIOS (discussão) =====================
 router.post('/nodes/:id/comments', ...view, async (req, res) => {
   try {

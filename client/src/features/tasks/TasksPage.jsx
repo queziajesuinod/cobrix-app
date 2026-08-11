@@ -33,6 +33,9 @@ import PlayCircleOutlineIcon from '@mui/icons-material/PlayCircleOutline'
 import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline'
 import LabelOutlinedIcon from '@mui/icons-material/LabelOutlined'
 import AlternateEmailIcon from '@mui/icons-material/AlternateEmail'
+import PlaylistAddIcon from '@mui/icons-material/PlaylistAdd'
+import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown'
+import ChecklistIcon from '@mui/icons-material/Checklist'
 import {
   DndContext, DragOverlay, PointerSensor, useSensor, useSensors, useDraggable, useDroppable, closestCorners,
 } from '@dnd-kit/core'
@@ -709,12 +712,149 @@ function CommentComposer({ onSubmit, submitting }) {
   )
 }
 
+// Gerenciar modelos de checklist (passo-a-passo reutilizável) da empresa.
+function ChecklistsDialog({ onClose, notify, onChanged }) {
+  const confirm = useConfirm()
+  const q = useQuery({ queryKey: ['tasks-checklists'], queryFn: () => tasksService.checklists() })
+  const items = q.data?.items || []
+  const [form, setForm] = React.useState({ id: null, name: '', steps: '' })
+  const reset = () => setForm({ id: null, name: '', steps: '' })
+  const save = useMutation({
+    mutationFn: () => {
+      const steps = form.steps.split('\n').map((s) => s.trim()).filter(Boolean)
+      return form.id ? tasksService.updateChecklist(form.id, { name: form.name.trim(), steps }) : tasksService.createChecklist({ name: form.name.trim(), steps })
+    },
+    onSuccess: () => { reset(); q.refetch(); onChanged && onChanged() },
+    onError: (e) => notify(e?.response?.data?.error || 'Falha ao salvar.', 'error'),
+  })
+  const del = useMutation({ mutationFn: (id) => tasksService.deleteChecklist(id), onSuccess: () => { reset(); q.refetch(); onChanged && onChanged() }, onError: (e) => notify(e?.response?.data?.error || 'Falha ao excluir.', 'error') })
+  const handleDel = async (c) => { const ok = await confirm({ title: 'Excluir checklist', description: `Excluir o modelo "${c.name}"?`, confirmText: 'Excluir', tone: 'danger' }); if (ok) del.mutate(c.id) }
+  return (
+    <Dialog open onClose={onClose} maxWidth="xs" fullWidth>
+      <DialogTitle sx={{ fontWeight: 700 }}>Modelos de checklist</DialogTitle>
+      <DialogContent dividers>
+        <Stack spacing={1} sx={{ mb: 2 }}>
+          {items.length === 0 ? <Typography variant="caption" color="text.secondary">Nenhum modelo ainda.</Typography>
+            : items.map((c) => (
+              <Stack key={c.id} direction="row" alignItems="center" spacing={1}>
+                <PlaylistAddIcon fontSize="small" color="disabled" />
+                <Typography variant="body2" sx={{ flex: 1, minWidth: 0, cursor: 'pointer' }} noWrap onClick={() => setForm({ id: c.id, name: c.name, steps: (c.steps || []).join('\n') })}>{c.name} <Typography component="span" variant="caption" color="text.secondary">({(c.steps || []).length} passos)</Typography></Typography>
+                <IconButton size="small" onClick={() => setForm({ id: c.id, name: c.name, steps: (c.steps || []).join('\n') })}><EditOutlinedIcon fontSize="small" /></IconButton>
+                <IconButton size="small" color="error" onClick={() => handleDel(c)}><DeleteOutlineIcon fontSize="small" /></IconButton>
+              </Stack>
+            ))}
+        </Stack>
+        <Divider sx={{ mb: 2 }}><Typography variant="caption" color="text.secondary">{form.id ? 'Editar' : 'Novo'} modelo</Typography></Divider>
+        <Stack spacing={1.5}>
+          <TextField size="small" label="Nome do modelo" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} fullWidth autoFocus />
+          <TextField label="Passos (um por linha)" value={form.steps} onChange={(e) => setForm((f) => ({ ...f, steps: e.target.value }))} fullWidth multiline minRows={4} />
+        </Stack>
+      </DialogContent>
+      <DialogActions sx={{ px: 3, py: 2 }}>
+        {form.id && <Button onClick={reset} color="inherit">Cancelar edição</Button>}
+        <Box sx={{ flex: 1 }} />
+        <Button onClick={onClose} color="inherit">Fechar</Button>
+        <Button variant="contained" disableElevation disabled={form.name.trim().length < 1 || save.isPending} onClick={() => save.mutate()}>{form.id ? 'Salvar' : 'Adicionar'}</Button>
+      </DialogActions>
+    </Dialog>
+  )
+}
+
+// Aplicar um modelo de checklist como subitens diretos da tarefa (tarefa avulsa com modelo).
+function ApplyChecklistDialog({ nodeId, onClose, onDone, notify }) {
+  const q = useQuery({ queryKey: ['tasks-checklists'], queryFn: () => tasksService.checklists() })
+  const items = q.data?.items || []
+  const [sel, setSel] = React.useState('')
+  const mut = useMutation({
+    mutationFn: () => tasksService.applyChecklist(nodeId, Number(sel)),
+    onSuccess: (r) => { notify(`${r.created} passo(s) adicionados.`); onDone(); onClose() },
+    onError: (e) => notify(e?.response?.data?.error || 'Falha ao aplicar.', 'error'),
+  })
+  return (
+    <Dialog open onClose={onClose} maxWidth="xs" fullWidth>
+      <DialogTitle sx={{ fontWeight: 700 }}>Aplicar modelo na tarefa</DialogTitle>
+      <DialogContent dividers>
+        <Stack spacing={1.5} sx={{ mt: 0.5 }}>
+          {items.length === 0
+            ? <Typography variant="body2" color="text.secondary">Nenhum modelo salvo. Use “Gerenciar checklists” para criar.</Typography>
+            : (
+              <TextField select label="Modelo" value={sel} onChange={(e) => setSel(e.target.value)} fullWidth>
+                {items.map((c) => <MenuItem key={c.id} value={String(c.id)}>{c.name} ({(c.steps || []).length})</MenuItem>)}
+              </TextField>
+            )}
+          <Typography variant="caption" color="text.secondary">Adiciona os passos como subitens desta tarefa (herda cliente/contrato). Passos já existentes são ignorados.</Typography>
+        </Stack>
+      </DialogContent>
+      <DialogActions sx={{ px: 3, py: 2 }}>
+        <Button onClick={onClose} color="inherit">Cancelar</Button>
+        <Button variant="contained" disableElevation disabled={!sel || mut.isPending} onClick={() => mut.mutate()}>Aplicar</Button>
+      </DialogActions>
+    </Dialog>
+  )
+}
+
+// Gera subtarefas em massa por cliente ou contrato, replicando o mesmo passo-a-passo.
+function ExpandDialog({ nodeId, defaultSteps = [], onClose, onDone, notify }) {
+  const checklistsQ = useQuery({ queryKey: ['tasks-checklists'], queryFn: () => tasksService.checklists() })
+  const checklists = checklistsQ.data?.items || []
+  const [granularity, setGranularity] = React.useState('client')
+  const [selected, setSelected] = React.useState([])
+  const [input, setInput] = React.useState('')
+  const [dq, setDq] = React.useState('')
+  React.useEffect(() => { const t = setTimeout(() => setDq(input.trim()), 300); return () => clearTimeout(t) }, [input])
+  const clientsQ = useQuery({ queryKey: ['expand-clients', dq], queryFn: () => clientsService.list({ pageSize: 50, q: dq || undefined }), placeholderData: (p) => p })
+  const options = clientsQ.data || []
+  const [steps, setSteps] = React.useState(defaultSteps.join('\n'))
+  const mut = useMutation({
+    mutationFn: () => tasksService.expand(nodeId, { client_ids: selected.map((c) => c.id), granularity, steps: steps.split('\n').map((s) => s.trim()).filter(Boolean) }),
+    onSuccess: (r) => { notify(`${r.createdTargets} subtarefa(s) e ${r.createdSteps} passo(s) criados.`); onDone(); onClose() },
+    onError: (e) => notify(e?.response?.data?.error || 'Falha ao gerar.', 'error'),
+  })
+  return (
+    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle sx={{ fontWeight: 700 }}>Aplicar por cliente / contrato</DialogTitle>
+      <DialogContent dividers>
+        <Stack spacing={2} sx={{ mt: 0.5 }}>
+          <ToggleButtonGroup exclusive size="small" value={granularity} onChange={(_e, v) => v && setGranularity(v)}>
+            <ToggleButton value="client">Uma por cliente</ToggleButton>
+            <ToggleButton value="contract">Uma por contrato</ToggleButton>
+          </ToggleButtonGroup>
+          <Autocomplete
+            multiple options={options} value={selected}
+            getOptionLabel={(o) => o?.name || ''} isOptionEqualToValue={(o, v) => o.id === v.id}
+            filterOptions={(x) => x} loading={clientsQ.isFetching} noOptionsText={dq ? 'Nenhum cliente' : 'Digite para buscar…'}
+            onChange={(_e, v) => setSelected(v)} onInputChange={(_e, val, reason) => { if (reason === 'input' || reason === 'clear') setInput(val) }}
+            renderInput={(params) => <TextField {...params} label="Clientes" placeholder="Buscar cliente…" />}
+          />
+          <Typography variant="caption" color="text.secondary">
+            {granularity === 'contract' ? 'Cria uma subtarefa por CONTRATO dos clientes selecionados.' : 'Cria uma subtarefa por CLIENTE selecionado.'} Alvos já existentes são ignorados (pode rodar de novo ao incluir novos).
+          </Typography>
+          {checklists.length > 0 && (
+            <TextField select label="Usar um modelo de checklist" value="" onChange={(e) => { const c = checklists.find((x) => String(x.id) === e.target.value); if (c) setSteps((c.steps || []).join('\n')) }} fullWidth>
+              {checklists.map((c) => <MenuItem key={c.id} value={String(c.id)}>{c.name} ({(c.steps || []).length})</MenuItem>)}
+            </TextField>
+          )}
+          <TextField label="Passos (um por linha)" value={steps} onChange={(e) => setSteps(e.target.value)} fullWidth multiline minRows={4}
+            helperText="Cada linha vira uma sub-subtarefa dentro de cada cliente/contrato." />
+        </Stack>
+      </DialogContent>
+      <DialogActions sx={{ px: 3, py: 2 }}>
+        <Button onClick={onClose} color="inherit">Cancelar</Button>
+        <Button variant="contained" disableElevation disabled={!selected.length || mut.isPending} onClick={() => mut.mutate()}>Gerar</Button>
+      </DialogActions>
+    </Dialog>
+  )
+}
+
 // Detalhe da tarefa: cabeçalho editável + árvore de subitens + histórico.
 function TaskDetailDialog({ nodeId, users, stages, canManage, currentUserId, labels = [], focusCommentId, onClose, onChanged, notify }) {
   const confirm = useConfirm()
   const q = useQuery({ queryKey: ['task-node', nodeId], queryFn: () => tasksService.node(nodeId) })
   const [editing, setEditing] = React.useState(false)
   const [addingTop, setAddingTop] = React.useState(false)
+  const [expanding, setExpanding] = React.useState(false)
+  const [applying, setApplying] = React.useState(false)
+  const [modelsMenuEl, setModelsMenuEl] = React.useState(null)
   const [highlightId, setHighlightId] = React.useState(null)
   const promptedRef = React.useRef(false)
   const node = q.data?.node
@@ -728,6 +868,8 @@ function TaskDetailDialog({ nodeId, users, stages, canManage, currentUserId, lab
     return m
   }, [children])
   const topKids = childrenMap.get(nodeId) || []
+  // Passos padrão para "Gerar por clientes" = os passos do 1º subitem existente.
+  const defaultSteps = topKids[0] ? (childrenMap.get(topKids[0].id) || []).map((k) => k.title) : []
   const allSubDone = topKids.length > 0 && topKids.every((k) => k.status === 'done')
   // Todas as subtarefas concluídas → oferece CONCLUIR a tarefa (move p/ "Concluído" e,
   // se for recorrente, materializa a próxima ocorrência no backend).
@@ -801,7 +943,16 @@ function TaskDetailDialog({ nodeId, users, stages, canManage, currentUserId, lab
                 {node.description && <Typography variant="body2" color="text.secondary" sx={{ mb: 2, whiteSpace: 'pre-wrap' }}>{node.description}</Typography>}
                 <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 0.5 }}>
                   <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Subitens</Typography>
-                  {canManage && <Button size="small" startIcon={<AddIcon />} onClick={() => setAddingTop(true)}>Adicionar</Button>}
+                  {canManage && (
+                    <Stack direction="row" spacing={0.5}>
+                      <Button size="small" startIcon={<PlaylistAddIcon />} endIcon={<ArrowDropDownIcon />} onClick={(e) => setModelsMenuEl(e.currentTarget)}>Modelos</Button>
+                      <Menu anchorEl={modelsMenuEl} open={Boolean(modelsMenuEl)} onClose={() => setModelsMenuEl(null)}>
+                        <MenuItem onClick={() => { setModelsMenuEl(null); setApplying(true) }}>Aplicar na tarefa (geral)…</MenuItem>
+                        <MenuItem onClick={() => { setModelsMenuEl(null); setExpanding(true) }}>Aplicar por cliente/contrato…</MenuItem>
+                      </Menu>
+                      <Button size="small" startIcon={<AddIcon />} onClick={() => setAddingTop(true)}>Adicionar</Button>
+                    </Stack>
+                  )}
                 </Stack>
                 {topKids.length === 0
                   ? <Typography variant="caption" color="text.secondary">Nenhum subitem. {canManage ? 'Use “Adicionar” para quebrar a tarefa em passos.' : ''}</Typography>
@@ -881,6 +1032,8 @@ function TaskDetailDialog({ nodeId, users, stages, canManage, currentUserId, lab
           </DialogActions>
           {editing && <NodeForm heading="Editar tarefa" initial={node} users={users} submitting={edit.isPending} isMain onClose={() => setEditing(false)} onSubmit={(payload) => edit.mutate(payload)} />}
           {addingTop && <NodeForm heading="Novo subitem" initial={null} users={users} submitting={addTop.isPending} onClose={() => setAddingTop(false)} onSubmit={(payload) => addTop.mutate(payload)} />}
+          {expanding && <ExpandDialog nodeId={nodeId} defaultSteps={defaultSteps} onClose={() => setExpanding(false)} onDone={refreshAll} notify={notify} />}
+          {applying && <ApplyChecklistDialog nodeId={nodeId} onClose={() => setApplying(false)} onDone={refreshAll} notify={notify} />}
         </>
       )}
     </Dialog>
@@ -1363,6 +1516,7 @@ export default function TasksPage() {
   const actions = (
     <Stack direction="row" spacing={1}>
       <Button variant="text" startIcon={<AutorenewIcon />} onClick={() => setDialog('recurrences')}>Recorrências</Button>
+      {canManage && <Button variant="text" startIcon={<ChecklistIcon />} onClick={() => setDialog('checklists')}>Checklists</Button>}
       {canManage && <Button variant="text" startIcon={<LabelOutlinedIcon />} onClick={() => setDialog('labels')}>Etiquetas</Button>}
       {canManage && <Button variant="outlined" startIcon={<AddIcon />} onClick={() => setDialog('column')}>Nova coluna</Button>}
       {canManage && <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog('task')} disabled={!stages.length}>Nova tarefa</Button>}
@@ -1465,6 +1619,7 @@ export default function TasksPage() {
       {renameStage && <ColumnDialog initial={renameStage} onClose={() => setRenameStage(null)} onSaved={refresh} notify={notify} />}
       {dialog === 'task' && <TaskDialog stages={stages} users={usersQ.data?.items || []} labels={labels} onClose={() => setDialog(null)} onSaved={refresh} notify={notify} />}
       {dialog === 'labels' && <LabelsDialog onClose={() => setDialog(null)} notify={notify} onChanged={() => { qc.invalidateQueries({ queryKey: ['tasks-labels'] }); refresh() }} />}
+      {dialog === 'checklists' && <ChecklistsDialog onClose={() => setDialog(null)} notify={notify} onChanged={() => qc.invalidateQueries({ queryKey: ['tasks-checklists'] })} />}
       {dialog === 'recurrences' && <RecurrencesDialog canManage={canManage} onOpen={setOpenNodeId} onClose={() => setDialog(null)} notify={notify} onChanged={refresh} />}
       {openNodeId && <TaskDetailDialog nodeId={openNodeId} users={usersQ.data?.items || []} stages={stages} canManage={canManage} currentUserId={user?.id} labels={labels} focusCommentId={focusCommentId} onClose={() => { setOpenNodeId(null); setFocusCommentId(null) }} onChanged={refresh} notify={notify} />}
 

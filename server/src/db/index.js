@@ -599,6 +599,17 @@ async function initDb() {
       );
     `);
     await c.query(`CREATE INDEX IF NOT EXISTS idx_task_node_labels_label ON ${schema}.task_node_labels (label_id);`);
+    // Modelos de checklist (passo-a-passo reutilizável) por empresa.
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.task_checklists (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        steps TEXT[] NOT NULL DEFAULT '{}',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ
+      );
+    `);
     // Comentários (discussão) da tarefa — separado do histórico de sistema.
     await c.query(`
       CREATE TABLE IF NOT EXISTS ${schema}.task_comments (
