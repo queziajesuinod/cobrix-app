@@ -18,11 +18,41 @@ const optId = (v) => (Number.isInteger(Number(v)) && Number(v) > 0 ? Number(v) :
 const optDate = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null);
 const optInt = (v, min, max) => { const n = Number(v); return Number.isInteger(n) && n >= min && n <= max ? n : null; };
 
-// Acesso ao módulo = tasks.view; gestão (criar/editar rotinas/etapas/tarefas) = tasks.manage;
-// visão global + produtividade = tasks.gestor. Mover/concluir a própria tarefa basta view.
-const view = [requireAuth, companyScope(true), requirePermission('tasks.view')];
-const manage = [requireAuth, companyScope(true), requirePermission('tasks.manage')];
-const gestor = [requireAuth, companyScope(true), requirePermission('tasks.gestor')];
+// Acesso ao módulo = tasks.view. A antiga permissão única `tasks.manage` foi
+// dividida em chaves granulares (tarefas/rotinas/colunas/etiquetas/checklists,
+// separando criar/editar/excluir). Mover/concluir/comentar a própria tarefa basta
+// view. Gestor (visão global + produtividade + lixeira) = tasks.gestor.
+const base = [requireAuth, companyScope(true)];
+const view = [...base, requirePermission('tasks.view')];
+const gestor = [...base, requirePermission('tasks.gestor')];
+// Chaves de ação → cadeia de middleware pronta.
+const P = (key) => [...base, requirePermission(key)];
+const stageCreate = P('tasks.stage.create');
+const stageEdit = P('tasks.stage.edit');
+const stageDelete = P('tasks.stage.delete');
+const routineCreate = P('tasks.routine.create');
+const routineEdit = P('tasks.routine.edit');
+const routineDelete = P('tasks.routine.delete');
+const labelCreate = P('tasks.label.create');
+const labelEdit = P('tasks.label.edit');
+const labelDelete = P('tasks.label.delete');
+const checklistManage = P('tasks.checklist.manage');
+
+// Permissões efetivas do request, memoizadas (evita reconsultar por checagem).
+async function permsOf(req) {
+  if (!req._taskPerms) req._taskPerms = new Set(await getEffectivePermissions(req.user, req.companyId));
+  return req._taskPerms;
+}
+// Exige, dentro do handler, que o usuário tenha ao menos UMA das chaves (master passa).
+async function ensurePerm(req, ...keys) {
+  if (req.user.role === 'master') return;
+  const perms = await permsOf(req);
+  if (!keys.some((k) => perms.has(k))) err('Acesso negado: sem permissão para esta ação.', 403);
+}
+async function hasPerm(req, key) {
+  if (req.user.role === 'master') return true;
+  return (await permsOf(req)).has(key);
+}
 
 const AUTHOR = `(SELECT COALESCE(NULLIF(au.name,''), au.email) FROM ${SCHEMA}.users au WHERE au.id = n.assignee_id) AS assignee_name`;
 // Nomes do vínculo opcional (cliente/contrato) de uma tarefa (alias de tabela `n`).
@@ -182,8 +212,9 @@ async function canAccessNode(req, node) {
   return Boolean(r.rows[0]?.mine || r.rows[0]?.mentioned);
 }
 
-async function getAccessibleNode(req, id) {
+async function getAccessibleNode(req, id, { allowDeleted = false } = {}) {
   const node = await getNode(req.companyId, id);
+  if (!allowDeleted && node.deleted_at) err('Tarefa excluída (inativa)', 409);
   if (!(await canAccessNode(req, node))) err('Sem acesso a esta tarefa', 403);
   return node;
 }
@@ -197,7 +228,7 @@ router.get('/stages', ...view, async (req, res) => {
   } catch (e) { respondError(res, e); }
 });
 
-router.post('/stages', ...manage, async (req, res) => {
+router.post('/stages', ...stageCreate, async (req, res) => {
   try {
     const name = String(req.body?.name || '').trim();
     if (name.length < 1) err('Informe o nome da etapa');
@@ -214,7 +245,7 @@ router.post('/stages', ...manage, async (req, res) => {
 
 // Reordena as colunas de uma vez (drag-and-drop). Registrar ANTES de '/stages/:id'
 // para não casar 'reorder' como :id. Aplica a nova posição pelo índice no array.
-router.put('/stages/reorder', ...manage, async (req, res) => {
+router.put('/stages/reorder', ...stageEdit, async (req, res) => {
   try {
     const order = Array.isArray(req.body?.order) ? req.body.order.map(Number).filter(Number.isInteger) : [];
     if (!order.length) err('Ordem inválida');
@@ -232,7 +263,7 @@ router.put('/stages/reorder', ...manage, async (req, res) => {
   } catch (e) { respondError(res, e); }
 });
 
-router.put('/stages/:id', ...manage, async (req, res) => {
+router.put('/stages/:id', ...stageEdit, async (req, res) => {
   try {
     const id = Number(req.params.id);
     const cur = await query(`SELECT * FROM ${SCHEMA}.task_stages WHERE id=$1 AND company_id=$2`, [id, req.companyId]);
@@ -248,12 +279,12 @@ router.put('/stages/:id', ...manage, async (req, res) => {
   } catch (e) { respondError(res, e); }
 });
 
-router.delete('/stages/:id', ...manage, async (req, res) => {
+router.delete('/stages/:id', ...stageDelete, async (req, res) => {
   try {
     const id = Number(req.params.id);
     const cur = await query(`SELECT id FROM ${SCHEMA}.task_stages WHERE id=$1 AND company_id=$2`, [id, req.companyId]);
     if (!cur.rows[0]) err('Etapa não encontrada', 404);
-    const inUse = await query(`SELECT 1 FROM ${SCHEMA}.task_nodes WHERE stage_id=$1 LIMIT 1`, [id]);
+    const inUse = await query(`SELECT 1 FROM ${SCHEMA}.task_nodes WHERE stage_id=$1 AND deleted_at IS NULL LIMIT 1`, [id]);
     if (inUse.rows[0]) err('Mova as tarefas desta etapa antes de excluí-la', 409);
     await query(`DELETE FROM ${SCHEMA}.task_stages WHERE id=$1`, [id]);
     res.json({ ok: true });
@@ -265,7 +296,7 @@ router.get('/groups', ...view, async (req, res) => {
   try {
     const r = await query(
       `SELECT g.id, g.name, g.description, g.recurring, g.default_assignee_id, g.default_priority, g.position,
-              (SELECT COUNT(*) FROM ${SCHEMA}.task_nodes n WHERE n.group_id=g.id AND n.parent_id IS NULL AND n.is_template=false)::int AS tasks
+              (SELECT COUNT(*) FROM ${SCHEMA}.task_nodes n WHERE n.group_id=g.id AND n.parent_id IS NULL AND n.is_template=false AND n.deleted_at IS NULL)::int AS tasks
          FROM ${SCHEMA}.task_groups g
         WHERE g.company_id=$1 ORDER BY g.position, g.name`,
       [req.companyId]
@@ -274,7 +305,7 @@ router.get('/groups', ...view, async (req, res) => {
   } catch (e) { respondError(res, e); }
 });
 
-router.post('/groups', ...manage, async (req, res) => {
+router.post('/groups', ...routineCreate, async (req, res) => {
   try {
     const name = String(req.body?.name || '').trim();
     if (name.length < 2) err('Informe o nome da rotina');
@@ -295,7 +326,7 @@ router.post('/groups', ...manage, async (req, res) => {
   } catch (e) { respondError(res, e); }
 });
 
-router.put('/groups/:id', ...manage, async (req, res) => {
+router.put('/groups/:id', ...routineEdit, async (req, res) => {
   try {
     const id = Number(req.params.id);
     const cur = await query(`SELECT * FROM ${SCHEMA}.task_groups WHERE id=$1 AND company_id=$2`, [id, req.companyId]);
@@ -320,12 +351,12 @@ router.put('/groups/:id', ...manage, async (req, res) => {
 
 // Excluir rotina — só se NÃO houver tarefas vinculadas (em nenhuma etapa, nem
 // recorrências). Evita apagar trabalho por engano.
-router.delete('/groups/:id', ...manage, async (req, res) => {
+router.delete('/groups/:id', ...routineDelete, async (req, res) => {
   try {
     const id = Number(req.params.id);
     const g = await query(`SELECT id FROM ${SCHEMA}.task_groups WHERE id=$1 AND company_id=$2`, [id, req.companyId]);
     if (!g.rows[0]) err('Rotina não encontrada', 404);
-    const used = await query(`SELECT COUNT(*)::int AS n FROM ${SCHEMA}.task_nodes WHERE group_id=$1`, [id]);
+    const used = await query(`SELECT COUNT(*)::int AS n FROM ${SCHEMA}.task_nodes WHERE group_id=$1 AND deleted_at IS NULL`, [id]);
     if (used.rows[0].n > 0) err(`Esta rotina tem ${used.rows[0].n} tarefa(s) vinculada(s). Mova ou exclua as tarefas antes de remover a rotina.`, 409);
     await query(`DELETE FROM ${SCHEMA}.task_groups WHERE id=$1`, [id]);
     res.json({ ok: true });
@@ -354,10 +385,10 @@ router.get('/board', ...view, async (req, res) => {
     const nodes = await query(
       `WITH RECURSIVE tree AS (
          SELECT r.id AS root_id, r.id, r.assignee_id, r.created_by, r.client_id, r.contract_id
-           FROM ${SCHEMA}.task_nodes r WHERE r.company_id=$1 AND r.parent_id IS NULL AND r.is_template=false
+           FROM ${SCHEMA}.task_nodes r WHERE r.company_id=$1 AND r.parent_id IS NULL AND r.is_template=false AND r.deleted_at IS NULL
          UNION ALL
          SELECT t.root_id, c.id, c.assignee_id, c.created_by, c.client_id, c.contract_id
-           FROM ${SCHEMA}.task_nodes c JOIN tree t ON c.parent_id=t.id
+           FROM ${SCHEMA}.task_nodes c JOIN tree t ON c.parent_id=t.id AND c.deleted_at IS NULL
        ),
        mn AS (
          SELECT DISTINCT cm.node_id FROM ${SCHEMA}.task_comments cm
@@ -377,11 +408,11 @@ router.get('/board', ...view, async (req, res) => {
        SELECT n.id, n.group_id, n.stage_id, n.kind, n.title, n.description, n.priority, n.due_date, n.status,
               n.assignee_id, n.client_id, n.contract_id, n.recurrence, n.source_node_id, n.position, ${AUTHOR}, ${LINKS}, ${NODE_LABELS},
               a.sub_links,
-              (SELECT COUNT(*) FROM ${SCHEMA}.task_nodes c WHERE c.parent_id=n.id)::int AS sub_total,
-              (SELECT COUNT(*) FROM ${SCHEMA}.task_nodes c WHERE c.parent_id=n.id AND c.status='done')::int AS sub_done
+              (SELECT COUNT(*) FROM ${SCHEMA}.task_nodes c WHERE c.parent_id=n.id AND c.deleted_at IS NULL)::int AS sub_total,
+              (SELECT COUNT(*) FROM ${SCHEMA}.task_nodes c WHERE c.parent_id=n.id AND c.status='done' AND c.deleted_at IS NULL)::int AS sub_done
          FROM ${SCHEMA}.task_nodes n
          JOIN agg a ON a.root_id=n.id
-        WHERE n.company_id=$1 AND n.parent_id IS NULL AND n.is_template=false
+        WHERE n.company_id=$1 AND n.parent_id IS NULL AND n.is_template=false AND n.deleted_at IS NULL
           AND ($3::boolean OR a.mine OR a.mentioned)
         ORDER BY n.position, n.id`,
       [req.companyId, uid, gestor]
@@ -397,9 +428,9 @@ router.get('/nodes/:id', ...view, async (req, res) => {
     const node = await getAccessibleNode(req, Number(req.params.id));
     const subtree = await query(
       `WITH RECURSIVE tree AS (
-         SELECT * FROM ${SCHEMA}.task_nodes WHERE parent_id=$1
+         SELECT * FROM ${SCHEMA}.task_nodes WHERE parent_id=$1 AND deleted_at IS NULL
          UNION ALL
-         SELECT c.* FROM ${SCHEMA}.task_nodes c JOIN tree t ON c.parent_id=t.id
+         SELECT c.* FROM ${SCHEMA}.task_nodes c JOIN tree t ON c.parent_id=t.id AND c.deleted_at IS NULL
        )
        SELECT n.id, n.parent_id, n.group_id, n.stage_id, n.kind, n.title, n.description, n.priority,
               n.due_date, n.status, n.assignee_id, n.client_id, n.contract_id,
@@ -447,7 +478,7 @@ async function notifyAssignment(companyId, node, title) {
   }).catch(() => {});
 }
 
-router.post('/nodes', ...manage, async (req, res) => {
+router.post('/nodes', ...base, async (req, res) => {
   try {
     const title = String(req.body?.title || '').trim();
     if (title.length < 2) err('Informe o título da tarefa');
@@ -484,6 +515,16 @@ router.post('/nodes', ...manage, async (req, res) => {
     // herdam is_template (fazem parte da definição, não são tarefas reais).
     const isTemplate = (recurrence !== 'none') || Boolean(parent && parent.is_template);
     const description = req.body?.description ? String(req.body.description).trim() || null : null;
+    // Gating granular: criar rotina (template recorrente de topo) exige tasks.routine.create;
+    // montar a subárvore de uma rotina aceita routine.create OU task.create; tarefa/subtarefa
+    // comum exige tasks.task.create.
+    if (!parentId && recurrence !== 'none') await ensurePerm(req, 'tasks.routine.create');
+    else if (parent && parent.is_template) await ensurePerm(req, 'tasks.routine.create', 'tasks.task.create');
+    else await ensurePerm(req, 'tasks.task.create');
+    // Atribuir/criar tarefa para OUTRO usuário exige tasks.task.assign (sem ela, só para si).
+    if (req.body?.assignee_id !== undefined && assigneeId && Number(assigneeId) !== Number(req.user.id)) {
+      await ensurePerm(req, 'tasks.task.assign');
+    }
     // Posição no fim da lista dentro do mesmo grupo/parent/etapa.
     const pos = await query(
       `SELECT COALESCE(MAX(position),-1)+1 AS p FROM ${SCHEMA}.task_nodes
@@ -521,7 +562,7 @@ router.put('/nodes/reorder', ...view, async (req, res) => {
     const st = await query(`SELECT 1 FROM ${SCHEMA}.task_stages WHERE id=$1 AND company_id=$2`, [stageId, req.companyId]);
     if (!st.rows[0]) err('Etapa inválida');
     if (!order.length) return res.json({ ok: true });
-    const own = await query(`SELECT id FROM ${SCHEMA}.task_nodes WHERE company_id=$1 AND stage_id=$2 AND parent_id IS NULL`, [req.companyId, stageId]);
+    const own = await query(`SELECT id FROM ${SCHEMA}.task_nodes WHERE company_id=$1 AND stage_id=$2 AND parent_id IS NULL AND deleted_at IS NULL`, [req.companyId, stageId]);
     const ownIds = new Set(own.rows.map((r) => r.id));
     await query('BEGIN');
     try {
@@ -537,13 +578,19 @@ router.put('/nodes/reorder', ...view, async (req, res) => {
   } catch (e) { respondError(res, e); }
 });
 
-router.put('/nodes/:id', ...manage, async (req, res) => {
+router.put('/nodes/:id', ...base, async (req, res) => {
   try {
     const node = await getAccessibleNode(req, Number(req.params.id));
+    // Editar rotina (template) exige tasks.routine.edit; tarefa/subtarefa comum, tasks.task.edit.
+    await ensurePerm(req, node.is_template ? 'tasks.routine.edit' : 'tasks.task.edit');
     const title = req.body?.title != null ? String(req.body.title).trim() : node.title;
     if (title.length < 2) err('Título inválido');
     const description = req.body?.description !== undefined ? (String(req.body.description || '').trim() || null) : node.description;
     const assigneeId = req.body?.assignee_id !== undefined ? optId(req.body.assignee_id) : node.assignee_id;
+    // Reatribuir para OUTRO usuário (diferente do responsável atual e de si mesmo) exige tasks.task.assign.
+    if (req.body?.assignee_id !== undefined && assigneeId && Number(assigneeId) !== Number(node.assignee_id) && Number(assigneeId) !== Number(req.user.id)) {
+      await ensurePerm(req, 'tasks.task.assign');
+    }
     const priority = req.body?.priority != null ? parsePriority(req.body.priority) : node.priority;
     const dueDate = req.body?.due_date !== undefined ? optDate(req.body.due_date) : node.due_date;
     // Recorrência só em tarefa de topo. Subitem mantém none e o is_template do pai.
@@ -590,10 +637,77 @@ router.put('/nodes/:id', ...manage, async (req, res) => {
   } catch (e) { respondError(res, e); }
 });
 
-router.delete('/nodes/:id', ...manage, async (req, res) => {
+// "Excluir" = INATIVAR (soft delete). A tarefa e toda a subárvore ficam inativas
+// (somem do quadro/minhas tarefas/calendário/produtividade), guardando quem e quando
+// para auditoria. O Gestor pode restaurar pela Lixeira. Excluir rotina exige
+// tasks.routine.delete; tarefa/subtarefa, tasks.task.delete.
+router.delete('/nodes/:id', ...base, async (req, res) => {
   try {
     const node = await getAccessibleNode(req, Number(req.params.id));
-    await query(`DELETE FROM ${SCHEMA}.task_nodes WHERE id=$1`, [node.id]); // subárvore via ON DELETE CASCADE
+    await ensurePerm(req, node.is_template ? 'tasks.routine.delete' : 'tasks.task.delete');
+    await query('BEGIN');
+    try {
+      // Marca o nó e todos os descendentes ainda ativos como excluídos (não sobrescreve
+      // quem já estava inativo antes, preservando a autoria original daquela exclusão).
+      await query(
+        `WITH RECURSIVE tree AS (
+           SELECT id FROM ${SCHEMA}.task_nodes WHERE id=$1
+           UNION ALL
+           SELECT c.id FROM ${SCHEMA}.task_nodes c JOIN tree t ON c.parent_id=t.id
+         )
+         UPDATE ${SCHEMA}.task_nodes
+            SET deleted_at=now(), deleted_by=$2, updated_at=now()
+          WHERE id IN (SELECT id FROM tree) AND deleted_at IS NULL`,
+        [node.id, req.user.id]
+      );
+      await query('COMMIT');
+    } catch (e) { await query('ROLLBACK').catch(() => {}); throw e; }
+    await logActivity(node.id, req.user.id, 'deleted', node.is_template ? 'rotina inativada' : 'tarefa inativada');
+    res.json({ ok: true });
+  } catch (e) { respondError(res, e); }
+});
+
+// Lixeira (Gestor): raízes de subárvores inativadas — o "topo" de cada exclusão
+// (nó excluído cujo pai não está excluído). Mostra quem/quando inativou.
+router.get('/trash', ...gestor, async (req, res) => {
+  try {
+    const r = await query(
+      `SELECT n.id, n.title, n.is_template, n.parent_id, n.deleted_at,
+              COALESCE(NULLIF(du.name,''), du.email) AS deleted_by_name,
+              (SELECT COUNT(*) FROM ${SCHEMA}.task_nodes c WHERE c.parent_id=n.id AND c.deleted_at IS NOT NULL)::int AS sub_count
+         FROM ${SCHEMA}.task_nodes n
+         LEFT JOIN ${SCHEMA}.users du ON du.id=n.deleted_by
+         LEFT JOIN ${SCHEMA}.task_nodes p ON p.id=n.parent_id
+        WHERE n.company_id=$1 AND n.deleted_at IS NOT NULL
+          AND (n.parent_id IS NULL OR p.deleted_at IS NULL)
+        ORDER BY n.deleted_at DESC, n.id DESC`,
+      [req.companyId]
+    );
+    res.json({ items: r.rows });
+  } catch (e) { respondError(res, e); }
+});
+
+// Restaurar (Gestor): reativa o nó e toda a subárvore inativada. Registra no histórico.
+router.post('/nodes/:id/restore', ...gestor, async (req, res) => {
+  try {
+    const node = await getNode(req.companyId, Number(req.params.id));
+    if (!node.deleted_at) err('Esta tarefa não está na lixeira', 409);
+    await query('BEGIN');
+    try {
+      await query(
+        `WITH RECURSIVE tree AS (
+           SELECT id FROM ${SCHEMA}.task_nodes WHERE id=$1
+           UNION ALL
+           SELECT c.id FROM ${SCHEMA}.task_nodes c JOIN tree t ON c.parent_id=t.id
+         )
+         UPDATE ${SCHEMA}.task_nodes
+            SET deleted_at=NULL, deleted_by=NULL, updated_at=now()
+          WHERE id IN (SELECT id FROM tree) AND deleted_at IS NOT NULL`,
+        [node.id]
+      );
+      await query('COMMIT');
+    } catch (e) { await query('ROLLBACK').catch(() => {}); throw e; }
+    await logActivity(node.id, req.user.id, 'restored', node.is_template ? 'rotina restaurada' : 'tarefa restaurada');
     res.json({ ok: true });
   } catch (e) { respondError(res, e); }
 });
@@ -661,9 +775,10 @@ router.patch('/nodes/:id/done', ...view, async (req, res) => {
 // Gera subtarefas em massa a partir de clientes/contratos, com o MESMO passo-a-passo
 // em cada uma (sub-subtarefas). Idempotente (pula alvos já existentes). Feito num
 // template recorrente, as ocorrências clonam tudo por período.
-router.post('/nodes/:id/expand', ...manage, async (req, res) => {
+router.post('/nodes/:id/expand', ...base, async (req, res) => {
   try {
     const parent = await getAccessibleNode(req, Number(req.params.id));
+    await ensurePerm(req, parent.is_template ? 'tasks.routine.create' : 'tasks.task.create', 'tasks.task.create');
     const clientIds = [...new Set((Array.isArray(req.body?.client_ids) ? req.body.client_ids : []).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
     const granularity = req.body?.granularity === 'contract' ? 'contract' : 'client';
     const steps = (Array.isArray(req.body?.steps) ? req.body.steps : []).map((s) => String(s || '').trim()).filter(Boolean);
@@ -686,7 +801,7 @@ router.post('/nodes/:id/expand', ...manage, async (req, res) => {
     }
 
     // Alvos já existentes sob este pai (por cliente sem contrato, ou por contrato).
-    const ex = await query(`SELECT client_id, contract_id FROM ${SCHEMA}.task_nodes WHERE parent_id=$1`, [parent.id]);
+    const ex = await query(`SELECT client_id, contract_id FROM ${SCHEMA}.task_nodes WHERE parent_id=$1 AND deleted_at IS NULL`, [parent.id]);
     const hasClient = new Set(ex.rows.filter((r) => r.contract_id == null && r.client_id != null).map((r) => r.client_id));
     const hasContract = new Set(ex.rows.filter((r) => r.contract_id != null).map((r) => r.contract_id));
 
@@ -726,7 +841,7 @@ router.get('/checklists', ...view, async (req, res) => {
   } catch (e) { respondError(res, e); }
 });
 
-router.post('/checklists', ...manage, async (req, res) => {
+router.post('/checklists', ...checklistManage, async (req, res) => {
   try {
     const name = String(req.body?.name || '').trim();
     if (name.length < 1) err('Informe o nome do checklist');
@@ -736,7 +851,7 @@ router.post('/checklists', ...manage, async (req, res) => {
   } catch (e) { respondError(res, e); }
 });
 
-router.put('/checklists/:id', ...manage, async (req, res) => {
+router.put('/checklists/:id', ...checklistManage, async (req, res) => {
   try {
     const id = Number(req.params.id);
     const cur = await query(`SELECT * FROM ${SCHEMA}.task_checklists WHERE id=$1 AND company_id=$2`, [id, req.companyId]);
@@ -751,7 +866,7 @@ router.put('/checklists/:id', ...manage, async (req, res) => {
   } catch (e) { respondError(res, e); }
 });
 
-router.delete('/checklists/:id', ...manage, async (req, res) => {
+router.delete('/checklists/:id', ...checklistManage, async (req, res) => {
   try {
     const id = Number(req.params.id);
     const cur = await query(`SELECT id FROM ${SCHEMA}.task_checklists WHERE id=$1 AND company_id=$2`, [id, req.companyId]);
@@ -763,14 +878,15 @@ router.delete('/checklists/:id', ...manage, async (req, res) => {
 
 // Aplica um checklist como subtarefas diretas do nó (idempotente por título). Herda
 // cliente/contrato/responsável do pai (útil p/ tarefa avulsa que segue um modelo).
-router.post('/nodes/:id/apply-checklist', ...manage, async (req, res) => {
+router.post('/nodes/:id/apply-checklist', ...base, async (req, res) => {
   try {
     const parent = await getAccessibleNode(req, Number(req.params.id));
+    await ensurePerm(req, parent.is_template ? 'tasks.routine.create' : 'tasks.task.create', 'tasks.task.create');
     const clId = Number(req.body?.checklist_id);
     const cl = await query(`SELECT steps FROM ${SCHEMA}.task_checklists WHERE id=$1 AND company_id=$2`, [clId, req.companyId]);
     if (!cl.rows[0]) err('Checklist não encontrado', 404);
     const steps = cl.rows[0].steps || [];
-    const ex = await query(`SELECT LOWER(title) AS t FROM ${SCHEMA}.task_nodes WHERE parent_id=$1`, [parent.id]);
+    const ex = await query(`SELECT LOWER(title) AS t FROM ${SCHEMA}.task_nodes WHERE parent_id=$1 AND deleted_at IS NULL`, [parent.id]);
     const has = new Set(ex.rows.map((r) => r.t));
     let created = 0;
     await query('BEGIN');
@@ -842,7 +958,7 @@ router.post('/nodes/:id/comments', ...view, async (req, res) => {
   } catch (e) { respondError(res, e); }
 });
 
-// Excluir comentário: o autor sempre pode; outros precisam de tasks.manage.
+// Excluir comentário: o autor sempre pode; outros precisam de tasks.task.edit.
 router.delete('/comments/:id', ...view, async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -856,7 +972,7 @@ router.delete('/comments/:id', ...view, async (req, res) => {
     const isAuthor = Number(c.rows[0].user_id) === Number(req.user.id);
     if (!isAuthor && req.user.role !== 'master') {
       const perms = await getEffectivePermissions(req.user, req.companyId);
-      if (!perms.includes('tasks.manage')) err('Sem permissão para excluir este comentário', 403);
+      if (!perms.includes('tasks.task.edit')) err('Sem permissão para excluir este comentário', 403);
     }
     await query(`DELETE FROM ${SCHEMA}.task_comments WHERE id=$1`, [id]);
     res.json({ ok: true });
@@ -871,7 +987,7 @@ router.get('/labels', ...view, async (req, res) => {
   } catch (e) { respondError(res, e); }
 });
 
-router.post('/labels', ...manage, async (req, res) => {
+router.post('/labels', ...labelCreate, async (req, res) => {
   try {
     const name = String(req.body?.name || '').trim();
     if (name.length < 1) err('Informe o nome da etiqueta');
@@ -881,7 +997,7 @@ router.post('/labels', ...manage, async (req, res) => {
   } catch (e) { respondError(res, e); }
 });
 
-router.put('/labels/:id', ...manage, async (req, res) => {
+router.put('/labels/:id', ...labelEdit, async (req, res) => {
   try {
     const id = Number(req.params.id);
     const cur = await query(`SELECT * FROM ${SCHEMA}.task_labels WHERE id=$1 AND company_id=$2`, [id, req.companyId]);
@@ -894,7 +1010,7 @@ router.put('/labels/:id', ...manage, async (req, res) => {
   } catch (e) { respondError(res, e); }
 });
 
-router.delete('/labels/:id', ...manage, async (req, res) => {
+router.delete('/labels/:id', ...labelDelete, async (req, res) => {
   try {
     const id = Number(req.params.id);
     const cur = await query(`SELECT id FROM ${SCHEMA}.task_labels WHERE id=$1 AND company_id=$2`, [id, req.companyId]);
@@ -924,10 +1040,10 @@ router.get('/templates', ...view, async (req, res) => {
     const r = await query(
       `WITH RECURSIVE ttree AS (
          SELECT r.id AS root_id, r.id, r.assignee_id, r.created_by
-           FROM ${SCHEMA}.task_nodes r WHERE r.company_id=$1 AND r.is_template=true AND r.recurrence<>'none' AND r.parent_id IS NULL
+           FROM ${SCHEMA}.task_nodes r WHERE r.company_id=$1 AND r.is_template=true AND r.recurrence<>'none' AND r.parent_id IS NULL AND r.deleted_at IS NULL
          UNION ALL
          SELECT t.root_id, c.id, c.assignee_id, c.created_by
-           FROM ${SCHEMA}.task_nodes c JOIN ttree t ON c.parent_id=t.id
+           FROM ${SCHEMA}.task_nodes c JOIN ttree t ON c.parent_id=t.id AND c.deleted_at IS NULL
        ),
        mn AS (
          SELECT DISTINCT cm.node_id FROM ${SCHEMA}.task_comments cm
@@ -939,12 +1055,12 @@ router.get('/templates', ...view, async (req, res) => {
        )
        SELECT n.id, n.title, n.description, n.priority, n.recurrence, n.recurrence_day, n.recurrence_month, n.recurrence_paused,
               n.group_id, g.name AS group_name, ${AUTHOR},
-              (SELECT COUNT(*) FROM ${SCHEMA}.task_nodes o WHERE o.source_node_id=n.id AND o.parent_id IS NULL)::int AS occurrences,
-              (SELECT MAX(o.due_date) FROM ${SCHEMA}.task_nodes o WHERE o.source_node_id=n.id AND o.parent_id IS NULL) AS last_due
+              (SELECT COUNT(*) FROM ${SCHEMA}.task_nodes o WHERE o.source_node_id=n.id AND o.parent_id IS NULL AND o.deleted_at IS NULL)::int AS occurrences,
+              (SELECT MAX(o.due_date) FROM ${SCHEMA}.task_nodes o WHERE o.source_node_id=n.id AND o.parent_id IS NULL AND o.deleted_at IS NULL) AS last_due
          FROM ${SCHEMA}.task_nodes n
          JOIN vis v ON v.root_id=n.id
          LEFT JOIN ${SCHEMA}.task_groups g ON g.id=n.group_id
-        WHERE n.company_id=$1 AND n.is_template=true AND n.recurrence<>'none' AND n.parent_id IS NULL
+        WHERE n.company_id=$1 AND n.is_template=true AND n.recurrence<>'none' AND n.parent_id IS NULL AND n.deleted_at IS NULL
           AND ($3::boolean OR v.ok)
         ORDER BY n.title`,
       [req.companyId, uid, gestor]
@@ -954,8 +1070,9 @@ router.get('/templates', ...view, async (req, res) => {
 });
 
 // Gera as ocorrências pendentes de todas as rotinas recorrentes (disparo manual).
-router.post('/generate', ...manage, async (req, res) => {
+router.post('/generate', ...base, async (req, res) => {
   try {
+    await ensurePerm(req, 'tasks.routine.create', 'tasks.routine.edit');
     const created = await generateOccurrences(req.companyId, new Date());
     res.json({ ok: true, created });
   } catch (e) { respondError(res, e); }
@@ -973,7 +1090,7 @@ router.get('/my', ...view, async (req, res) => {
               (n.due_date IS NOT NULL AND n.due_date > CURRENT_DATE AND n.due_date <= CURRENT_DATE + 7) AS soon
          FROM ${SCHEMA}.task_nodes n
          LEFT JOIN ${SCHEMA}.task_groups g ON g.id=n.group_id
-        WHERE n.company_id=$1 AND n.assignee_id=$2 AND n.status='open' AND n.is_template=false
+        WHERE n.company_id=$1 AND n.assignee_id=$2 AND n.status='open' AND n.is_template=false AND n.deleted_at IS NULL
         ORDER BY n.due_date NULLS LAST, n.id`,
       [req.companyId, req.user.id]
     );
@@ -1007,7 +1124,7 @@ router.get('/productivity', ...gestor, async (req, res) => {
                 FILTER (WHERE n.status='done' AND n.done_at IS NOT NULL) AS avg_days
          FROM ${SCHEMA}.task_nodes n
          JOIN ${SCHEMA}.users u ON u.id = n.assignee_id
-        WHERE n.company_id=$1 AND n.is_template=false
+        WHERE n.company_id=$1 AND n.is_template=false AND n.deleted_at IS NULL
         GROUP BY u.id, name
         ORDER BY done DESC, name`,
       [req.companyId]
@@ -1025,7 +1142,7 @@ router.get('/productivity', ...gestor, async (req, res) => {
               COUNT(*) FILTER (WHERE n.due_date IS NOT NULL AND n.done_at::date <= n.due_date)::int AS on_time,
               COUNT(*) FILTER (WHERE n.due_date IS NOT NULL AND n.done_at::date > n.due_date)::int AS late
          FROM ${SCHEMA}.task_nodes n
-        WHERE n.company_id=$1 AND n.is_template=false AND n.status='done' AND n.done_at >= (CURRENT_DATE - INTERVAL '12 weeks')
+        WHERE n.company_id=$1 AND n.is_template=false AND n.deleted_at IS NULL AND n.status='done' AND n.done_at >= (CURRENT_DATE - INTERVAL '12 weeks')
         GROUP BY 1 ORDER BY 1`,
       [req.companyId]
     );
@@ -1034,15 +1151,15 @@ router.get('/productivity', ...gestor, async (req, res) => {
       `SELECT COUNT(*) FILTER (WHERE status='open')::int AS open,
               COUNT(*) FILTER (WHERE status='done')::int AS done,
               COUNT(*) FILTER (WHERE status='open' AND due_date IS NOT NULL AND due_date < CURRENT_DATE)::int AS overdue
-         FROM ${SCHEMA}.task_nodes WHERE company_id=$1 AND is_template=false`,
+         FROM ${SCHEMA}.task_nodes WHERE company_id=$1 AND is_template=false AND deleted_at IS NULL`,
       [req.companyId]
     );
     res.json({ items, series: series.rows, distribution: dist.rows[0] || { open: 0, done: 0, overdue: 0 } });
   } catch (e) { respondError(res, e); }
 });
 
-// Usuários da empresa (para atribuir responsável). Requer gestão.
-router.get('/company-users', ...manage, async (req, res) => {
+// Usuários da empresa (para atribuir responsável). Requer poder atribuir a outros.
+router.get('/company-users', ...P('tasks.task.assign'), async (req, res) => {
   try {
     const r = await query(
       `SELECT u.id, COALESCE(NULLIF(u.name,''), u.email) AS name, u.email

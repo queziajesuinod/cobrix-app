@@ -63,8 +63,21 @@ const CATALOG = [
   ] },
   { module: 'tasks', label: 'Gerenciador de Tarefas', permissions: [
     { key: 'tasks.view', label: 'Acessar o quadro e minhas tarefas', type: 'view' },
-    { key: 'tasks.manage', label: 'Criar/editar rotinas, etapas e tarefas', type: 'action' },
-    { key: 'tasks.gestor', label: 'Gestor: visão global e painel de produtividade', type: 'action' },
+    { key: 'tasks.task.create', label: 'Tarefas: criar tarefa/subtarefa', type: 'action' },
+    { key: 'tasks.task.edit', label: 'Tarefas: editar tarefa/subtarefa', type: 'action' },
+    { key: 'tasks.task.delete', label: 'Tarefas: excluir (inativar) tarefa/subtarefa', type: 'action' },
+    { key: 'tasks.task.assign', label: 'Tarefas: atribuir/criar para outro usuário', type: 'action' },
+    { key: 'tasks.routine.create', label: 'Rotinas: criar', type: 'action' },
+    { key: 'tasks.routine.edit', label: 'Rotinas: editar', type: 'action' },
+    { key: 'tasks.routine.delete', label: 'Rotinas: excluir', type: 'action' },
+    { key: 'tasks.stage.create', label: 'Colunas: criar', type: 'action' },
+    { key: 'tasks.stage.edit', label: 'Colunas: editar/reordenar', type: 'action' },
+    { key: 'tasks.stage.delete', label: 'Colunas: excluir', type: 'action' },
+    { key: 'tasks.label.create', label: 'Etiquetas: criar', type: 'action' },
+    { key: 'tasks.label.edit', label: 'Etiquetas: editar', type: 'action' },
+    { key: 'tasks.label.delete', label: 'Etiquetas: excluir', type: 'action' },
+    { key: 'tasks.checklist.manage', label: 'Modelos de checklist: criar / excluir', type: 'action' },
+    { key: 'tasks.gestor', label: 'Gestor: visão global, produtividade e lixeira', type: 'action' },
   ] },
   { module: 'finance', label: 'Gerenciador Financeiro', permissions: [
     { key: 'finance.revenues.view', label: 'Receitas: acessar', type: 'view' },
@@ -79,6 +92,19 @@ const CATALOG = [
 
 const ALL_KEYS = CATALOG.flatMap((m) => m.permissions.map((p) => p.key));
 const ALL_KEYS_SET = new Set(ALL_KEYS);
+
+// Divisão do antigo `tasks.manage` (permissão única "faz tudo") nas chaves
+// granulares de ação. Usado na migração do seed: todo perfil/override que tinha
+// `tasks.manage` passa a ter estas chaves, preservando o acesso. `tasks.view` e
+// `tasks.gestor` não entram (sempre foram separados de `tasks.manage`).
+const LEGACY_TASKS_MANAGE = 'tasks.manage';
+const TASKS_MANAGE_SPLIT = [
+  'tasks.task.create', 'tasks.task.edit', 'tasks.task.delete', 'tasks.task.assign',
+  'tasks.routine.create', 'tasks.routine.edit', 'tasks.routine.delete',
+  'tasks.stage.create', 'tasks.stage.edit', 'tasks.stage.delete',
+  'tasks.label.create', 'tasks.label.edit', 'tasks.label.delete',
+  'tasks.checklist.manage',
+];
 
 function isValidPermission(key) {
   return ALL_KEYS_SET.has(key);
@@ -116,4 +142,4 @@ const SEED_PROFILES = [
   },
 ];
 
-module.exports = { CATALOG, ALL_KEYS, isValidPermission, SEED_PROFILES };
+module.exports = { CATALOG, ALL_KEYS, isValidPermission, SEED_PROFILES, LEGACY_TASKS_MANAGE, TASKS_MANAGE_SPLIT };

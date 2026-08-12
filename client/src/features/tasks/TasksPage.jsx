@@ -96,6 +96,8 @@ function describeActivity(a) {
     case 'edited': return { Icon: EditOutlinedIcon, color: 'text.secondary', text: 'Atualizou os dados' }
     case 'assigned': return { Icon: PersonOutlineIcon, color: 'info.main', text: 'Definiu o responsável' }
     case 'generated': return { Icon: AutorenewIcon, color: 'secondary.main', text: 'Gerou esta ocorrência', sub: detail }
+    case 'deleted': return { Icon: DeleteOutlineIcon, color: 'error.main', text: 'Excluiu (inativou)', sub: detail }
+    case 'restored': return { Icon: ReplayIcon, color: 'success.main', text: 'Restaurou da lixeira', sub: detail }
     default: return { Icon: HistoryIcon, color: 'text.secondary', text: detail || a.action }
   }
 }
@@ -295,7 +297,7 @@ function ColumnDialog({ initial, onClose, onSaved, notify }) {
   )
 }
 
-function TaskDialog({ stages, users, labels = [], onClose, onSaved, notify }) {
+function TaskDialog({ stages, users, labels = [], canAssign = false, canCreateRoutine = false, onClose, onSaved, notify }) {
   const [form, setForm] = React.useState({
     title: '', description: '', assignee_id: '', priority: 'media', due_date: '', stage_id: stages[0]?.id ? String(stages[0].id) : '',
     recurrence: 'none', recurrence_day: '10', recurrence_month: '1', client_id: null, contract_id: null, label_ids: [],
@@ -327,14 +329,18 @@ function TaskDialog({ stages, users, labels = [], onClose, onSaved, notify }) {
         <Stack spacing={2} sx={{ mt: 0.5 }}>
           <TextField label="Descrição da tarefa" value={form.title} onChange={set('title')} fullWidth autoFocus />
           <TextField label="Detalhes" value={form.description} onChange={set('description')} fullWidth multiline minRows={2} />
-          <TextField select label="Responsável" value={form.assignee_id} onChange={set('assignee_id')} fullWidth>
-            <MenuItem value=""><em>Sem responsável</em></MenuItem>
-            {users.map((u) => <MenuItem key={u.id} value={String(u.id)}>{u.name}</MenuItem>)}
-          </TextField>
+          {canAssign && (
+            <TextField select label="Responsável" value={form.assignee_id} onChange={set('assignee_id')} fullWidth>
+              <MenuItem value=""><em>Sem responsável (fica comigo)</em></MenuItem>
+              {users.map((u) => <MenuItem key={u.id} value={String(u.id)}>{u.name}</MenuItem>)}
+            </TextField>
+          )}
           <TextField select label="Prioridade" value={form.priority} onChange={set('priority')} fullWidth>
             {Object.entries(PRIORITY).map(([k, v]) => <MenuItem key={k} value={k}>{v.label}</MenuItem>)}
           </TextField>
-          <RecurrenceFields recurrence={form.recurrence} day={form.recurrence_day} month={form.recurrence_month} onChange={(patch) => setForm((f) => ({ ...f, ...patch }))} />
+          {canCreateRoutine && (
+            <RecurrenceFields recurrence={form.recurrence} day={form.recurrence_day} month={form.recurrence_month} onChange={(patch) => setForm((f) => ({ ...f, ...patch }))} />
+          )}
           {!recurring && (
             <TextField label="Prazo" type="date" value={form.due_date} onChange={set('due_date')} InputLabelProps={{ shrink: true }} fullWidth />
           )}
@@ -359,7 +365,7 @@ function TaskDialog({ stages, users, labels = [], onClose, onSaved, notify }) {
 }
 
 // Cartão arrastável (@dnd-kit useDraggable). Borda esquerda + chip pela prioridade.
-function TaskCard({ node, canManage, onOpen, onChanged, notify }) {
+function TaskCard({ node, perms, onOpen, onChanged, notify }) {
   const confirm = useConfirm()
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: `card-${node.id}`, data: { type: 'card', nodeId: node.id, fromStageId: node.stage_id },
@@ -377,7 +383,7 @@ function TaskCard({ node, canManage, onOpen, onChanged, notify }) {
   const handleDelete = async () => {
     const ok = await confirm({
       title: 'Excluir tarefa',
-      description: `Excluir "${node.title}"${node.sub_total > 0 ? ' e seus subitens' : ''}? Esta ação não pode ser desfeita.`,
+      description: `Excluir "${node.title}"${node.sub_total > 0 ? ' e seus subitens' : ''}? A tarefa fica inativa (sai do quadro) e pode ser restaurada pelo Gestor na Lixeira.`,
       confirmText: 'Excluir', tone: 'danger',
     })
     if (ok) del.mutate()
@@ -425,7 +431,7 @@ function TaskCard({ node, canManage, onOpen, onChanged, notify }) {
             )}
             <LabelChips labels={node.labels} sx={{ mt: 0.5 }} />
           </Box>
-          {canManage && (
+          {perms?.deleteTask && (
             <IconButton size="small" color="error" onClick={handleDelete} sx={{ p: 0.25 }}><DeleteOutlineIcon fontSize="small" /></IconButton>
           )}
         </Stack>
@@ -436,8 +442,9 @@ function TaskCard({ node, canManage, onOpen, onChanged, notify }) {
 
 // Casca visual da coluna (cabeçalho + cartões). O comportamento de arraste é injetado
 // pelos wrappers: BoardColumn (sortable) p/ colunas abertas, DoneColumn (droppable) p/ Concluído.
-function ColumnShell({ innerRef, style, isOver, stage, nodes, canManage, handleProps, onOpenNode, onRename, onDelete, onSortByPriority, onChanged, notify }) {
+function ColumnShell({ innerRef, style, isOver, stage, nodes, perms, handleProps, onOpenNode, onRename, onDelete, onSortByPriority, onChanged, notify }) {
   const [menuEl, setMenuEl] = React.useState(null)
+  const showMenu = perms?.editStage || perms?.deleteStage
   return (
     <Box
       ref={innerRef}
@@ -457,19 +464,25 @@ function ColumnShell({ innerRef, style, isOver, stage, nodes, canManage, handleP
         {stage.is_done && <CheckCircleIcon fontSize="small" sx={{ color: 'success.main' }} />}
         <Typography variant="subtitle2" sx={{ fontWeight: 700, flex: 1, minWidth: 0, color: stage.is_done ? 'success.main' : 'text.primary' }} noWrap>{stage.name}</Typography>
         <Chip size="small" label={nodes.length} sx={{ height: 20 }} />
-        {canManage && (
+        {showMenu && (
           <>
             <IconButton size="small" onClick={(e) => setMenuEl(e.currentTarget)} sx={{ p: 0.25 }}><MoreVertIcon fontSize="small" /></IconButton>
             <Menu anchorEl={menuEl} open={Boolean(menuEl)} onClose={() => setMenuEl(null)}>
-              <MenuItem onClick={() => { setMenuEl(null); onSortByPriority(stage) }}>
-                <SortIcon fontSize="small" sx={{ mr: 1 }} /> Ordenar por prioridade
-              </MenuItem>
-              <MenuItem onClick={() => { setMenuEl(null); onRename(stage) }}>
-                <EditOutlinedIcon fontSize="small" sx={{ mr: 1 }} /> Renomear
-              </MenuItem>
-              <MenuItem onClick={() => { setMenuEl(null); onDelete(stage) }} sx={{ color: 'error.main' }}>
-                <DeleteOutlineIcon fontSize="small" sx={{ mr: 1 }} /> Excluir
-              </MenuItem>
+              {perms?.editStage && (
+                <MenuItem onClick={() => { setMenuEl(null); onSortByPriority(stage) }}>
+                  <SortIcon fontSize="small" sx={{ mr: 1 }} /> Ordenar por prioridade
+                </MenuItem>
+              )}
+              {perms?.editStage && (
+                <MenuItem onClick={() => { setMenuEl(null); onRename(stage) }}>
+                  <EditOutlinedIcon fontSize="small" sx={{ mr: 1 }} /> Renomear
+                </MenuItem>
+              )}
+              {perms?.deleteStage && (
+                <MenuItem onClick={() => { setMenuEl(null); onDelete(stage) }} sx={{ color: 'error.main' }}>
+                  <DeleteOutlineIcon fontSize="small" sx={{ mr: 1 }} /> Excluir
+                </MenuItem>
+              )}
             </Menu>
           </>
         )}
@@ -479,7 +492,7 @@ function ColumnShell({ innerRef, style, isOver, stage, nodes, canManage, handleP
           {nodes.length === 0
             ? <Typography variant="caption" color="text.secondary" sx={{ display: 'block', textAlign: 'center', py: 2 }}>Solte tarefas aqui</Typography>
             : nodes.map((n) => (
-              <TaskCard key={n.id} node={n} canManage={canManage} onOpen={onOpenNode} onChanged={onChanged} notify={notify} />
+              <TaskCard key={n.id} node={n} perms={perms} onOpen={onOpenNode} onChanged={onChanged} notify={notify} />
             ))}
         </SortableContext>
       </Box>
@@ -489,11 +502,12 @@ function ColumnShell({ innerRef, style, isOver, stage, nodes, canManage, handleP
 
 // Coluna aberta: reordenável pelo handle (só gestor) e droppable p/ cartões.
 function BoardColumn(props) {
+  const canReorder = Boolean(props.perms?.editStage)
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: props.stage.id, data: { type: 'column' }, disabled: { draggable: !props.canManage, droppable: false },
+    id: props.stage.id, data: { type: 'column' }, disabled: { draggable: !canReorder, droppable: false },
   })
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }
-  return <ColumnShell innerRef={setNodeRef} style={style} handleProps={props.canManage ? { ...attributes, ...listeners } : null} {...props} />
+  return <ColumnShell innerRef={setNodeRef} style={style} handleProps={canReorder ? { ...attributes, ...listeners } : null} {...props} />
 }
 
 // Coluna "Concluído": fica sempre por último, não reordena — só recebe cartões (conclui).
@@ -505,7 +519,7 @@ function DoneColumn(props) {
 // Formulário reutilizável para criar/editar qualquer nó (tarefa ou subitem).
 // isMain = tarefa de topo (mostra Responsável + Cliente/Contrato). Subitens herdam
 // esses campos do pai — não são pedidos de novo.
-function NodeForm({ heading, initial, users, submitting, isMain, onClose, onSubmit }) {
+function NodeForm({ heading, initial, users, submitting, isMain, canAssign = false, onClose, onSubmit }) {
   const [form, setForm] = React.useState({
     title: initial?.title || '',
     description: initial?.description || '',
@@ -528,7 +542,7 @@ function NodeForm({ heading, initial, users, submitting, isMain, onClose, onSubm
         <Stack spacing={2} sx={{ mt: 0.5 }}>
           <TextField label="Descrição da tarefa" value={form.title} onChange={set('title')} fullWidth autoFocus />
           <TextField label="Detalhes" value={form.description} onChange={set('description')} fullWidth multiline minRows={2} />
-          {isMain && (
+          {isMain && canAssign && (
             <TextField select label="Responsável" value={form.assignee_id} onChange={set('assignee_id')} fullWidth>
               <MenuItem value=""><em>Sem responsável</em></MenuItem>
               {users.map((u) => <MenuItem key={u.id} value={String(u.id)}>{u.name}</MenuItem>)}
@@ -590,7 +604,7 @@ function NodeForm({ heading, initial, users, submitting, isMain, onClose, onSubm
 }
 
 // Item da árvore de subtarefas (recursivo, profundidade livre).
-function SubtreeItem({ node, childrenMap, users, depth, canManage, onChanged, notify }) {
+function SubtreeItem({ node, childrenMap, users, depth, perms, onChanged, notify }) {
   const confirm = useConfirm()
   const [adding, setAdding] = React.useState(false)
   const [editing, setEditing] = React.useState(false)
@@ -615,12 +629,14 @@ function SubtreeItem({ node, childrenMap, users, depth, canManage, onChanged, no
         <Chip size="small" label={p.label} color={p.color} variant="outlined" sx={{ height: 20 }} />
         {node.due_date && <Chip size="small" label={fmtDate(node.due_date)} variant="outlined" sx={{ height: 20 }} />}
         {node.assignee_name && <Typography variant="caption" color="text.secondary" sx={{ maxWidth: 120 }} noWrap>{node.assignee_name}</Typography>}
-        {canManage && (
-          <>
-            <Tooltip title="Adicionar subitem"><IconButton size="small" onClick={() => setAdding(true)} sx={{ p: 0.25 }}><SubdirectoryArrowRightIcon fontSize="small" /></IconButton></Tooltip>
-            <Tooltip title="Editar"><IconButton size="small" onClick={() => setEditing(true)} sx={{ p: 0.25 }}><EditOutlinedIcon fontSize="small" /></IconButton></Tooltip>
-            <Tooltip title="Excluir"><IconButton size="small" color="error" onClick={handleDelete} sx={{ p: 0.25 }}><DeleteOutlineIcon fontSize="small" /></IconButton></Tooltip>
-          </>
+        {perms?.createTask && (
+          <Tooltip title="Adicionar subitem"><IconButton size="small" onClick={() => setAdding(true)} sx={{ p: 0.25 }}><SubdirectoryArrowRightIcon fontSize="small" /></IconButton></Tooltip>
+        )}
+        {perms?.editTask && (
+          <Tooltip title="Editar"><IconButton size="small" onClick={() => setEditing(true)} sx={{ p: 0.25 }}><EditOutlinedIcon fontSize="small" /></IconButton></Tooltip>
+        )}
+        {perms?.deleteTask && (
+          <Tooltip title="Excluir"><IconButton size="small" color="error" onClick={handleDelete} sx={{ p: 0.25 }}><DeleteOutlineIcon fontSize="small" /></IconButton></Tooltip>
         )}
       </Stack>
       {(node.client_name || node.contract_description) && (
@@ -628,9 +644,9 @@ function SubtreeItem({ node, childrenMap, users, depth, canManage, onChanged, no
           🔗 {[node.client_name, node.contract_description].filter(Boolean).join(' · ')}
         </Typography>
       )}
-      {kids.map((k) => <SubtreeItem key={k.id} node={k} childrenMap={childrenMap} users={users} depth={depth + 1} canManage={canManage} onChanged={onChanged} notify={notify} />)}
-      {adding && <NodeForm heading="Novo subitem" initial={null} users={users} submitting={add.isPending} onClose={() => setAdding(false)} onSubmit={(payload) => add.mutate(payload)} />}
-      {editing && <NodeForm heading="Editar tarefa" initial={node} users={users} submitting={edit.isPending} onClose={() => setEditing(false)} onSubmit={(payload) => edit.mutate(payload)} />}
+      {kids.map((k) => <SubtreeItem key={k.id} node={k} childrenMap={childrenMap} users={users} depth={depth + 1} perms={perms} onChanged={onChanged} notify={notify} />)}
+      {adding && <NodeForm heading="Novo subitem" initial={null} users={users} submitting={add.isPending} canAssign={perms?.assign} onClose={() => setAdding(false)} onSubmit={(payload) => add.mutate(payload)} />}
+      {editing && <NodeForm heading="Editar tarefa" initial={node} users={users} submitting={edit.isPending} canAssign={perms?.assign} onClose={() => setEditing(false)} onSubmit={(payload) => edit.mutate(payload)} />}
     </Box>
   )
 }
@@ -847,7 +863,7 @@ function ExpandDialog({ nodeId, defaultSteps = [], onClose, onDone, notify }) {
 }
 
 // Detalhe da tarefa: cabeçalho editável + árvore de subitens + histórico.
-function TaskDetailDialog({ nodeId, users, stages, canManage, currentUserId, labels = [], focusCommentId, onClose, onChanged, notify }) {
+function TaskDetailDialog({ nodeId, users, stages, perms, currentUserId, labels = [], focusCommentId, onClose, onChanged, notify }) {
   const confirm = useConfirm()
   const q = useQuery({ queryKey: ['task-node', nodeId], queryFn: () => tasksService.node(nodeId) })
   const [editing, setEditing] = React.useState(false)
@@ -903,6 +919,9 @@ function TaskDetailDialog({ nodeId, users, stages, canManage, currentUserId, lab
   const nodeLabelIds = (node?.labels || []).map((l) => l.id)
   const toggleNodeLabel = (id) => setLabelsMut.mutate(nodeLabelIds.includes(id) ? nodeLabelIds.filter((x) => x !== id) : [...nodeLabelIds, id])
   const p = node ? (PRIORITY[node.priority] || PRIORITY.media) : PRIORITY.media
+  // Gate conforme o tipo do nó aberto (rotina/template vs tarefa comum).
+  const canEditThis = Boolean(node && (node.is_template ? perms?.editRoutine : perms?.editTask))
+  const canAddSub = Boolean(node && (perms?.createTask || (node.is_template && perms?.createRoutine)))
   return (
     <Dialog open onClose={onClose} maxWidth="md" fullWidth>
       {!node ? (
@@ -911,7 +930,7 @@ function TaskDetailDialog({ nodeId, users, stages, canManage, currentUserId, lab
         <>
           <DialogTitle sx={{ fontWeight: 700, pr: 6 }}>
             {node.title}
-            {canManage && (
+            {canEditThis && (
               <IconButton onClick={() => setEditing(true)} sx={{ position: 'absolute', right: 12, top: 12 }}><EditOutlinedIcon /></IconButton>
             )}
           </DialogTitle>
@@ -928,10 +947,10 @@ function TaskDetailDialog({ nodeId, users, stages, canManage, currentUserId, lab
               </Typography>
             )}
 
-            {(nodeLabelIds.length > 0 || (canManage && labels.length > 0)) && (
+            {(nodeLabelIds.length > 0 || labels.length > 0) && (
               <Box sx={{ mb: 1.5 }}>
                 <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>Etiquetas</Typography>
-                {canManage
+                {labels.length > 0
                   ? <LabelPicker labels={labels} selectedIds={nodeLabelIds} onToggle={toggleNodeLabel} />
                   : <LabelChips labels={node.labels} />}
               </Box>
@@ -943,7 +962,7 @@ function TaskDetailDialog({ nodeId, users, stages, canManage, currentUserId, lab
                 {node.description && <Typography variant="body2" color="text.secondary" sx={{ mb: 2, whiteSpace: 'pre-wrap' }}>{node.description}</Typography>}
                 <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 0.5 }}>
                   <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Subitens</Typography>
-                  {canManage && (
+                  {canAddSub && (
                     <Stack direction="row" spacing={0.5}>
                       <Button size="small" startIcon={<PlaylistAddIcon />} endIcon={<ArrowDropDownIcon />} onClick={(e) => setModelsMenuEl(e.currentTarget)}>Modelos</Button>
                       <Menu anchorEl={modelsMenuEl} open={Boolean(modelsMenuEl)} onClose={() => setModelsMenuEl(null)}>
@@ -955,8 +974,8 @@ function TaskDetailDialog({ nodeId, users, stages, canManage, currentUserId, lab
                   )}
                 </Stack>
                 {topKids.length === 0
-                  ? <Typography variant="caption" color="text.secondary">Nenhum subitem. {canManage ? 'Use “Adicionar” para quebrar a tarefa em passos.' : ''}</Typography>
-                  : topKids.map((k) => <SubtreeItem key={k.id} node={k} childrenMap={childrenMap} users={users} depth={0} canManage={canManage} onChanged={refreshAll} notify={notify} />)}
+                  ? <Typography variant="caption" color="text.secondary">Nenhum subitem. {canAddSub ? 'Use “Adicionar” para quebrar a tarefa em passos.' : ''}</Typography>
+                  : topKids.map((k) => <SubtreeItem key={k.id} node={k} childrenMap={childrenMap} users={users} depth={0} perms={perms} onChanged={refreshAll} notify={notify} />)}
 
                 {/* Comentários (discussão) */}
                 <Divider sx={{ my: 2 }} />
@@ -982,7 +1001,7 @@ function TaskDetailDialog({ nodeId, users, stages, canManage, currentUserId, lab
                             </Stack>
                           )}
                         </Box>
-                        {(canManage || c.user_id === currentUserId) && (
+                        {(perms?.editTask || c.user_id === currentUserId) && (
                           <Tooltip title="Excluir"><IconButton size="small" color="error" onClick={() => delCommentMut.mutate(c.id)} sx={{ p: 0.25 }}><DeleteOutlineIcon fontSize="small" /></IconButton></Tooltip>
                         )}
                       </Stack>
@@ -1030,8 +1049,8 @@ function TaskDetailDialog({ nodeId, users, stages, canManage, currentUserId, lab
           <DialogActions sx={{ px: 3, py: 2 }}>
             <Button onClick={onClose}>Fechar</Button>
           </DialogActions>
-          {editing && <NodeForm heading="Editar tarefa" initial={node} users={users} submitting={edit.isPending} isMain onClose={() => setEditing(false)} onSubmit={(payload) => edit.mutate(payload)} />}
-          {addingTop && <NodeForm heading="Novo subitem" initial={null} users={users} submitting={addTop.isPending} onClose={() => setAddingTop(false)} onSubmit={(payload) => addTop.mutate(payload)} />}
+          {editing && <NodeForm heading="Editar tarefa" initial={node} users={users} submitting={edit.isPending} isMain canAssign={perms?.assign} onClose={() => setEditing(false)} onSubmit={(payload) => edit.mutate(payload)} />}
+          {addingTop && <NodeForm heading="Novo subitem" initial={null} users={users} submitting={addTop.isPending} canAssign={perms?.assign} onClose={() => setAddingTop(false)} onSubmit={(payload) => addTop.mutate(payload)} />}
           {expanding && <ExpandDialog nodeId={nodeId} defaultSteps={defaultSteps} onClose={() => setExpanding(false)} onDone={refreshAll} notify={notify} />}
           {applying && <ApplyChecklistDialog nodeId={nodeId} onClose={() => setApplying(false)} onDone={refreshAll} notify={notify} />}
         </>
@@ -1042,10 +1061,13 @@ function TaskDetailDialog({ nodeId, users, stages, canManage, currentUserId, lab
 
 // Gerenciar rotinas recorrentes (templates ocultos do board). Abrir uma rotina
 // leva ao seu detalhe (para montar os subitens que serão clonados nas ocorrências).
-function RecurrencesDialog({ canManage, onOpen, onClose, notify, onChanged }) {
+function RecurrencesDialog({ perms, onOpen, onClose, notify, onChanged }) {
   const confirm = useConfirm()
   const q = useQuery({ queryKey: ['task-templates'], queryFn: () => tasksService.templates() })
   const items = q.data?.items || []
+  const canGenerate = Boolean(perms?.createRoutine || perms?.editRoutine)
+  const canEditRoutine = Boolean(perms?.editRoutine)
+  const canDeleteRoutine = Boolean(perms?.deleteRoutine)
   const del = useMutation({
     mutationFn: (id) => tasksService.deleteNode(id),
     onSuccess: () => { q.refetch(); onChanged() },
@@ -1069,7 +1091,7 @@ function RecurrencesDialog({ canManage, onOpen, onClose, notify, onChanged }) {
     <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
       <DialogTitle sx={{ fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         Rotinas recorrentes
-        {canManage && <Button size="small" startIcon={<AutorenewIcon />} onClick={() => gen.mutate()} disabled={gen.isPending}>Gerar agora</Button>}
+        {canGenerate && <Button size="small" startIcon={<AutorenewIcon />} onClick={() => gen.mutate()} disabled={gen.isPending}>Gerar agora</Button>}
       </DialogTitle>
       <DialogContent dividers>
         {items.length === 0 ? (
@@ -1088,14 +1110,14 @@ function RecurrencesDialog({ canManage, onOpen, onClose, notify, onChanged }) {
                   </Box>
                   {t.recurrence_paused && <Chip size="small" label="Pausada" color="warning" variant="outlined" sx={{ height: 20 }} />}
                   <Chip size="small" label={p.label} color={p.color} variant="outlined" sx={{ height: 20 }} />
-                  {canManage && (
+                  {canEditRoutine && (
                     <Tooltip title={t.recurrence_paused ? 'Retomar' : 'Pausar'}>
                       <IconButton size="small" onClick={() => pauseMut.mutate({ id: t.id, paused: !t.recurrence_paused })}>
                         {t.recurrence_paused ? <PlayCircleOutlineIcon fontSize="small" /> : <PauseCircleOutlineIcon fontSize="small" />}
                       </IconButton>
                     </Tooltip>
                   )}
-                  {canManage && <IconButton size="small" color="error" onClick={() => handleDelete(t)}><DeleteOutlineIcon fontSize="small" /></IconButton>}
+                  {canDeleteRoutine && <IconButton size="small" color="error" onClick={() => handleDelete(t)}><DeleteOutlineIcon fontSize="small" /></IconButton>}
                 </Stack>
               )
             })}
@@ -1191,7 +1213,7 @@ function CalDay({ dateKey, day, isToday, children }) {
 
 // Visão de calendário: tarefas posicionadas pela data de prazo, navegável por mês/ano.
 // Serve para acompanhar se as ocorrências recorrentes do próximo período foram criadas.
-function CalendarView({ nodes, realNodes, templates, onOpenNode, canManage, onReschedule }) {
+function CalendarView({ nodes, realNodes, templates, onOpenNode, canReschedule, onReschedule }) {
   const now = new Date()
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
   const onDragEnd = ({ active, over }) => {
@@ -1270,7 +1292,7 @@ function CalendarView({ nodes, realNodes, templates, onOpenNode, canManage, onRe
             const dayTasks = byDay.m.get(key) || []
             return (
               <CalDay key={key} dateKey={key} day={d} isToday={key === todayKey}>
-                {dayTasks.slice(0, 4).map((t) => <CalChip key={t.id} node={t} canManage={canManage} onOpen={onOpenNode} />)}
+                {dayTasks.slice(0, 4).map((t) => <CalChip key={t.id} node={t} canManage={canReschedule} onOpen={onOpenNode} />)}
                 {dayTasks.length > 4 && <Typography variant="caption" color="text.secondary" sx={{ pl: 0.5 }}>+{dayTasks.length - 4} mais</Typography>}
                 {(projByDay.get(key) || []).slice(0, 2).map((g, i) => (
                   <Tooltip key={`g${i}`} title={`Ocorrência prevista: ${g.title}`}>
@@ -1298,15 +1320,73 @@ function CalendarView({ nodes, realNodes, templates, onOpenNode, canManage, onRe
   )
 }
 
+// Lixeira (Gestor): tarefas e rotinas inativadas (soft delete). Mostra quem/quando
+// excluiu e permite restaurar (traz o nó e a subárvore de volta ao quadro).
+function TrashDialog({ onClose, notify, onChanged }) {
+  const q = useQuery({ queryKey: ['tasks-trash'], queryFn: () => tasksService.trash() })
+  const items = q.data?.items || []
+  const restore = useMutation({
+    mutationFn: (id) => tasksService.restoreNode(id),
+    onSuccess: () => { notify('Item restaurado.'); q.refetch(); onChanged() },
+    onError: (e) => notify(e?.response?.data?.error || 'Falha ao restaurar.', 'error'),
+  })
+  return (
+    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle sx={{ fontWeight: 700 }}>Lixeira</DialogTitle>
+      <DialogContent dividers>
+        {q.isLoading ? (
+          <Typography color="text.secondary">Carregando…</Typography>
+        ) : items.length === 0 ? (
+          <Typography variant="body2" color="text.secondary">Nenhuma tarefa ou rotina na lixeira.</Typography>
+        ) : (
+          <Stack divider={<Divider flexItem />} spacing={0}>
+            {items.map((t) => (
+              <Stack key={t.id} direction="row" alignItems="center" spacing={1} sx={{ py: 1 }}>
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap>
+                    {t.is_template ? '🔄 ' : ''}{t.title}{t.sub_count > 0 ? ` (+${t.sub_count} subitem${t.sub_count > 1 ? 's' : ''})` : ''}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block' }}>
+                    Excluída por {t.deleted_by_name || 'sistema'} · {fmtDateTime(t.deleted_at)}
+                  </Typography>
+                </Box>
+                <Button size="small" startIcon={<ReplayIcon fontSize="small" />} onClick={() => restore.mutate(t.id)} disabled={restore.isPending}>Restaurar</Button>
+              </Stack>
+            ))}
+          </Stack>
+        )}
+      </DialogContent>
+      <DialogActions sx={{ px: 3, py: 2 }}>
+        <Button onClick={onClose}>Fechar</Button>
+      </DialogActions>
+    </Dialog>
+  )
+}
+
 export default function TasksPage() {
   const { selectedCompanyId, user } = useAuth()
   const { can } = usePermissions()
   const qc = useQueryClient()
   const canView = can('tasks.view')
-  const canManage = can('tasks.manage')
+  // Permissões granulares do módulo (o antigo tasks.manage foi dividido).
+  const perms = React.useMemo(() => ({
+    createTask: can('tasks.task.create'),
+    editTask: can('tasks.task.edit'),
+    deleteTask: can('tasks.task.delete'),
+    assign: can('tasks.task.assign'),
+    createRoutine: can('tasks.routine.create'),
+    editRoutine: can('tasks.routine.edit'),
+    deleteRoutine: can('tasks.routine.delete'),
+    createStage: can('tasks.stage.create'),
+    editStage: can('tasks.stage.edit'),
+    deleteStage: can('tasks.stage.delete'),
+    manageLabels: can('tasks.label.create') || can('tasks.label.edit') || can('tasks.label.delete'),
+    manageChecklist: can('tasks.checklist.manage'),
+    gestor: can('tasks.gestor'),
+  }), [can])
   const enabled = Number.isInteger(selectedCompanyId)
   const [toast, setToast] = React.useState(null)
-  const [dialog, setDialog] = React.useState(null) // 'column' | 'task' | 'recurrences'
+  const [dialog, setDialog] = React.useState(null) // 'column' | 'task' | 'recurrences' | 'labels' | 'checklists' | 'trash'
   const [renameStage, setRenameStage] = React.useState(null)
   const [openNodeId, setOpenNodeId] = React.useState(null)
   const [focusCommentId, setFocusCommentId] = React.useState(null)
@@ -1331,7 +1411,7 @@ export default function TasksPage() {
   const boardKey = ['tasks-board', selectedCompanyId]
 
   const boardQ = useQuery({ queryKey: boardKey, queryFn: () => tasksService.board(), enabled: enabled && canView })
-  const usersQ = useQuery({ queryKey: ['tasks-users', selectedCompanyId], queryFn: () => tasksService.companyUsers(), enabled: enabled && canManage })
+  const usersQ = useQuery({ queryKey: ['tasks-users', selectedCompanyId], queryFn: () => tasksService.companyUsers(), enabled: enabled && perms.assign })
   const labelsQ = useQuery({ queryKey: ['tasks-labels', selectedCompanyId], queryFn: () => tasksService.labels(), enabled: enabled && canView })
   const templatesQ = useQuery({ queryKey: ['tasks-templates-cal', selectedCompanyId], queryFn: () => tasksService.templates(), enabled: enabled && canView })
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
@@ -1516,10 +1596,11 @@ export default function TasksPage() {
   const actions = (
     <Stack direction="row" spacing={1}>
       <Button variant="text" startIcon={<AutorenewIcon />} onClick={() => setDialog('recurrences')}>Recorrências</Button>
-      {canManage && <Button variant="text" startIcon={<ChecklistIcon />} onClick={() => setDialog('checklists')}>Checklists</Button>}
-      {canManage && <Button variant="text" startIcon={<LabelOutlinedIcon />} onClick={() => setDialog('labels')}>Etiquetas</Button>}
-      {canManage && <Button variant="outlined" startIcon={<AddIcon />} onClick={() => setDialog('column')}>Nova coluna</Button>}
-      {canManage && <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog('task')} disabled={!stages.length}>Nova tarefa</Button>}
+      {perms.gestor && <Button variant="text" color="error" startIcon={<DeleteOutlineIcon />} onClick={() => setDialog('trash')}>Lixeira</Button>}
+      {perms.manageChecklist && <Button variant="text" startIcon={<ChecklistIcon />} onClick={() => setDialog('checklists')}>Checklists</Button>}
+      {perms.manageLabels && <Button variant="text" startIcon={<LabelOutlinedIcon />} onClick={() => setDialog('labels')}>Etiquetas</Button>}
+      {perms.createStage && <Button variant="outlined" startIcon={<AddIcon />} onClick={() => setDialog('column')}>Nova coluna</Button>}
+      {(perms.createTask || perms.createRoutine) && <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog('task')} disabled={!stages.length}>Nova tarefa</Button>}
     </Stack>
   )
 
@@ -1565,12 +1646,12 @@ export default function TasksPage() {
 
       {boardQ.isError && <Alert severity="error">Falha ao carregar o quadro.</Alert>}
       {view === 'board' && !boardQ.isLoading && !stages.length && (
-        <Alert severity="info">Nenhuma coluna ainda. {canManage ? 'Crie uma coluna para começar.' : ''}</Alert>
+        <Alert severity="info">Nenhuma coluna ainda. {perms.createStage ? 'Crie uma coluna para começar.' : ''}</Alert>
       )}
 
       {view === 'calendar' && (
         <PapperBlock title="Calendário" subtitle="Tarefas pela data de prazo · filtre por mês/ano" icon={<CalendarMonthIcon />}>
-          <CalendarView nodes={filteredNodes} realNodes={nodes} templates={templates} onOpenNode={setOpenNodeId} canManage={canManage} onReschedule={(id, dueDate) => rescheduleMut.mutate({ id, dueDate })} />
+          <CalendarView nodes={filteredNodes} realNodes={nodes} templates={templates} onOpenNode={setOpenNodeId} canReschedule={perms.editTask} onReschedule={(id, dueDate) => rescheduleMut.mutate({ id, dueDate })} />
         </PapperBlock>
       )}
 
@@ -1582,7 +1663,7 @@ export default function TasksPage() {
               <SortableContext items={movableIds} strategy={horizontalListSortingStrategy}>
                 {movable.map((s) => (
                   <BoardColumn
-                    key={s.id} stage={s} nodes={colNodes(s.id)} canManage={canManage}
+                    key={s.id} stage={s} nodes={colNodes(s.id)} perms={perms}
                     onOpenNode={setOpenNodeId} onRename={setRenameStage} onDelete={handleDeleteStage} onSortByPriority={handleSortByPriority}
                     onChanged={refresh} notify={notify}
                   />
@@ -1590,7 +1671,7 @@ export default function TasksPage() {
               </SortableContext>
               {doneStages.map((s) => (
                 <DoneColumn
-                  key={s.id} stage={s} nodes={colNodes(s.id)} canManage={canManage}
+                  key={s.id} stage={s} nodes={colNodes(s.id)} perms={perms}
                   onOpenNode={setOpenNodeId} onRename={setRenameStage} onDelete={handleDeleteStage} onSortByPriority={handleSortByPriority}
                   onChanged={refresh} notify={notify}
                 />
@@ -1617,11 +1698,12 @@ export default function TasksPage() {
 
       {dialog === 'column' && <ColumnDialog onClose={() => setDialog(null)} onSaved={refresh} notify={notify} />}
       {renameStage && <ColumnDialog initial={renameStage} onClose={() => setRenameStage(null)} onSaved={refresh} notify={notify} />}
-      {dialog === 'task' && <TaskDialog stages={stages} users={usersQ.data?.items || []} labels={labels} onClose={() => setDialog(null)} onSaved={refresh} notify={notify} />}
+      {dialog === 'task' && <TaskDialog stages={stages} users={usersQ.data?.items || []} labels={labels} canAssign={perms.assign} canCreateRoutine={perms.createRoutine} onClose={() => setDialog(null)} onSaved={refresh} notify={notify} />}
       {dialog === 'labels' && <LabelsDialog onClose={() => setDialog(null)} notify={notify} onChanged={() => { qc.invalidateQueries({ queryKey: ['tasks-labels'] }); refresh() }} />}
       {dialog === 'checklists' && <ChecklistsDialog onClose={() => setDialog(null)} notify={notify} onChanged={() => qc.invalidateQueries({ queryKey: ['tasks-checklists'] })} />}
-      {dialog === 'recurrences' && <RecurrencesDialog canManage={canManage} onOpen={setOpenNodeId} onClose={() => setDialog(null)} notify={notify} onChanged={refresh} />}
-      {openNodeId && <TaskDetailDialog nodeId={openNodeId} users={usersQ.data?.items || []} stages={stages} canManage={canManage} currentUserId={user?.id} labels={labels} focusCommentId={focusCommentId} onClose={() => { setOpenNodeId(null); setFocusCommentId(null) }} onChanged={refresh} notify={notify} />}
+      {dialog === 'trash' && <TrashDialog onClose={() => setDialog(null)} notify={notify} onChanged={refresh} />}
+      {dialog === 'recurrences' && <RecurrencesDialog perms={perms} onOpen={setOpenNodeId} onClose={() => setDialog(null)} notify={notify} onChanged={refresh} />}
+      {openNodeId && <TaskDetailDialog nodeId={openNodeId} users={usersQ.data?.items || []} stages={stages} perms={perms} currentUserId={user?.id} labels={labels} focusCommentId={focusCommentId} onClose={() => { setOpenNodeId(null); setFocusCommentId(null) }} onChanged={refresh} notify={notify} />}
 
       {toast && (
         <Paper elevation={6} sx={{ position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)', zIndex: 1400 }}>

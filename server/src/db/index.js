@@ -630,6 +630,12 @@ async function initDb() {
     await c.query(`ALTER TABLE ${schema}.task_nodes DROP CONSTRAINT IF EXISTS task_nodes_recurrence_check;`);
     await c.query(`ALTER TABLE ${schema}.task_nodes ADD CONSTRAINT task_nodes_recurrence_check CHECK (recurrence IN ('none','weekly','biweekly','monthly','yearly'));`);
     await c.query(`ALTER TABLE ${schema}.task_nodes ADD COLUMN IF NOT EXISTS recurrence_paused BOOLEAN NOT NULL DEFAULT false;`);
+    // Exclusão lógica (soft delete) da tarefa/subtarefa: fica INATIVA (some do quadro,
+    // minhas tarefas, calendário e produtividade) mas guarda quem/quando "excluiu"
+    // para auditoria. O Gestor pode restaurar pela "Lixeira".
+    await c.query(`ALTER TABLE ${schema}.task_nodes ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;`);
+    await c.query(`ALTER TABLE ${schema}.task_nodes ADD COLUMN IF NOT EXISTS deleted_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL;`);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_task_nodes_deleted ON ${schema}.task_nodes (company_id, deleted_at);`);
     await c.query(`CREATE INDEX IF NOT EXISTS idx_task_nodes_group ON ${schema}.task_nodes (company_id, group_id);`);
     await c.query(`CREATE INDEX IF NOT EXISTS idx_task_nodes_parent ON ${schema}.task_nodes (parent_id);`);
     await c.query(`CREATE INDEX IF NOT EXISTS idx_task_nodes_assignee ON ${schema}.task_nodes (assignee_id, status);`);

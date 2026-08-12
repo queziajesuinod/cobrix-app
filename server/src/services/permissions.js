@@ -2,7 +2,7 @@
 // Motor de permissões: seed dos perfis-modelo, cálculo de permissões efetivas e
 // middlewares de autorização (requirePermission / masterOnly).
 const { query } = require('../db');
-const { ALL_KEYS, SEED_PROFILES, isValidPermission } = require('../config/permissions-catalog');
+const { ALL_KEYS, SEED_PROFILES, isValidPermission, LEGACY_TASKS_MANAGE, TASKS_MANAGE_SPLIT } = require('../config/permissions-catalog');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 
@@ -45,6 +45,13 @@ async function seedPermissions() {
     }
   }
 
+  // Migração: o antigo `tasks.manage` (permissão única do Gerenciador de Tarefas)
+  // foi dividido em chaves granulares. Todo perfil e todo override de usuário que
+  // concedia `tasks.manage` passa a conceder as novas chaves — assim ninguém perde
+  // acesso ao dividir a permissão. Idempotente (ON CONFLICT/existência) e só age
+  // enquanto houver linhas legadas de `tasks.manage`.
+  await migrateTasksManageSplit();
+
   // No primeiro boot, dá acesso total (perfil Administrador) aos usuários
   // existentes não-master — evita travar quem já usava o sistema.
   if (firstRun) {
@@ -53,6 +60,64 @@ async function seedPermissions() {
           SET profile_id = (SELECT id FROM ${SCHEMA}.profiles WHERE name = 'Administrador' LIMIT 1)
         WHERE profile_id IS NULL AND role <> 'master'`
     );
+  }
+}
+
+// Divide o antigo `tasks.manage` nas permissões granulares (ver comentário na
+// chamada). Copia o grant para cada perfil que tinha `tasks.manage` e para cada
+// override de usuário que o permitia (allowed=true). Não remove o `tasks.manage`
+// legado (fica inerte: sai do catálogo e é filtrado em getEffectivePermissions).
+async function migrateTasksManageSplit() {
+  // Perfis com tasks.manage → recebem as novas chaves.
+  const profs = await query(
+    `SELECT DISTINCT profile_id FROM ${SCHEMA}.profile_permissions WHERE permission_key = $1`,
+    [LEGACY_TASKS_MANAGE]
+  );
+  for (const p of profs.rows) {
+    for (const key of TASKS_MANAGE_SPLIT) {
+      await query(
+        `INSERT INTO ${SCHEMA}.profile_permissions (profile_id, permission_key)
+         VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+        [p.profile_id, key]
+      );
+    }
+  }
+  // Overrides de usuário que PERMITIAM tasks.manage → replica o allow para as novas
+  // chaves (só se ainda não houver override daquela chave, para não sobrescrever um
+  // revoke intencional que o master já tenha feito nas novas chaves).
+  const ovr = await query(
+    `SELECT user_id FROM ${SCHEMA}.user_permission_overrides WHERE permission_key = $1 AND allowed = true`,
+    [LEGACY_TASKS_MANAGE]
+  );
+  for (const o of ovr.rows) {
+    for (const key of TASKS_MANAGE_SPLIT) {
+      await query(
+        `INSERT INTO ${SCHEMA}.user_permission_overrides (user_id, permission_key, allowed)
+         VALUES ($1,$2,true) ON CONFLICT DO NOTHING`,
+        [o.user_id, key]
+      );
+    }
+  }
+  // Teto de plano: planos que liberavam tasks.manage passam a liberar as novas chaves
+  // (senão a interseção do teto zeraria o acesso, pois tasks.manage saiu do catálogo).
+  // Guardado por try/catch para não travar o boot caso a tabela plans não exista ainda.
+  try {
+    const plans = await query(
+      `SELECT id, permission_keys FROM ${SCHEMA}.plans WHERE $1 = ANY(permission_keys)`,
+      [LEGACY_TASKS_MANAGE]
+    );
+    for (const pl of plans.rows) {
+      const cur = new Set(Array.isArray(pl.permission_keys) ? pl.permission_keys : []);
+      const missing = TASKS_MANAGE_SPLIT.filter((k) => !cur.has(k));
+      if (missing.length) {
+        await query(
+          `UPDATE ${SCHEMA}.plans SET permission_keys = permission_keys || $2::text[], updated_at = now() WHERE id = $1`,
+          [pl.id, missing]
+        );
+      }
+    }
+  } catch (e) {
+    console.error('[permissions] migração de planos (tasks.manage) falhou:', e.message);
   }
 }
 

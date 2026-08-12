@@ -64,7 +64,7 @@ async function firstStageId(companyId) {
 // Clona recursivamente os subitens do template (srcParentId) sob newParentId, como
 // nós reais da ocorrência (is_template=false), mantendo source_node_id p/ rastreio.
 async function cloneChildren(srcParentId, newParentId, companyId, stageId) {
-  const kids = await query(`SELECT * FROM ${SCHEMA}.task_nodes WHERE parent_id=$1 ORDER BY position, id`, [srcParentId]);
+  const kids = await query(`SELECT * FROM ${SCHEMA}.task_nodes WHERE parent_id=$1 AND deleted_at IS NULL ORDER BY position, id`, [srcParentId]);
   for (const k of kids.rows) {
     const r = await query(
       `INSERT INTO ${SCHEMA}.task_nodes
@@ -111,7 +111,7 @@ async function ensureOccurrence(t, dueISO) {
 // prazo (não pré-gera várias). Idempotente por (source_node_id, due_date).
 async function generateOccurrences(companyId, now = new Date()) {
   const tps = await query(
-    `SELECT * FROM ${SCHEMA}.task_nodes WHERE company_id=$1 AND is_template=true AND recurrence<>'none' AND recurrence_paused=false`,
+    `SELECT * FROM ${SCHEMA}.task_nodes WHERE company_id=$1 AND is_template=true AND recurrence<>'none' AND recurrence_paused=false AND deleted_at IS NULL`,
     [companyId]
   );
   const today = formatISODate(now);
@@ -119,7 +119,7 @@ async function generateOccurrences(companyId, now = new Date()) {
   for (const t of tps.rows) {
     const last = await query(
       `SELECT due_date, status FROM ${SCHEMA}.task_nodes
-        WHERE source_node_id=$1 AND parent_id IS NULL ORDER BY due_date DESC NULLS LAST LIMIT 1`,
+        WHERE source_node_id=$1 AND parent_id IS NULL AND deleted_at IS NULL ORDER BY due_date DESC NULLS LAST LIMIT 1`,
       [t.id]
     );
     const latest = last.rows[0];
@@ -137,7 +137,7 @@ async function generateOccurrences(companyId, now = new Date()) {
 async function rollNextOccurrence(companyId, occ) {
   if (!occ || occ.parent_id != null || !occ.source_node_id) return 0;
   const tr = await query(
-    `SELECT * FROM ${SCHEMA}.task_nodes WHERE id=$1 AND company_id=$2 AND is_template=true AND recurrence<>'none' AND recurrence_paused=false`,
+    `SELECT * FROM ${SCHEMA}.task_nodes WHERE id=$1 AND company_id=$2 AND is_template=true AND recurrence<>'none' AND recurrence_paused=false AND deleted_at IS NULL`,
     [occ.source_node_id, companyId]
   );
   const t = tr.rows[0];
@@ -147,16 +147,22 @@ async function rollNextOccurrence(companyId, occ) {
   return ensureOccurrence(t, nextOccurrenceISO(t, dueISO));
 }
 
-// Avisos de prazo (cadência "essencial", 1 vez cada via dedup_key):
-//  faltam 3 dias · amanhã · vence hoje · ficou atrasada (1º dia de atraso).
-// Pessoal para o responsável; sem responsável, vai para a empresa. Só tarefas
-// abertas com prazo (não templates).
+// Avisos de prazo (1 aviso por fase, via dedup_key). Cadência robusta (à prova de
+// dia perdido pelo cron e de ocorrência que nasce já vencida — caso comum das
+// rotinas recorrentes, cujo prazo vem do dia de referência):
+//   • aproximando: ao ENTRAR na janela de 3 dias (diff entre 1 e 3) → 1 aviso;
+//   • vence hoje (diff = 0) → 1 aviso;
+//   • atrasada: em QUALQUER dia após o prazo (diff < 0) → 1 aviso.
+// Assim, uma tarefa recorrente dia 15 avisa ~3 dias antes e, se passar do 15,
+// avisa uma vez mesmo que o cron não tenha rodado exatamente no -1. Pessoal para o
+// responsável; sem responsável, vai para a empresa. Só tarefas abertas com prazo
+// (não templates).
 async function notifyDeadlines(now) {
   const today = formatISODate(now);
   const nodes = await query(
     `SELECT id, company_id, title, due_date, assignee_id
        FROM ${SCHEMA}.task_nodes
-      WHERE status='open' AND is_template=false AND due_date IS NOT NULL`
+      WHERE status='open' AND is_template=false AND due_date IS NOT NULL AND deleted_at IS NULL`
   );
   let created = 0;
   for (const n of nodes.rows) {
@@ -164,10 +170,9 @@ async function notifyDeadlines(now) {
     if (!dueISO) continue;
     const diff = daysBetween(today, dueISO); // >0 = faltam dias; 0 = hoje; <0 = atrasada
     let bucket = null; let title = null;
-    if (diff === 3) { bucket = 'd3'; title = `Tarefa vence em 3 dias: ${n.title}`; }
-    else if (diff === 1) { bucket = 'd1'; title = `Tarefa vence amanhã: ${n.title}`; }
+    if (diff < 0) { bucket = 'late'; title = `Tarefa atrasada: ${n.title}`; }
     else if (diff === 0) { bucket = 'd0'; title = `Tarefa vence hoje: ${n.title}`; }
-    else if (diff === -1) { bucket = 'late1'; title = `Tarefa atrasada: ${n.title}`; }
+    else if (diff <= 3) { bucket = 'soon'; title = `Tarefa vence em ${diff} dia${diff > 1 ? 's' : ''}: ${n.title}`; }
     if (!bucket) continue;
     const dateBr = dueISO.split('-').reverse().join('/');
     await createNotification({
@@ -183,7 +188,7 @@ async function notifyDeadlines(now) {
 
 // Gera ocorrências de TODAS as empresas que têm rotinas recorrentes.
 async function generateAllCompanies(now) {
-  const cos = await query(`SELECT DISTINCT company_id FROM ${SCHEMA}.task_nodes WHERE is_template=true AND recurrence<>'none'`);
+  const cos = await query(`SELECT DISTINCT company_id FROM ${SCHEMA}.task_nodes WHERE is_template=true AND recurrence<>'none' AND deleted_at IS NULL`);
   let total = 0;
   for (const c of cos.rows) {
     try { total += await generateOccurrences(c.company_id, now); }
