@@ -43,12 +43,15 @@ function UpgradeDialog({ open, currentPlanId, currentPeriod, currentAmount, onCl
 
   React.useEffect(() => { if (open) { setPeriod(currentPeriod || 'monthly'); setPlanId(null) } }, [open, currentPeriod])
 
-  const priceOf = (p) => period === 'annual' ? p.price_annual : p.price_monthly
+  // Valor por mês (o que o campo guarda) e valor efetivamente cobrado no ciclo
+  // (anual = 12x o mensal, pago 1x/ano).
+  const monthlyOf = (p) => period === 'annual' ? p.price_annual : p.price_monthly
+  const chargeOf = (p) => { const m = monthlyOf(p); return m == null ? null : (period === 'annual' ? Number(m) * 12 : Number(m)) }
 
   // Nota dinâmica sobre a cobrança conforme upgrade/downgrade/troca de período.
   const selected = plans.find((p) => p.id === planId)
   const samePeriod = period === (currentPeriod || 'monthly')
-  const selPrice = selected ? priceOf(selected) : null
+  const selPrice = selected ? chargeOf(selected) : null
   let chargeNote = null
   if (selected && selPrice != null) {
     if (!samePeriod) chargeNote = { severity: 'info', text: 'Troca de período: a cobrança atual é encerrada e uma nova, com o valor cheio do plano, é gerada agora.' }
@@ -71,8 +74,8 @@ function UpgradeDialog({ open, currentPlanId, currentPeriod, currentAmount, onCl
         ) : (
           <Grid container spacing={2}>
             {plans.map((p) => {
-              const price = priceOf(p)
-              const available = price != null
+              const monthly = monthlyOf(p)
+              const available = monthly != null
               const isCurrent = p.id === currentPlanId && period === currentPeriod
               const selected = planId === p.id
               return (
@@ -92,7 +95,12 @@ function UpgradeDialog({ open, currentPlanId, currentPeriod, currentAmount, onCl
                       {selected && <Chip size="small" color="primary" icon={<CheckIcon />} label="Escolhido" />}
                     </Stack>
                     {available ? (
-                      <Typography variant="h5" sx={{ fontWeight: 800 }}>{BRL(price)}<Typography component="span" variant="caption" color="text.secondary">/{period === 'annual' ? 'ano' : 'mês'}</Typography></Typography>
+                      <Box>
+                        <Typography variant="h5" sx={{ fontWeight: 800 }}>{BRL(monthly)}<Typography component="span" variant="caption" color="text.secondary">/mês</Typography></Typography>
+                        {period === 'annual' && (
+                          <Typography variant="caption" sx={{ fontWeight: 700, color: 'primary.main' }} display="block">cobrado {BRL(chargeOf(p))} 1×/ano</Typography>
+                        )}
+                      </Box>
                     ) : (
                       <Typography variant="body2" color="text.secondary">Indisponível no {period === 'annual' ? 'anual' : 'mensal'}</Typography>
                     )}

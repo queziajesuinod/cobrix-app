@@ -3,12 +3,15 @@ import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Alert, Autocomplete, Box, Button, Card, CardContent, Chip, ClickAwayListener, Dialog, DialogActions, DialogContent, DialogTitle,
-  Divider, FormControlLabel, Menu, MenuItem, MenuList, Paper, Popper, Stack, Switch, TextField, ToggleButton, ToggleButtonGroup,
+  Divider, FormControlLabel, LinearProgress, Link, Menu, MenuItem, MenuList, Paper, Popper, Stack, Switch, TextField, ToggleButton, ToggleButtonGroup,
   Tooltip, Typography, IconButton,
 } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked'
+import TaskAltIcon from '@mui/icons-material/TaskAlt'
+import SubjectIcon from '@mui/icons-material/Subject'
+import RepeatIcon from '@mui/icons-material/Repeat'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
 import ViewKanbanIcon from '@mui/icons-material/ViewKanban'
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined'
@@ -83,6 +86,38 @@ const fmtDateTime = (v) => {
   const p = (n) => String(n).padStart(2, '0')
   return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} às ${p(d.getHours())}:${p(d.getMinutes())}`
 }
+// Detecta URLs (http/https/www) e e-mails num texto plano. Pontuação final comum
+// (.,;:!?)]}"') é deixada FORA do link para não "sujar" o endereço.
+const LINK_RE = /((?:https?:\/\/|www\.)[^\s]+)|([\w.+-]+@[\w-]+\.[\w.-]+\w)/gi
+// Renderiza um texto preservando quebras de linha e transformando links/e-mails em
+// âncoras clicáveis (abrem em nova aba). stopPropagation evita disparar clique do cartão.
+function LinkedText({ text }) {
+  if (!text) return null
+  const parts = []
+  let last = 0
+  let m
+  LINK_RE.lastIndex = 0
+  while ((m = LINK_RE.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index))
+    let token = m[0]
+    let trailing = ''
+    if (m[1]) {
+      const tm = token.match(/[.,;:!?)\]}'"]+$/)
+      if (tm) { trailing = tm[0]; token = token.slice(0, -trailing.length) }
+      const href = /^https?:\/\//i.test(token) ? token : `https://${token}`
+      parts.push(
+        <Link key={m.index} href={href} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} sx={{ wordBreak: 'break-all' }}>{token}</Link>
+      )
+    } else {
+      parts.push(<Link key={m.index} href={`mailto:${token}`} onClick={(e) => e.stopPropagation()}>{token}</Link>)
+    }
+    if (trailing) parts.push(trailing)
+    last = m.index + m[0].length
+  }
+  if (last < text.length) parts.push(text.slice(last))
+  return <>{parts}</>
+}
+
 // Traduz o histórico (ação de sistema → frase amigável com ícone/cor).
 function describeActivity(a) {
   const detail = a.detail || ''
@@ -328,7 +363,7 @@ function TaskDialog({ stages, users, labels = [], canAssign = false, canCreateRo
       <DialogContent dividers>
         <Stack spacing={2} sx={{ mt: 0.5 }}>
           <TextField label="Descrição da tarefa" value={form.title} onChange={set('title')} fullWidth autoFocus />
-          <TextField label="Detalhes" value={form.description} onChange={set('description')} fullWidth multiline minRows={2} />
+          <TextField label="Detalhes" value={form.description} onChange={set('description')} fullWidth multiline minRows={2} helperText="Cole links (ex.: https://...) — eles ficam clicáveis ao visualizar." />
           {canAssign && (
             <TextField select label="Responsável" value={form.assignee_id} onChange={set('assignee_id')} fullWidth>
               <MenuItem value=""><em>Sem responsável (fica comigo)</em></MenuItem>
@@ -365,7 +400,7 @@ function TaskDialog({ stages, users, labels = [], canAssign = false, canCreateRo
 }
 
 // Cartão arrastável (@dnd-kit useDraggable). Borda esquerda + chip pela prioridade.
-function TaskCard({ node, perms, onOpen, onChanged, notify }) {
+function TaskCard({ node, perms, showProgress = false, onOpen, onChanged, notify }) {
   const confirm = useConfirm()
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: `card-${node.id}`, data: { type: 'card', nodeId: node.id, fromStageId: node.stage_id },
@@ -390,7 +425,12 @@ function TaskCard({ node, perms, onOpen, onChanged, notify }) {
   }
   const p = PRIORITY[node.priority] || PRIORITY.media
   const done = node.status === 'done'
+  const heading = Boolean(node.is_heading) // "só título": sem check de conclusão
   const di = dueInfo(node)
+  // Progresso pelos subitens checáveis (sub_total/sub_done já excluem os "só título").
+  // Vale inclusive p/ cartão "só título" — a barra mostra o andamento dos subitens dele.
+  const pct = node.sub_total > 0 ? Math.round((node.sub_done / node.sub_total) * 100) : 0
+  const showBar = showProgress && node.sub_total > 0
   const style = { transform: CSS.Transform.toString(transform), transition }
   return (
     <Card
@@ -407,23 +447,39 @@ function TaskCard({ node, perms, onOpen, onChanged, notify }) {
     >
       <CardContent sx={{ p: 1.25, '&:last-child': { pb: 1.25 } }}>
         <Stack direction="row" alignItems="flex-start" spacing={0.5}>
-          <Tooltip title={done ? 'Reabrir' : 'Concluir'}>
-            <IconButton size="small" color={done ? 'success' : 'default'} onClick={() => toggle.mutate()} sx={{ p: 0.25 }}>
-              {done ? <CheckCircleIcon fontSize="small" /> : <RadioButtonUncheckedIcon fontSize="small" />}
-            </IconButton>
-          </Tooltip>
+          {heading ? (
+            <Tooltip title="Só título (sem conclusão)"><SubjectIcon fontSize="small" sx={{ p: 0.25, color: 'text.disabled' }} /></Tooltip>
+          ) : (
+            <Tooltip title={done ? 'Reabrir' : 'Concluir'}>
+              <IconButton size="small" color={done ? 'success' : 'default'} onClick={() => toggle.mutate()} sx={{ p: 0.25 }}>
+                {done ? <CheckCircleIcon fontSize="small" /> : <RadioButtonUncheckedIcon fontSize="small" />}
+              </IconButton>
+            </Tooltip>
+          )}
           <Box sx={{ minWidth: 0, flex: 1 }}>
             <Typography
               variant="body2"
               onClick={() => onOpen?.(node.id)}
               sx={{ fontWeight: 600, textDecoration: done ? 'line-through' : 'none', cursor: 'pointer', '&:hover': { textDecoration: 'underline' } }}
-            >{node.title}</Typography>
+            >{node.source_node_id && <RepeatIcon sx={{ fontSize: 14, verticalAlign: 'text-bottom', mr: 0.25, color: 'info.main' }} />}{node.title}</Typography>
             <Stack direction="row" spacing={0.5} sx={{ mt: 0.5, flexWrap: 'wrap', gap: 0.5, alignItems: 'center' }}>
               <Chip size="small" label={p.label} color={p.color} sx={{ height: 20, fontWeight: 600 }} />
               {di && <Chip size="small" label={di.label} color={di.color} variant={di.variant} sx={{ height: 20, fontWeight: di.alert ? 700 : 400 }} />}
               {node.sub_total > 0 && <Chip size="small" label={`${node.sub_done}/${node.sub_total}`} variant="outlined" sx={{ height: 20 }} />}
               {node.assignee_name && <Typography variant="caption" color="text.secondary" noWrap>{node.assignee_name}</Typography>}
             </Stack>
+            {/* Barra de progresso (% dos subitens) — só nas colunas de trabalho
+                (Em andamento / dinâmicas), quando a tarefa tem subitens checáveis. */}
+            {showBar && (
+              <Stack direction="row" alignItems="center" spacing={0.75} sx={{ mt: 0.75 }}>
+                <LinearProgress
+                  variant="determinate" value={pct}
+                  color={pct === 100 ? 'success' : 'primary'}
+                  sx={{ flex: 1, height: 6, borderRadius: 3 }}
+                />
+                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, minWidth: 30, textAlign: 'right' }}>{pct}%</Typography>
+              </Stack>
+            )}
             {(node.client_name || node.contract_description) && (
               <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block', mt: 0.25 }}>
                 🔗 {[node.client_name, node.contract_description].filter(Boolean).join(' · ')}
@@ -442,7 +498,7 @@ function TaskCard({ node, perms, onOpen, onChanged, notify }) {
 
 // Casca visual da coluna (cabeçalho + cartões). O comportamento de arraste é injetado
 // pelos wrappers: BoardColumn (sortable) p/ colunas abertas, DoneColumn (droppable) p/ Concluído.
-function ColumnShell({ innerRef, style, isOver, stage, nodes, perms, handleProps, onOpenNode, onRename, onDelete, onSortByPriority, onChanged, notify }) {
+function ColumnShell({ innerRef, style, isOver, stage, nodes, perms, handleProps, showProgress = false, onOpenNode, onRename, onDelete, onSortByPriority, onChanged, notify }) {
   const [menuEl, setMenuEl] = React.useState(null)
   const showMenu = perms?.editStage || perms?.deleteStage
   return (
@@ -450,8 +506,14 @@ function ColumnShell({ innerRef, style, isOver, stage, nodes, perms, handleProps
       ref={innerRef}
       style={style}
       sx={{
-        flex: '0 0 300px', width: 300, display: 'flex', flexDirection: 'column',
-        bgcolor: 'action.hover', borderRadius: 2, maxHeight: '72vh',
+        // Colunas dividem a largura total do quadro (flex 1) e encolhem/crescem conforme
+        // a quantidade — sem rolagem horizontal. minWidth pequeno = piso de legibilidade.
+        flex: '1 1 0', minWidth: 180, display: 'flex', flexDirection: 'column',
+        // Cor sólida mais clara que o fundo do quadro + borda → coluna se destaca
+        // (contraste no modo escuro, onde antes tudo ficava escuro demais).
+        bgcolor: (theme) => (theme.palette.mode === 'dark' ? '#212a38' : '#ffffff'),
+        border: 1, borderColor: 'divider',
+        borderRadius: 2, maxHeight: '72vh',
         outline: isOver ? '2px dashed' : 'none', outlineColor: 'primary.main', outlineOffset: '-3px', transition: 'outline-color .12s',
       }}
     >
@@ -492,7 +554,7 @@ function ColumnShell({ innerRef, style, isOver, stage, nodes, perms, handleProps
           {nodes.length === 0
             ? <Typography variant="caption" color="text.secondary" sx={{ display: 'block', textAlign: 'center', py: 2 }}>Solte tarefas aqui</Typography>
             : nodes.map((n) => (
-              <TaskCard key={n.id} node={n} perms={perms} onOpen={onOpenNode} onChanged={onChanged} notify={notify} />
+              <TaskCard key={n.id} node={n} perms={perms} showProgress={showProgress} onOpen={onOpenNode} onChanged={onChanged} notify={notify} />
             ))}
         </SortableContext>
       </Box>
@@ -519,7 +581,9 @@ function DoneColumn(props) {
 // Formulário reutilizável para criar/editar qualquer nó (tarefa ou subitem).
 // isMain = tarefa de topo (mostra Responsável + Cliente/Contrato). Subitens herdam
 // esses campos do pai — não são pedidos de novo.
-function NodeForm({ heading, initial, users, submitting, isMain, canAssign = false, onClose, onSubmit }) {
+// parentLinked = o pai já tem cliente/contrato → o subitem herda: não pede nem exibe
+// o vínculo. Uma tarefa já vinculada tem o vínculo TRAVADO (só edita nome/detalhes).
+function NodeForm({ heading, initial, users, submitting, isMain, parentLinked = false, canAssign = false, onClose, onSubmit }) {
   const [form, setForm] = React.useState({
     title: initial?.title || '',
     description: initial?.description || '',
@@ -532,33 +596,77 @@ function NodeForm({ heading, initial, users, submitting, isMain, canAssign = fal
     recurrence_day: initial?.recurrence_day != null ? String(initial.recurrence_day) : '10',
     recurrence_month: initial?.recurrence_month != null ? String(initial.recurrence_month) : '1',
     recurrence_paused: Boolean(initial?.recurrence_paused),
+    is_heading: Boolean(initial?.is_heading),
   })
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }))
   const recurring = form.recurrence !== 'none'
+  // "Só título" (agrupador): sem check de conclusão, prazo, responsável ou recorrência.
+  // Serve só p/ organizar e vincular cliente/contrato; os subitens é que são checáveis.
+  const isTitleOnly = form.is_heading
+  // Ocorrência = instância materializada de uma rotina recorrente (source_node_id).
+  // Ela própria "não repete" (a repetição é da rotina) — não mostrar o dropdown de
+  // recorrência aqui evita a impressão de que "perdeu a recorrência".
+  const isOccurrence = Boolean(initial?.source_node_id)
+  // Vínculo travado: tarefa já criada com cliente/contrato não permite trocar o vínculo.
+  const linkLocked = Boolean(initial && (initial.client_id || initial.contract_id))
+  // Subitem sob pai vinculado herda tudo: não mostra nada de cliente/contrato.
+  const hideLink = parentLinked
+  const showLinkPicker = !hideLink && !linkLocked
+  const showLinkReadonly = !hideLink && linkLocked
   return (
     <Dialog open onClose={onClose} maxWidth="xs" fullWidth>
       <DialogTitle sx={{ fontWeight: 700 }}>{heading}</DialogTitle>
       <DialogContent dividers>
         <Stack spacing={2} sx={{ mt: 0.5 }}>
-          <TextField label="Descrição da tarefa" value={form.title} onChange={set('title')} fullWidth autoFocus />
-          <TextField label="Detalhes" value={form.description} onChange={set('description')} fullWidth multiline minRows={2} />
-          {isMain && canAssign && (
+          <TextField label={isTitleOnly ? 'Título' : 'Descrição da tarefa'} value={form.title} onChange={set('title')} fullWidth autoFocus />
+          <TextField label="Detalhes" value={form.description} onChange={set('description')} fullWidth multiline minRows={2} helperText="Cole links (ex.: https://...) — eles ficam clicáveis ao visualizar." />
+          {/* Tipo do nó: item com check de conclusão vs. apenas um título (agrupador). */}
+          <Box>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>Tipo</Typography>
+            <ToggleButtonGroup
+              size="small" exclusive value={form.is_heading ? 'heading' : 'task'}
+              onChange={(_e, v) => { if (v != null) setForm((f) => ({ ...f, is_heading: v === 'heading' })) }}
+            >
+              <ToggleButton value="task"><TaskAltIcon fontSize="small" sx={{ mr: 0.5 }} /> Com conclusão</ToggleButton>
+              <ToggleButton value="heading"><SubjectIcon fontSize="small" sx={{ mr: 0.5 }} /> Só título</ToggleButton>
+            </ToggleButtonGroup>
+            {isTitleOnly && <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>Sem marcação de concluído — serve para agrupar/vincular. Os subitens é que têm o check.</Typography>}
+          </Box>
+          {isMain && canAssign && !isTitleOnly && (
             <TextField select label="Responsável" value={form.assignee_id} onChange={set('assignee_id')} fullWidth>
               <MenuItem value=""><em>Sem responsável</em></MenuItem>
               {users.map((u) => <MenuItem key={u.id} value={String(u.id)}>{u.name}</MenuItem>)}
             </TextField>
           )}
-          <Stack direction="row" spacing={2}>
-            <TextField select label="Prioridade" value={form.priority} onChange={set('priority')} fullWidth>
-              {Object.entries(PRIORITY).map(([k, v]) => <MenuItem key={k} value={k}>{v.label}</MenuItem>)}
-            </TextField>
-            <TextField label="Prazo" type="date" value={form.due_date} onChange={set('due_date')} InputLabelProps={{ shrink: true }} fullWidth />
-          </Stack>
-          {/* Cliente/contrato disponível também no subitem: permite tarefa geral com
-              uma subtarefa por cliente. Em branco, o subitem herda o do pai. */}
-          <ClientContractPicker clientId={form.client_id} contractId={form.contract_id} clientName={initial?.client_name} onChange={(v) => setForm((f) => ({ ...f, ...v }))} />
-          {!isMain && <Typography variant="caption" color="text.secondary">Responsável é herdado da tarefa principal. Cliente/contrato em branco também herda.</Typography>}
-          {isMain && (
+          {!isTitleOnly && (
+            <Stack direction="row" spacing={2}>
+              <TextField select label="Prioridade" value={form.priority} onChange={set('priority')} fullWidth>
+                {Object.entries(PRIORITY).map(([k, v]) => <MenuItem key={k} value={k}>{v.label}</MenuItem>)}
+              </TextField>
+              <TextField label="Prazo" type="date" value={form.due_date} onChange={set('due_date')} InputLabelProps={{ shrink: true }} fullWidth />
+            </Stack>
+          )}
+          {/* Vínculo cliente/contrato:
+              - pai já vinculado (hideLink) → subitem herda; nem mostra.
+              - tarefa já vinculada (linkLocked) → só leitura, não pode trocar.
+              - senão → seletor (tarefa nova ou "tarefa geral" com 1 subtarefa por cliente). */}
+          {showLinkPicker && (
+            <ClientContractPicker clientId={form.client_id} contractId={form.contract_id} clientName={initial?.client_name} onChange={(v) => setForm((f) => ({ ...f, ...v }))} />
+          )}
+          {showLinkReadonly && (initial?.client_name || initial?.contract_description) && (
+            <Box>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>Cliente/contrato (não editável)</Typography>
+              <Typography variant="body2">🔗 {[initial?.client_name, initial?.contract_description].filter(Boolean).join(' · ')}</Typography>
+            </Box>
+          )}
+          {!isMain && (
+            <Typography variant="caption" color="text.secondary">
+              {hideLink
+                ? 'Responsável e vínculo (cliente/contrato) são herdados da tarefa principal.'
+                : 'Responsável é herdado da tarefa principal. Cliente/contrato em branco também herda.'}
+            </Typography>
+          )}
+          {isMain && !isTitleOnly && !isOccurrence && (
             <>
               <Divider textAlign="left"><Typography variant="caption" color="text.secondary">Recorrência</Typography></Divider>
               <RecurrenceFields recurrence={form.recurrence} day={form.recurrence_day} month={form.recurrence_month} onChange={(patch) => setForm((f) => ({ ...f, ...patch }))} />
@@ -581,21 +689,33 @@ function NodeForm({ heading, initial, users, submitting, isMain, canAssign = fal
             title: form.title.trim(),
             description: form.description.trim() || null,
             priority: form.priority,
-            // Tarefa recorrente é modelo (sem prazo próprio); as ocorrências carregam o prazo.
-            due_date: (isMain && recurring) ? null : (form.due_date || null),
-            // Tarefa de topo envia responsável + cliente/contrato (pode limpar) + recorrência.
-            // Subitem herda responsável do pai; envia cliente/contrato só se escolhido
-            // (em branco = herda o do pai).
-            ...(isMain
+            is_heading: form.is_heading,
+            // "Só título" não tem prazo próprio; rotina recorrente também (o prazo vive na
+            // ocorrência). A OCORRÊNCIA mantém o prazo do período.
+            due_date: (isTitleOnly || (isMain && !isOccurrence && recurring)) ? null : (form.due_date || null),
+            // Tarefa de topo (checável) envia responsável. Recorrência só quando NÃO é
+            // ocorrência (a ocorrência não repete; a repetição fica na rotina/modelo).
+            ...(isMain && !isTitleOnly
               ? {
                 assignee_id: form.assignee_id ? Number(form.assignee_id) : null,
-                client_id: form.client_id, contract_id: form.contract_id,
-                recurrence: form.recurrence,
-                recurrence_day: recurring ? Number(form.recurrence_day) : null,
-                recurrence_month: form.recurrence === 'yearly' ? Number(form.recurrence_month) : null,
-                recurrence_paused: recurring ? form.recurrence_paused : false,
+                ...(isOccurrence
+                  ? {}
+                  : {
+                    recurrence: form.recurrence,
+                    recurrence_day: recurring ? Number(form.recurrence_day) : null,
+                    recurrence_month: form.recurrence === 'yearly' ? Number(form.recurrence_month) : null,
+                    recurrence_paused: recurring ? form.recurrence_paused : false,
+                  }),
               }
-              : (form.client_id ? { client_id: form.client_id, contract_id: form.contract_id || null } : {})),
+              : {}),
+            // Vínculo só é enviado quando o seletor está visível. Travado (edição de
+            // tarefa já vinculada) ou herdado (subitem sob pai vinculado) → omitido: o
+            // backend mantém o existente / o subitem herda do pai.
+            ...(showLinkPicker
+              ? (isMain
+                ? { client_id: form.client_id, contract_id: form.contract_id }
+                : (form.client_id ? { client_id: form.client_id, contract_id: form.contract_id || null } : {}))
+              : {}),
           })}
         >Salvar</Button>
       </DialogActions>
@@ -604,12 +724,15 @@ function NodeForm({ heading, initial, users, submitting, isMain, canAssign = fal
 }
 
 // Item da árvore de subtarefas (recursivo, profundidade livre).
-function SubtreeItem({ node, childrenMap, users, depth, perms, onChanged, notify }) {
+// parentLinked = o pai deste nó já tem cliente/contrato → o vínculo é herdado e não
+// é exibido (evita repetir o vínculo do pai em cada subitem).
+function SubtreeItem({ node, childrenMap, users, depth, perms, parentLinked = false, onChanged, notify }) {
   const confirm = useConfirm()
   const [adding, setAdding] = React.useState(false)
   const [editing, setEditing] = React.useState(false)
   const kids = childrenMap.get(node.id) || []
   const done = node.status === 'done'
+  const heading = Boolean(node.is_heading) // "só título": sem check de conclusão
   const p = PRIORITY[node.priority] || PRIORITY.media
   const toggle = useMutation({ mutationFn: () => tasksService.toggleNode(node.id, !done), onSuccess: onChanged, onError: (e) => notify(e?.response?.data?.error || 'Falha ao atualizar.', 'error') })
   const del = useMutation({ mutationFn: () => tasksService.deleteNode(node.id), onSuccess: onChanged, onError: (e) => notify(e?.response?.data?.error || 'Falha ao excluir.', 'error') })
@@ -622,13 +745,17 @@ function SubtreeItem({ node, childrenMap, users, depth, perms, onChanged, notify
   return (
     <Box sx={{ ml: depth ? 2.5 : 0, borderLeft: depth ? 1 : 0, borderColor: 'divider', pl: depth ? 1 : 0 }}>
       <Stack direction="row" alignItems="center" spacing={0.5} sx={{ py: 0.5 }}>
-        <IconButton size="small" onClick={() => toggle.mutate()} sx={{ p: 0.25 }} color={done ? 'success' : 'default'}>
-          {done ? <CheckCircleIcon fontSize="small" /> : <RadioButtonUncheckedIcon fontSize="small" />}
-        </IconButton>
-        <Typography variant="body2" sx={{ flex: 1, minWidth: 0, textDecoration: done ? 'line-through' : 'none' }} noWrap>{node.title}</Typography>
-        <Chip size="small" label={p.label} color={p.color} variant="outlined" sx={{ height: 20 }} />
-        {node.due_date && <Chip size="small" label={fmtDate(node.due_date)} variant="outlined" sx={{ height: 20 }} />}
-        {node.assignee_name && <Typography variant="caption" color="text.secondary" sx={{ maxWidth: 120 }} noWrap>{node.assignee_name}</Typography>}
+        {heading ? (
+          <SubjectIcon fontSize="small" sx={{ p: 0.25, color: 'text.disabled' }} />
+        ) : (
+          <IconButton size="small" onClick={() => toggle.mutate()} sx={{ p: 0.25 }} color={done ? 'success' : 'default'}>
+            {done ? <CheckCircleIcon fontSize="small" /> : <RadioButtonUncheckedIcon fontSize="small" />}
+          </IconButton>
+        )}
+        <Typography variant="body2" sx={{ flex: 1, minWidth: 0, fontWeight: heading ? 700 : 400, textDecoration: done ? 'line-through' : 'none' }} noWrap>{node.title}</Typography>
+        {!heading && <Chip size="small" label={p.label} color={p.color} variant="outlined" sx={{ height: 20 }} />}
+        {!heading && node.due_date && <Chip size="small" label={fmtDate(node.due_date)} variant="outlined" sx={{ height: 20 }} />}
+        {!heading && node.assignee_name && <Typography variant="caption" color="text.secondary" sx={{ maxWidth: 120 }} noWrap>{node.assignee_name}</Typography>}
         {perms?.createTask && (
           <Tooltip title="Adicionar subitem"><IconButton size="small" onClick={() => setAdding(true)} sx={{ p: 0.25 }}><SubdirectoryArrowRightIcon fontSize="small" /></IconButton></Tooltip>
         )}
@@ -639,14 +766,21 @@ function SubtreeItem({ node, childrenMap, users, depth, perms, onChanged, notify
           <Tooltip title="Excluir"><IconButton size="small" color="error" onClick={handleDelete} sx={{ p: 0.25 }}><DeleteOutlineIcon fontSize="small" /></IconButton></Tooltip>
         )}
       </Stack>
-      {(node.client_name || node.contract_description) && (
+      {/* Detalhes do subitem (com links clicáveis), quando houver. */}
+      {node.description && (
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', ml: 3.5, mt: -0.25, mb: 0.25, whiteSpace: 'pre-wrap' }}>
+          <LinkedText text={node.description} />
+        </Typography>
+      )}
+      {/* Só exibe o vínculo do subitem quando o pai NÃO é vinculado (senão é herdado). */}
+      {!parentLinked && (node.client_name || node.contract_description) && (
         <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block', ml: 3.5, mt: -0.25, mb: 0.25 }}>
           🔗 {[node.client_name, node.contract_description].filter(Boolean).join(' · ')}
         </Typography>
       )}
-      {kids.map((k) => <SubtreeItem key={k.id} node={k} childrenMap={childrenMap} users={users} depth={depth + 1} perms={perms} onChanged={onChanged} notify={notify} />)}
-      {adding && <NodeForm heading="Novo subitem" initial={null} users={users} submitting={add.isPending} canAssign={perms?.assign} onClose={() => setAdding(false)} onSubmit={(payload) => add.mutate(payload)} />}
-      {editing && <NodeForm heading="Editar tarefa" initial={node} users={users} submitting={edit.isPending} canAssign={perms?.assign} onClose={() => setEditing(false)} onSubmit={(payload) => edit.mutate(payload)} />}
+      {kids.map((k) => <SubtreeItem key={k.id} node={k} childrenMap={childrenMap} users={users} depth={depth + 1} perms={perms} parentLinked={Boolean(node.client_id || node.contract_id)} onChanged={onChanged} notify={notify} />)}
+      {adding && <NodeForm heading="Novo subitem" initial={null} users={users} submitting={add.isPending} parentLinked={Boolean(node.client_id || node.contract_id)} canAssign={perms?.assign} onClose={() => setAdding(false)} onSubmit={(payload) => add.mutate(payload)} />}
+      {editing && <NodeForm heading="Editar tarefa" initial={node} users={users} submitting={edit.isPending} parentLinked={parentLinked} canAssign={perms?.assign} onClose={() => setEditing(false)} onSubmit={(payload) => edit.mutate(payload)} />}
     </Box>
   )
 }
@@ -886,11 +1020,23 @@ function TaskDetailDialog({ nodeId, users, stages, perms, currentUserId, labels 
   const topKids = childrenMap.get(nodeId) || []
   // Passos padrão para "Gerar por clientes" = os passos do 1º subitem existente.
   const defaultSteps = topKids[0] ? (childrenMap.get(topKids[0].id) || []).map((k) => k.title) : []
-  const allSubDone = topKids.length > 0 && topKids.every((k) => k.status === 'done')
+  // Auto-conclusão considera só itens checáveis da subárvore (ignora os "só título",
+  // que não têm marcação de concluído — o trabalho real está nos subitens deles).
+  const checkableDesc = React.useMemo(() => {
+    const out = []
+    const walk = (pid) => { for (const c of (childrenMap.get(pid) || [])) { if (!c.is_heading) out.push(c); walk(c.id) } }
+    walk(nodeId)
+    return out
+  }, [childrenMap, nodeId])
+  const allSubDone = checkableDesc.length > 0 && checkableDesc.every((k) => k.status === 'done')
+  // Progresso agregado (todos os itens checáveis da subárvore, em qualquer profundidade).
+  const doneCount = checkableDesc.filter((k) => k.status === 'done').length
+  const progressPct = checkableDesc.length ? Math.round((doneCount / checkableDesc.length) * 100) : 0
   // Todas as subtarefas concluídas → oferece CONCLUIR a tarefa (move p/ "Concluído" e,
   // se for recorrente, materializa a próxima ocorrência no backend).
   React.useEffect(() => {
     if (!node) return
+    if (node.is_heading) return // "só título" não tem conclusão
     if (!allSubDone) { promptedRef.current = false; return }
     if (promptedRef.current || node.status === 'done') return
     promptedRef.current = true
@@ -923,7 +1069,7 @@ function TaskDetailDialog({ nodeId, users, stages, perms, currentUserId, labels 
   const canEditThis = Boolean(node && (node.is_template ? perms?.editRoutine : perms?.editTask))
   const canAddSub = Boolean(node && (perms?.createTask || (node.is_template && perms?.createRoutine)))
   return (
-    <Dialog open onClose={onClose} maxWidth="md" fullWidth>
+    <Dialog open onClose={onClose} maxWidth="lg" fullWidth PaperProps={{ sx: { width: '100%', maxWidth: 1120 } }}>
       {!node ? (
         <DialogContent><Typography color="text.secondary">Carregando…</Typography></DialogContent>
       ) : (
@@ -938,9 +1084,19 @@ function TaskDetailDialog({ nodeId, users, stages, perms, currentUserId, labels 
             <Stack direction="row" spacing={1} sx={{ mb: 1.5, flexWrap: 'wrap', gap: 0.5, alignItems: 'center' }}>
               <Chip size="small" label={p.label} color={p.color} variant="outlined" />
               {node.due_date && <Chip size="small" label={`Prazo ${fmtDate(node.due_date)}`} variant="outlined" />}
-              <Chip size="small" label={node.status === 'done' ? 'Concluída' : 'Aberta'} color={node.status === 'done' ? 'success' : 'default'} variant="outlined" />
+              {node.is_heading
+                ? <Chip size="small" icon={<SubjectIcon sx={{ fontSize: 15 }} />} label="Só título" variant="outlined" />
+                : <Chip size="small" label={node.status === 'done' ? 'Concluída' : 'Aberta'} color={node.status === 'done' ? 'success' : 'default'} variant="outlined" />}
+              {node.source_node_id && <Tooltip title="Ocorrência de uma rotina recorrente — a repetição é controlada na rotina"><Chip size="small" icon={<RepeatIcon sx={{ fontSize: 15 }} />} label="Recorrente" variant="outlined" color="info" /></Tooltip>}
               {node.assignee_name && <Typography variant="caption" color="text.secondary">👤 {node.assignee_name}</Typography>}
             </Stack>
+            {/* Progresso agregado dos itens checáveis (conta sub-subitens sob títulos). */}
+            {checkableDesc.length > 0 && (
+              <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.5, maxWidth: 360 }}>
+                <LinearProgress variant="determinate" value={progressPct} color={progressPct === 100 ? 'success' : 'primary'} sx={{ flex: 1, height: 7, borderRadius: 4 }} />
+                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}>{doneCount}/{checkableDesc.length} · {progressPct}%</Typography>
+              </Stack>
+            )}
             {(node.client_name || node.contract_description) && (
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1.5 }}>
                 🔗 {[node.client_name, node.contract_description].filter(Boolean).join(' · ')}
@@ -959,7 +1115,7 @@ function TaskDetailDialog({ nodeId, users, stages, perms, currentUserId, labels 
             <Box sx={{ display: 'flex', flexDirection: { xs: 'column', md: 'row' }, gap: 2, alignItems: 'stretch' }}>
               {/* Conteúdo principal */}
               <Box sx={{ flex: 1, minWidth: 0 }}>
-                {node.description && <Typography variant="body2" color="text.secondary" sx={{ mb: 2, whiteSpace: 'pre-wrap' }}>{node.description}</Typography>}
+                {node.description && <Typography variant="body2" color="text.secondary" sx={{ mb: 2, whiteSpace: 'pre-wrap' }}><LinkedText text={node.description} /></Typography>}
                 <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 0.5 }}>
                   <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Subitens</Typography>
                   {canAddSub && (
@@ -975,7 +1131,7 @@ function TaskDetailDialog({ nodeId, users, stages, perms, currentUserId, labels 
                 </Stack>
                 {topKids.length === 0
                   ? <Typography variant="caption" color="text.secondary">Nenhum subitem. {canAddSub ? 'Use “Adicionar” para quebrar a tarefa em passos.' : ''}</Typography>
-                  : topKids.map((k) => <SubtreeItem key={k.id} node={k} childrenMap={childrenMap} users={users} depth={0} perms={perms} onChanged={refreshAll} notify={notify} />)}
+                  : topKids.map((k) => <SubtreeItem key={k.id} node={k} childrenMap={childrenMap} users={users} depth={0} perms={perms} parentLinked={Boolean(node.client_id || node.contract_id)} onChanged={refreshAll} notify={notify} />)}
 
                 {/* Comentários (discussão) */}
                 <Divider sx={{ my: 2 }} />
@@ -994,7 +1150,7 @@ function TaskDetailDialog({ nodeId, users, stages, perms, currentUserId, labels 
                         </Box>
                         <Box sx={{ minWidth: 0, flex: 1 }}>
                           <Typography variant="caption" color="text.secondary"><b>{c.user_name || 'Usuário'}</b> · {fmtDateTime(c.created_at)}</Typography>
-                          <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>{c.body}</Typography>
+                          <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}><LinkedText text={c.body} /></Typography>
                           {c.mentions?.length > 0 && (
                             <Stack direction="row" spacing={0.5} sx={{ flexWrap: 'wrap', gap: 0.5, mt: 0.5 }}>
                               {c.mentions.map((m) => <Chip key={m.user_id} size="small" icon={<AlternateEmailIcon sx={{ fontSize: 13 }} />} label={m.name} variant="outlined" color="primary" sx={{ height: 20 }} />)}
@@ -1050,7 +1206,7 @@ function TaskDetailDialog({ nodeId, users, stages, perms, currentUserId, labels 
             <Button onClick={onClose}>Fechar</Button>
           </DialogActions>
           {editing && <NodeForm heading="Editar tarefa" initial={node} users={users} submitting={edit.isPending} isMain canAssign={perms?.assign} onClose={() => setEditing(false)} onSubmit={(payload) => edit.mutate(payload)} />}
-          {addingTop && <NodeForm heading="Novo subitem" initial={null} users={users} submitting={addTop.isPending} canAssign={perms?.assign} onClose={() => setAddingTop(false)} onSubmit={(payload) => addTop.mutate(payload)} />}
+          {addingTop && <NodeForm heading="Novo subitem" initial={null} users={users} submitting={addTop.isPending} parentLinked={Boolean(node.client_id || node.contract_id)} canAssign={perms?.assign} onClose={() => setAddingTop(false)} onSubmit={(payload) => addTop.mutate(payload)} />}
           {expanding && <ExpandDialog nodeId={nodeId} defaultSteps={defaultSteps} onClose={() => setExpanding(false)} onDone={refreshAll} notify={notify} />}
           {applying && <ApplyChecklistDialog nodeId={nodeId} onClose={() => setApplying(false)} onDone={refreshAll} notify={notify} />}
         </>
@@ -1187,7 +1343,7 @@ function CalChip({ node, canManage, onOpen }) {
         }}
       >
         <Typography variant="caption" noWrap sx={{ display: 'block', textDecoration: done ? 'line-through' : 'none' }}>
-          {node.source_node_id ? '🔄 ' : ''}{node.title}
+          {node.source_node_id && <RepeatIcon sx={{ fontSize: 12, verticalAlign: 'text-bottom', mr: 0.25 }} />}{node.title}
         </Typography>
       </Box>
     </Tooltip>
@@ -1297,7 +1453,7 @@ function CalendarView({ nodes, realNodes, templates, onOpenNode, canReschedule, 
                 {(projByDay.get(key) || []).slice(0, 2).map((g, i) => (
                   <Tooltip key={`g${i}`} title={`Ocorrência prevista: ${g.title}`}>
                     <Box onClick={() => onOpenNode(g.id)} sx={{ border: '1px dashed', borderColor: 'divider', borderRadius: 0.5, px: 0.5, py: 0.25, cursor: 'pointer', '&:hover': { bgcolor: 'action.hover' } }}>
-                      <Typography variant="caption" noWrap sx={{ display: 'block', color: 'text.disabled', fontStyle: 'italic' }}>🔄 {g.title}</Typography>
+                      <Typography variant="caption" noWrap sx={{ display: 'block', color: 'text.disabled', fontStyle: 'italic' }}><RepeatIcon sx={{ fontSize: 12, verticalAlign: 'text-bottom', mr: 0.25 }} />{g.title}</Typography>
                     </Box>
                   </Tooltip>
                 ))}
@@ -1308,7 +1464,7 @@ function CalendarView({ nodes, realNodes, templates, onOpenNode, canReschedule, 
       </DndContext>
 
       <Stack direction="row" spacing={2} sx={{ mt: 1.5, flexWrap: 'wrap' }}>
-        <Typography variant="caption" color="text.secondary">🔄 = recorrente · 🔄 <i>itálico cinza</i> = prevista (ainda não criada)</Typography>
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.25 }}><RepeatIcon sx={{ fontSize: 13 }} /> = recorrente · <RepeatIcon sx={{ fontSize: 13 }} /> <i>itálico cinza</i> = prevista (ainda não criada)</Typography>
         {Object.entries(PRIORITY).map(([k, v]) => (
           <Stack key={k} direction="row" spacing={0.5} alignItems="center">
             <Box sx={{ width: 10, height: 10, borderRadius: 0.5, bgcolor: v.bar }} />
@@ -1344,7 +1500,7 @@ function TrashDialog({ onClose, notify, onChanged }) {
               <Stack key={t.id} direction="row" alignItems="center" spacing={1} sx={{ py: 1 }}>
                 <Box sx={{ flex: 1, minWidth: 0 }}>
                   <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap>
-                    {t.is_template ? '🔄 ' : ''}{t.title}{t.sub_count > 0 ? ` (+${t.sub_count} subitem${t.sub_count > 1 ? 's' : ''})` : ''}
+                    {t.is_template && <RepeatIcon sx={{ fontSize: 14, verticalAlign: 'text-bottom', mr: 0.25, color: 'info.main' }} />}{t.title}{t.sub_count > 0 ? ` (+${t.sub_count} subitem${t.sub_count > 1 ? 's' : ''})` : ''}
                   </Typography>
                   <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block' }}>
                     Excluída por {t.deleted_by_name || 'sistema'} · {fmtDateTime(t.deleted_at)}
@@ -1529,6 +1685,9 @@ export default function TasksPage() {
   const movable = stages.filter((s) => !s.is_done)
   const doneStages = stages.filter((s) => s.is_done)
   const movableIds = movable.map((s) => s.id)
+  // % de progresso nos cartões só nas colunas "de trabalho": abertas que NÃO são a
+  // primeira ("A fazer") — ou seja, "Em andamento" + as colunas dinâmicas (rotinas).
+  const firstOpenStageId = movable[0]?.id
 
   // Filtros (busca/responsável/prioridade/atrasadas/minhas) — aplicados ao quadro e ao calendário.
   const assignees = Array.from(
@@ -1658,12 +1817,16 @@ export default function TasksPage() {
       {view === 'board' && (
       <PapperBlock title="Quadro" subtitle="Arraste colunas para reordenar · arraste cartões entre colunas" icon={<ViewKanbanIcon />} noPadding>
         <DndContext sensors={sensors} collisionDetection={closestCorners} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setActiveDrag(null)}>
-          <Box sx={{ overflowX: 'auto', p: 1.5 }}>
-            <Stack direction="row" spacing={1.5} sx={{ alignItems: 'flex-start', minHeight: 120 }}>
+          <Box sx={{
+            overflowX: 'auto', p: 1.5, borderRadius: 2,
+            // Canvas do quadro com cor própria p/ contrastar com as colunas.
+            bgcolor: (theme) => (theme.palette.mode === 'dark' ? '#0d1117' : '#eef1f6'),
+          }}>
+            <Stack direction="row" spacing={1.5} sx={{ alignItems: 'flex-start', minHeight: 120, width: '100%' }}>
               <SortableContext items={movableIds} strategy={horizontalListSortingStrategy}>
                 {movable.map((s) => (
                   <BoardColumn
-                    key={s.id} stage={s} nodes={colNodes(s.id)} perms={perms}
+                    key={s.id} stage={s} nodes={colNodes(s.id)} perms={perms} showProgress={s.id !== firstOpenStageId}
                     onOpenNode={setOpenNodeId} onRename={setRenameStage} onDelete={handleDeleteStage} onSortByPriority={handleSortByPriority}
                     onChanged={refresh} notify={notify}
                   />

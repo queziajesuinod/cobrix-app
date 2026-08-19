@@ -202,9 +202,11 @@ async function reactivateSubscription({ subscriptionId, planId, period = 'monthl
   const plan = planRes.rows[0];
   if (!plan) { const e = new Error('Plano indisponível'); e.status = 400; throw e; }
   const per = period === 'annual' ? 'annual' : 'monthly';
-  const price = per === 'annual' ? plan.price_annual : plan.price_monthly;
-  if (price == null) { const e = new Error('Este plano não oferece o período selecionado'); e.status = 400; throw e; }
+  // price_annual = valor POR MÊS do plano anual; a cobrança anual é única (12x).
+  const monthlyRate = per === 'annual' ? plan.price_annual : plan.price_monthly;
+  if (monthlyRate == null) { const e = new Error('Este plano não oferece o período selecionado'); e.status = 400; throw e; }
   const intervalMonths = per === 'annual' ? 12 : 1;
+  const price = Number(monthlyRate) * intervalMonths;
   const todayIso = formatISODate(new Date());
 
   const result = await withClient(async (client) => {
@@ -305,9 +307,11 @@ async function changePlan({ companyId = null, subscriptionId = null, planId, per
   const plan = planRes.rows[0];
   if (!plan) { const e = new Error('Plano indisponível'); e.status = 400; throw e; }
   const per = period === 'annual' ? 'annual' : 'monthly';
-  const price = per === 'annual' ? plan.price_annual : plan.price_monthly;
-  if (price == null) { const e = new Error('Este plano não oferece o período selecionado'); e.status = 400; throw e; }
+  // price_annual = valor POR MÊS do plano anual; a cobrança anual é única (12x).
+  const monthlyRate = per === 'annual' ? plan.price_annual : plan.price_monthly;
+  if (monthlyRate == null) { const e = new Error('Este plano não oferece o período selecionado'); e.status = 400; throw e; }
   const intervalMonths = per === 'annual' ? 12 : 1;
+  const price = Number(monthlyRate) * intervalMonths;
 
   const today = new Date();
   const todayIso = formatISODate(today);
@@ -495,6 +499,103 @@ async function changePlan({ companyId = null, subscriptionId = null, planId, per
   return { ok: true, plan: plan.name, period: per, mode: 'switch', amount: Number(price), pix };
 }
 
+// Valor de cobrança de um plano num período: mensal = price_monthly cheio;
+// anual = price_annual (valor POR MÊS) x 12, pago 1x/ano. null se o plano não
+// oferece aquele período.
+function planChargeForPeriod(plan, period) {
+  const per = period === 'annual' ? 'annual' : 'monthly';
+  const rate = per === 'annual' ? plan.price_annual : plan.price_monthly;
+  if (rate == null) return null;
+  return per === 'annual' ? Number(rate) * 12 : Number(rate);
+}
+
+// Prévia do reajuste: para cada assinatura ATIVA do plano, compara o valor atual
+// do contrato com o valor vigente do plano (respeitando o período de cada uma).
+async function previewPlanAdjustment(planId) {
+  const planRes = await query(
+    `SELECT id, name, price_monthly, price_annual FROM ${SCHEMA}.plans WHERE id=$1`,
+    [planId]
+  );
+  const plan = planRes.rows[0];
+  if (!plan) { const e = new Error('Plano não encontrado'); e.status = 404; throw e; }
+
+  const subsRes = await query(
+    `SELECT cs.id AS subscription_id, cs.company_id, cs.period, cs.contract_id,
+            co.name AS company_name, ct.value AS current_value
+       FROM ${SCHEMA}.company_subscriptions cs
+       JOIN ${SCHEMA}.companies co ON co.id = cs.company_id
+       JOIN ${SCHEMA}.contracts ct ON ct.id = cs.contract_id
+      WHERE cs.plan_id = $1 AND cs.status = 'active'
+      ORDER BY co.name ASC`,
+    [planId]
+  );
+
+  const items = subsRes.rows.map((r) => {
+    const period = r.period === 'annual' ? 'annual' : 'monthly';
+    const newValue = planChargeForPeriod(plan, period);
+    const current = r.current_value == null ? null : Number(r.current_value);
+    const changed = newValue != null && current != null && Number(newValue) !== current;
+    return {
+      subscription_id: r.subscription_id,
+      company_id: r.company_id,
+      company_name: r.company_name,
+      contract_id: r.contract_id,
+      period,
+      current_value: current,
+      new_value: newValue,
+      delta: newValue != null && current != null ? Math.round((newValue - current) * 100) / 100 : null,
+      changed,
+      skipped_reason: newValue == null ? 'Plano sem preço neste período' : null,
+    };
+  });
+
+  const willChange = items.filter((i) => i.changed).length;
+  return {
+    plan: { id: plan.id, name: plan.name, price_monthly: plan.price_monthly, price_annual: plan.price_annual },
+    items,
+    summary: { total: items.length, will_change: willChange, unchanged: items.length - willChange },
+  };
+}
+
+// Aplica o reajuste: grava o novo valor no contrato de cada assinante (vale do
+// PRÓXIMO ciclo em diante — não recobra o ciclo já pago) e registra o histórico.
+// Se subscriptionIds vier, limita a essas assinaturas; senão, aplica em todas as
+// que mudam.
+async function applyPlanAdjustment(planId, { subscriptionIds = null, appliedBy = null } = {}) {
+  const preview = await previewPlanAdjustment(planId);
+  let items = preview.items.filter((i) => i.changed);
+  if (Array.isArray(subscriptionIds) && subscriptionIds.length) {
+    const set = new Set(subscriptionIds.map(Number));
+    items = items.filter((i) => set.has(i.subscription_id));
+  }
+  if (!items.length) return { ok: true, adjusted: 0, items: [] };
+
+  await withClient(async (client) => {
+    await client.query('BEGIN');
+    try {
+      for (const it of items) {
+        await client.query(
+          `UPDATE ${SCHEMA}.contracts SET value=$1, updated_at=NOW() WHERE id=$2`,
+          [it.new_value, it.contract_id]
+        );
+        await client.query(
+          `INSERT INTO ${SCHEMA}.plan_price_adjustments
+             (plan_id, subscription_id, contract_id, company_id, period, old_value, new_value, applied_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [planId, it.subscription_id, it.contract_id, it.company_id, it.period, it.current_value, it.new_value, appliedBy]
+        );
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    }
+  });
+
+  logger.info({ planId, count: items.length, appliedBy }, '[saas] reajuste de assinantes aplicado');
+  return { ok: true, adjusted: items.length, items };
+}
+
 module.exports = {
   setCompanyUsersActive,
   deactivateCompanyAccess,
@@ -503,4 +604,6 @@ module.exports = {
   finalizeCancelingSubscriptions,
   reactivateSubscription,
   changePlan,
+  previewPlanAdjustment,
+  applyPlanAdjustment,
 };

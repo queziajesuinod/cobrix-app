@@ -384,10 +384,10 @@ router.get('/board', ...view, async (req, res) => {
     const uid = req.user.id;
     const nodes = await query(
       `WITH RECURSIVE tree AS (
-         SELECT r.id AS root_id, r.id, r.assignee_id, r.created_by, r.client_id, r.contract_id
+         SELECT r.id AS root_id, r.id, r.assignee_id, r.created_by, r.client_id, r.contract_id, r.is_heading, r.status
            FROM ${SCHEMA}.task_nodes r WHERE r.company_id=$1 AND r.parent_id IS NULL AND r.is_template=false AND r.deleted_at IS NULL
          UNION ALL
-         SELECT t.root_id, c.id, c.assignee_id, c.created_by, c.client_id, c.contract_id
+         SELECT t.root_id, c.id, c.assignee_id, c.created_by, c.client_id, c.contract_id, c.is_heading, c.status
            FROM ${SCHEMA}.task_nodes c JOIN tree t ON c.parent_id=t.id AND c.deleted_at IS NULL
        ),
        mn AS (
@@ -398,18 +398,21 @@ router.get('/board', ...view, async (req, res) => {
          SELECT t.root_id,
                 bool_or(t.assignee_id=$2 OR t.created_by=$2) AS mine,
                 bool_or(mnj.node_id IS NOT NULL) AS mentioned,
-                string_agg(DISTINCT NULLIF(TRIM(COALESCE(cli.name,'')||' '||COALESCE(con.description,'')),''), ' | ') AS sub_links
+                string_agg(DISTINCT NULLIF(TRIM(COALESCE(cli.name,'')||' '||COALESCE(con.description,'')),''), ' | ') AS sub_links,
+                -- Progresso = itens checáveis (não-título) em TODA a subárvore, em qualquer
+                -- profundidade (exclui a própria raiz). Assim, títulos agrupadores no meio
+                -- não zeram o progresso: contam os sub-subitens com conclusão.
+                COUNT(*) FILTER (WHERE t.id <> t.root_id AND t.is_heading = false)::int AS sub_total,
+                COUNT(*) FILTER (WHERE t.id <> t.root_id AND t.is_heading = false AND t.status = 'done')::int AS sub_done
            FROM tree t
            LEFT JOIN ${SCHEMA}.clients cli ON cli.id=t.client_id
            LEFT JOIN ${SCHEMA}.contracts con ON con.id=t.contract_id
            LEFT JOIN mn mnj ON mnj.node_id=t.id
           GROUP BY t.root_id
        )
-       SELECT n.id, n.group_id, n.stage_id, n.kind, n.title, n.description, n.priority, n.due_date, n.status,
+       SELECT n.id, n.group_id, n.stage_id, n.kind, n.title, n.description, n.priority, n.due_date, n.status, n.is_heading,
               n.assignee_id, n.client_id, n.contract_id, n.recurrence, n.source_node_id, n.position, ${AUTHOR}, ${LINKS}, ${NODE_LABELS},
-              a.sub_links,
-              (SELECT COUNT(*) FROM ${SCHEMA}.task_nodes c WHERE c.parent_id=n.id AND c.deleted_at IS NULL)::int AS sub_total,
-              (SELECT COUNT(*) FROM ${SCHEMA}.task_nodes c WHERE c.parent_id=n.id AND c.status='done' AND c.deleted_at IS NULL)::int AS sub_done
+              a.sub_links, a.sub_total, a.sub_done
          FROM ${SCHEMA}.task_nodes n
          JOIN agg a ON a.root_id=n.id
         WHERE n.company_id=$1 AND n.parent_id IS NULL AND n.is_template=false AND n.deleted_at IS NULL
@@ -433,7 +436,7 @@ router.get('/nodes/:id', ...view, async (req, res) => {
          SELECT c.* FROM ${SCHEMA}.task_nodes c JOIN tree t ON c.parent_id=t.id AND c.deleted_at IS NULL
        )
        SELECT n.id, n.parent_id, n.group_id, n.stage_id, n.kind, n.title, n.description, n.priority,
-              n.due_date, n.status, n.assignee_id, n.client_id, n.contract_id,
+              n.due_date, n.status, n.is_heading, n.assignee_id, n.client_id, n.contract_id,
               n.recurrence, n.recurrence_day, n.recurrence_month, n.position, ${AUTHOR}, ${LINKS}
          FROM tree n ORDER BY n.parent_id, n.position, n.id`,
       [node.id]
@@ -514,6 +517,8 @@ router.post('/nodes', ...base, async (req, res) => {
     // Um nó recorrente é TEMPLATE (oculto do board); subitens de um template também
     // herdam is_template (fazem parte da definição, não são tarefas reais).
     const isTemplate = (recurrence !== 'none') || Boolean(parent && parent.is_template);
+    // Nó "só título" (agrupador): sem check de conclusão; serve p/ vincular cliente/contrato.
+    const isHeading = Boolean(req.body?.is_heading);
     const description = req.body?.description ? String(req.body.description).trim() || null : null;
     // Gating granular: criar rotina (template recorrente de topo) exige tasks.routine.create;
     // montar a subárvore de uma rotina aceita routine.create OU task.create; tarefa/subtarefa
@@ -534,10 +539,10 @@ router.post('/nodes', ...base, async (req, res) => {
     const r = await query(
       `INSERT INTO ${SCHEMA}.task_nodes
          (company_id, group_id, parent_id, stage_id, kind, title, description, assignee_id, priority, due_date,
-          recurrence, recurrence_day, recurrence_month, is_template, client_id, contract_id, position, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`,
+          recurrence, recurrence_day, recurrence_month, is_template, client_id, contract_id, position, created_by, is_heading)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *`,
       [req.companyId, groupId, parentId, stageId, kind, title, description, assigneeId, priority, dueDate,
-       recurrence, recDay, recMonth, isTemplate, clientId, contractId, pos.rows[0].p, req.user.id]
+       recurrence, recDay, recMonth, isTemplate, clientId, contractId, pos.rows[0].p, req.user.id, isHeading]
     );
     const node = r.rows[0];
     if (req.body?.label_ids !== undefined) {
@@ -603,15 +608,25 @@ router.put('/nodes/:id', ...base, async (req, res) => {
     // Pausar/retomar a recorrência (só faz sentido em template de topo).
     const recPaused = (isTopLevel && recurrence !== 'none' && req.body?.recurrence_paused !== undefined)
       ? Boolean(req.body.recurrence_paused) : (recurrence !== 'none' ? node.recurrence_paused : false);
-    const clientId = req.body?.client_id !== undefined ? optId(req.body.client_id) : node.client_id;
-    const contractId = req.body?.contract_id !== undefined ? optId(req.body.contract_id) : node.contract_id;
+    // Vínculo cliente/contrato NÃO pode ser alterado depois de definido: uma vez que a
+    // tarefa tem cliente/contrato, só o nome/detalhes mudam. Só é possível definir o
+    // vínculo enquanto ele ainda estiver vazio.
+    const linkLocked = node.client_id != null || node.contract_id != null;
+    const clientId = linkLocked ? node.client_id : (req.body?.client_id !== undefined ? optId(req.body.client_id) : node.client_id);
+    const contractId = linkLocked ? node.contract_id : (req.body?.contract_id !== undefined ? optId(req.body.contract_id) : node.contract_id);
+    // "Só título" (is_heading) não tem conclusão; ao virar título, reabre (perde o done).
+    const isHeading = req.body?.is_heading !== undefined ? Boolean(req.body.is_heading) : node.is_heading;
     const r = await query(
       `UPDATE ${SCHEMA}.task_nodes
           SET title=$1, description=$2, assignee_id=$3, priority=$4, due_date=$5,
               recurrence=$6, recurrence_day=$7, recurrence_month=$8, is_template=$9, client_id=$10, contract_id=$11,
-              recurrence_paused=$12, updated_at=now()
+              recurrence_paused=$12, is_heading=$14,
+              status = CASE WHEN $14 THEN 'open' ELSE status END,
+              done_at = CASE WHEN $14 THEN NULL ELSE done_at END,
+              done_by = CASE WHEN $14 THEN NULL ELSE done_by END,
+              updated_at=now()
         WHERE id=$13 RETURNING *`,
-      [title, description, assigneeId, priority, dueDate, recurrence, recDay, recMonth, isTemplate, clientId, contractId, recPaused, node.id]
+      [title, description, assigneeId, priority, dueDate, recurrence, recDay, recMonth, isTemplate, clientId, contractId, recPaused, node.id, isHeading]
     );
     // Ao virar (ou deixar de ser) template, a subárvore acompanha (definição vs tarefas reais).
     if (isTopLevel && isTemplate !== node.is_template) {
@@ -721,6 +736,7 @@ router.post('/nodes/:id/move', ...view, async (req, res) => {
     const st = await query(`SELECT id, is_done FROM ${SCHEMA}.task_stages WHERE id=$1 AND company_id=$2`, [toStageId, req.companyId]);
     if (!st.rows[0]) err('Etapa de destino inválida');
     const enteringDone = Boolean(st.rows[0].is_done);
+    if (enteringDone && node.is_heading) err('Este item é apenas um título e não tem marcação de conclusão.');
     const r = await query(
       `UPDATE ${SCHEMA}.task_nodes
           SET stage_id=$1,
@@ -733,6 +749,17 @@ router.post('/nodes/:id/move', ...view, async (req, res) => {
       [toStageId, enteringDone, req.user.id, node.id]
     );
     await logActivity(node.id, req.user.id, 'moved', enteringDone ? 'concluída' : 'movida');
+    // Ocorrência recorrente arrastada para uma coluna ABERTA (não "Concluído"): o
+    // template "aprende" essa coluna como casa, para as PRÓXIMAS ocorrências nascerem
+    // nela (mantém a rotina fixada na coluna dinâmica escolhida pelo usuário).
+    if (!enteringDone && node.parent_id == null && node.source_node_id) {
+      try {
+        await query(
+          `UPDATE ${SCHEMA}.task_nodes SET stage_id=$1, updated_at=now() WHERE id=$2 AND company_id=$3 AND is_template=true`,
+          [toStageId, node.source_node_id, req.companyId]
+        );
+      } catch (e) { console.error('[tasks] fixar coluna do template (move):', e.message); }
+    }
     // Ocorrência recorrente concluída → materializa a próxima (mês/ano seguinte).
     if (enteringDone && node.parent_id == null && node.source_node_id) {
       try { await rollNextOccurrence(req.companyId, node); } catch (e) { console.error('[tasks] roll (move):', e.message); }
@@ -746,6 +773,7 @@ router.patch('/nodes/:id/done', ...view, async (req, res) => {
   try {
     const node = await getAccessibleNode(req, Number(req.params.id));
     const done = Boolean(req.body?.done);
+    if (node.is_heading) err('Este item é apenas um título e não tem marcação de conclusão.');
     // Tarefa de topo: concluir move p/ "Concluído"; reabrir volta p/ a 1ª coluna aberta.
     let stageId = node.stage_id;
     if (node.parent_id == null) {
@@ -809,12 +837,15 @@ router.post('/nodes/:id/expand', ...base, async (req, res) => {
     await query('BEGIN');
     try {
       let pos = (await query(`SELECT COALESCE(MAX(position),-1)+1 AS p FROM ${SCHEMA}.task_nodes WHERE company_id=$1 AND parent_id=$2`, [req.companyId, parent.id])).rows[0].p;
+      // Com passos, o nó por cliente/contrato é só um TÍTULO (agrupador): o check fica
+      // nos passos. Sem passos, ele mesmo é checável (marca-se o cliente como feito).
+      const childIsHeading = steps.length > 0;
       for (const t of targets) {
         if (t.contract_id ? hasContract.has(t.contract_id) : hasClient.has(t.client_id)) continue;
         const child = await query(
-          `INSERT INTO ${SCHEMA}.task_nodes (company_id, group_id, parent_id, stage_id, kind, title, assignee_id, priority, is_template, client_id, contract_id, position, created_by)
-           VALUES ($1,$2,$3,$4,'fixa',$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
-          [req.companyId, parent.group_id, parent.id, parent.stage_id, t.title, parent.assignee_id, parent.priority, parent.is_template, t.client_id, t.contract_id, pos++, req.user.id]
+          `INSERT INTO ${SCHEMA}.task_nodes (company_id, group_id, parent_id, stage_id, kind, title, assignee_id, priority, is_template, client_id, contract_id, position, created_by, is_heading)
+           VALUES ($1,$2,$3,$4,'fixa',$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+          [req.companyId, parent.group_id, parent.id, parent.stage_id, t.title, parent.assignee_id, parent.priority, parent.is_template, t.client_id, t.contract_id, pos++, req.user.id, childIsHeading]
         );
         const childId = child.rows[0].id; createdTargets++;
         let sp = 0;
@@ -1090,7 +1121,7 @@ router.get('/my', ...view, async (req, res) => {
               (n.due_date IS NOT NULL AND n.due_date > CURRENT_DATE AND n.due_date <= CURRENT_DATE + 7) AS soon
          FROM ${SCHEMA}.task_nodes n
          LEFT JOIN ${SCHEMA}.task_groups g ON g.id=n.group_id
-        WHERE n.company_id=$1 AND n.assignee_id=$2 AND n.status='open' AND n.is_template=false AND n.deleted_at IS NULL
+        WHERE n.company_id=$1 AND n.assignee_id=$2 AND n.status='open' AND n.is_template=false AND n.is_heading=false AND n.deleted_at IS NULL
         ORDER BY n.due_date NULLS LAST, n.id`,
       [req.companyId, req.user.id]
     );
@@ -1124,7 +1155,7 @@ router.get('/productivity', ...gestor, async (req, res) => {
                 FILTER (WHERE n.status='done' AND n.done_at IS NOT NULL) AS avg_days
          FROM ${SCHEMA}.task_nodes n
          JOIN ${SCHEMA}.users u ON u.id = n.assignee_id
-        WHERE n.company_id=$1 AND n.is_template=false AND n.deleted_at IS NULL
+        WHERE n.company_id=$1 AND n.is_template=false AND n.is_heading=false AND n.deleted_at IS NULL
         GROUP BY u.id, name
         ORDER BY done DESC, name`,
       [req.companyId]
@@ -1151,7 +1182,7 @@ router.get('/productivity', ...gestor, async (req, res) => {
       `SELECT COUNT(*) FILTER (WHERE status='open')::int AS open,
               COUNT(*) FILTER (WHERE status='done')::int AS done,
               COUNT(*) FILTER (WHERE status='open' AND due_date IS NOT NULL AND due_date < CURRENT_DATE)::int AS overdue
-         FROM ${SCHEMA}.task_nodes WHERE company_id=$1 AND is_template=false AND deleted_at IS NULL`,
+         FROM ${SCHEMA}.task_nodes WHERE company_id=$1 AND is_template=false AND is_heading=false AND deleted_at IS NULL`,
       [req.companyId]
     );
     res.json({ items, series: series.rows, distribution: dist.rows[0] || { open: 0, done: 0, overdue: 0 } });

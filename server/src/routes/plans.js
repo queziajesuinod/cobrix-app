@@ -7,6 +7,7 @@ const { requireAuth } = require('./auth');
 const { masterOnly } = require('../services/permissions');
 const { isValidPermission } = require('../config/permissions-catalog');
 const { respondError } = require('../utils/http-error');
+const { previewPlanAdjustment, applyPlanAdjustment } = require('../services/subscription-service');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 const router = express.Router();
@@ -121,6 +122,25 @@ router.put('/:id', requireAuth, masterOnly, async (req, res) => {
     if (String(e.message).includes('duplicate key')) return res.status(409).json({ error: 'Já existe um plano com esse nome' });
     respondError(res, e);
   }
+});
+
+// ---- Reajuste de assinantes: prévia (assinaturas ativas + de/para valor) ----
+router.get('/:id/adjust-preview', requireAuth, masterOnly, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'id inválido' });
+  try {
+    res.json(await previewPlanAdjustment(id));
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
+// ---- Reajuste de assinantes: aplicar (grava o valor vigente nos contratos) ----
+router.post('/:id/adjust', requireAuth, masterOnly, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'id inválido' });
+  const subscriptionIds = Array.isArray(req.body?.subscription_ids) ? req.body.subscription_ids : null;
+  try {
+    res.json(await applyPlanAdjustment(id, { subscriptionIds, appliedBy: req.user?.id || null }));
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
 // ---- Excluir (bloqueia se estiver em uso por empresas) ----

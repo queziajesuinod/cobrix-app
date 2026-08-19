@@ -1,13 +1,14 @@
 import React, { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Alert, Box, Button, Checkbox, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
+  Alert, Box, Button, Checkbox, Chip, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle,
   Divider, FormControlLabel, Grid, IconButton, Skeleton, Snackbar, Stack, Switch,
   TextField, Tooltip, Typography,
 } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
 import EditIcon from '@mui/icons-material/Edit'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
+import PriceChangeIcon from '@mui/icons-material/PriceChange'
 import LayersIcon from '@mui/icons-material/Layers'
 import PageHeader from '@/components/PageHeader'
 import PapperBlock from '@/components/PapperBlock'
@@ -96,7 +97,13 @@ function PlanDialog({ open, initial, catalog, onClose, onSave, saving }) {
             <TextField fullWidth type="number" label="Preço mensal (R$)" value={form.price_monthly} onChange={setField('price_monthly')} inputProps={{ min: 0, step: '0.01' }} />
           </Grid>
           <Grid item xs={6} sm={3}>
-            <TextField fullWidth type="number" label="Preço anual (R$)" value={form.price_annual} onChange={setField('price_annual')} inputProps={{ min: 0, step: '0.01' }} />
+            <TextField
+              fullWidth type="number" label="Preço mensal (plano anual)" value={form.price_annual}
+              onChange={setField('price_annual')} inputProps={{ min: 0, step: '0.01' }}
+              helperText={form.price_annual !== '' && Number(form.price_annual) > 0
+                ? `× 12 = ${BRL(Number(form.price_annual) * 12)} cobrado 1×/ano`
+                : 'Valor por mês · cobrado 12× de uma vez no ano'}
+            />
           </Grid>
           <Grid item xs={6} sm={3}>
             <TextField fullWidth type="number" label="Limite de clientes" value={form.clients_limit} onChange={setField('clients_limit')} inputProps={{ min: 0, step: 1 }} helperText="Vazio = ilimitado" />
@@ -152,12 +159,93 @@ function PlanDialog({ open, initial, catalog, onClose, onSave, saving }) {
   )
 }
 
+// Reajuste de assinantes: mostra a prévia (de/para por assinante ativo) e aplica
+// o valor vigente do plano nos contratos — valendo do próximo ciclo em diante.
+function AdjustSubscribersDialog({ open, plan, onClose, onDone }) {
+  const previewQuery = useQuery({
+    queryKey: ['plan-adjust-preview', plan?.id],
+    queryFn: () => plansService.adjustPreview(plan.id),
+    enabled: open && Boolean(plan?.id),
+  })
+  const data = previewQuery.data
+  const items = data?.items || []
+  const summary = data?.summary
+
+  const applyMutation = useMutation({
+    mutationFn: () => plansService.adjustApply(plan.id, {}),
+    onSuccess: (res) => onDone(res),
+  })
+
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle sx={{ fontWeight: 700 }}>Reajustar assinantes — {plan?.name}</DialogTitle>
+      <DialogContent dividers>
+        {previewQuery.isLoading ? (
+          <Stack alignItems="center" sx={{ py: 4 }}><CircularProgress /></Stack>
+        ) : previewQuery.isError ? (
+          <Alert severity="error">{previewQuery.error?.response?.data?.error || 'Falha ao carregar a prévia.'}</Alert>
+        ) : items.length === 0 ? (
+          <Alert severity="info">Nenhuma assinatura ativa neste plano.</Alert>
+        ) : (
+          <Stack spacing={1.5}>
+            <Typography variant="body2" color="text.secondary">
+              O valor vigente do plano será gravado no contrato de cada assinante, valendo <strong>a partir do próximo ciclo</strong> (o ciclo já pago não é recobrado).
+            </Typography>
+            <Alert severity={summary?.will_change ? 'warning' : 'success'}>
+              {summary?.will_change
+                ? `${summary.will_change} de ${summary.total} assinante(s) serão reajustados.`
+                : `Nenhum reajuste necessário — os ${summary?.total} assinante(s) já estão no valor vigente.`}
+            </Alert>
+            <Stack spacing={0} divider={<Divider flexItem />}>
+              {items.map((it) => (
+                <Stack key={it.subscription_id} direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ py: 0.75, opacity: it.changed ? 1 : 0.55 }}>
+                  <Box sx={{ minWidth: 0 }}>
+                    <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap>{it.company_name}</Typography>
+                    <Typography variant="caption" color="text.secondary">{it.period === 'annual' ? 'Anual' : 'Mensal'}</Typography>
+                  </Box>
+                  <Box sx={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    {it.new_value == null ? (
+                      <Typography variant="caption" color="text.secondary">{it.skipped_reason}</Typography>
+                    ) : it.changed ? (
+                      <Typography variant="body2">
+                        <Box component="span" sx={{ textDecoration: 'line-through', color: 'text.secondary' }}>{BRL(it.current_value)}</Box>
+                        {' → '}
+                        <Box component="span" sx={{ fontWeight: 700, color: it.delta > 0 ? 'error.main' : 'success.main' }}>{BRL(it.new_value)}</Box>
+                      </Typography>
+                    ) : (
+                      <Typography variant="body2" color="text.secondary">{BRL(it.current_value)} · sem mudança</Typography>
+                    )}
+                  </Box>
+                </Stack>
+              ))}
+            </Stack>
+            {applyMutation.isError && (
+              <Alert severity="error">{applyMutation.error?.response?.data?.error || 'Falha ao aplicar o reajuste.'}</Alert>
+            )}
+          </Stack>
+        )}
+      </DialogContent>
+      <DialogActions sx={{ px: 3, py: 2 }}>
+        <Button onClick={onClose} color="inherit">Fechar</Button>
+        <Button
+          variant="contained"
+          disabled={applyMutation.isPending || !summary?.will_change}
+          onClick={() => applyMutation.mutate()}
+        >
+          {applyMutation.isPending ? 'Aplicando…' : `Reajustar${summary?.will_change ? ` ${summary.will_change}` : ''}`}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  )
+}
+
 export default function PlansAdminPage() {
   const queryClient = useQueryClient()
   const confirm = useConfirm()
   const { user } = useAuth()
   const isMaster = user?.role === 'master'
   const [dialog, setDialog] = useState({ open: false, plan: null })
+  const [adjust, setAdjust] = useState({ open: false, plan: null })
   const [snack, setSnack] = useState(null)
 
   const plansQuery = useQuery({ queryKey: ['plans'], queryFn: plansService.list, enabled: isMaster })
@@ -259,8 +347,11 @@ export default function PlansAdminPage() {
                         <Typography sx={{ fontWeight: 700 }}>{BRL(plan.price_monthly)}</Typography>
                       </Box>
                       <Box>
-                        <Typography variant="caption" color="text.secondary">Anual</Typography>
+                        <Typography variant="caption" color="text.secondary" display="block">Anual (por mês)</Typography>
                         <Typography sx={{ fontWeight: 700 }}>{BRL(plan.price_annual)}</Typography>
+                        {plan.price_annual != null && (
+                          <Typography variant="caption" color="text.secondary">{BRL(plan.price_annual * 12)}/ano</Typography>
+                        )}
                       </Box>
                     </Stack>
 
@@ -276,6 +367,13 @@ export default function PlansAdminPage() {
                         {plan.company_count > 0 ? `${plan.company_count} empresa(s)` : 'Sem empresas'}
                       </Typography>
                       <Stack direction="row" spacing={0.5}>
+                        <Tooltip title={plan.company_count > 0 ? 'Reajustar assinantes' : 'Sem assinantes para reajustar'}>
+                          <span>
+                            <IconButton size="small" disabled={!(plan.company_count > 0)} onClick={() => setAdjust({ open: true, plan })}>
+                              <PriceChangeIcon fontSize="small" />
+                            </IconButton>
+                          </span>
+                        </Tooltip>
                         <Tooltip title="Editar">
                           <IconButton size="small" onClick={() => setDialog({ open: true, plan })}><EditIcon fontSize="small" /></IconButton>
                         </Tooltip>
@@ -303,6 +401,18 @@ export default function PlansAdminPage() {
         saving={saveMutation.isPending}
         onClose={() => setDialog({ open: false, plan: null })}
         onSave={(form) => saveMutation.mutate(form)}
+      />
+
+      <AdjustSubscribersDialog
+        open={adjust.open}
+        plan={adjust.plan}
+        onClose={() => setAdjust({ open: false, plan: null })}
+        onDone={(res) => {
+          queryClient.invalidateQueries({ queryKey: ['plans'] })
+          queryClient.invalidateQueries({ queryKey: ['plan-adjust-preview'] })
+          setAdjust({ open: false, plan: null })
+          setSnack({ severity: 'success', msg: res?.adjusted ? `${res.adjusted} assinante(s) reajustado(s).` : 'Nenhum reajuste aplicado.' })
+        }}
       />
 
       <Snackbar open={Boolean(snack)} autoHideDuration={4000} onClose={() => setSnack(null)} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>

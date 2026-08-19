@@ -133,6 +133,23 @@ async function initDb() {
     // o cron subscription-lifecycle efetiva a inativação depois dessa data.
     await c.query(`ALTER TABLE ${schema}.company_subscriptions ADD COLUMN IF NOT EXISTS access_until DATE;`);
     await c.query(`ALTER TABLE ${schema}.company_subscriptions ADD COLUMN IF NOT EXISTS cancel_requested_at TIMESTAMPTZ;`);
+    // Histórico de reajustes de preço aplicados aos assinantes de um plano. Um
+    // registro por contrato reajustado (auditoria de quem/quando/de-para).
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.plan_price_adjustments (
+        id SERIAL PRIMARY KEY,
+        plan_id INTEGER REFERENCES ${schema}.plans(id) ON DELETE SET NULL,
+        subscription_id INTEGER,
+        contract_id INTEGER,
+        company_id INTEGER,
+        period TEXT,
+        old_value NUMERIC(14,2),
+        new_value NUMERIC(14,2),
+        applied_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_plan_price_adjustments_plan ON ${schema}.plan_price_adjustments(plan_id, created_at DESC);`);
     await c.query(`
       CREATE TABLE IF NOT EXISTS clients (
         id SERIAL PRIMARY KEY,
@@ -630,6 +647,9 @@ async function initDb() {
     await c.query(`ALTER TABLE ${schema}.task_nodes DROP CONSTRAINT IF EXISTS task_nodes_recurrence_check;`);
     await c.query(`ALTER TABLE ${schema}.task_nodes ADD CONSTRAINT task_nodes_recurrence_check CHECK (recurrence IN ('none','weekly','biweekly','monthly','yearly'));`);
     await c.query(`ALTER TABLE ${schema}.task_nodes ADD COLUMN IF NOT EXISTS recurrence_paused BOOLEAN NOT NULL DEFAULT false;`);
+    // is_heading = nó "só título" (agrupador, ex.: 1 por cliente): sem marcação de
+    // conclusão. Os subitens dele é que têm o check de realizado.
+    await c.query(`ALTER TABLE ${schema}.task_nodes ADD COLUMN IF NOT EXISTS is_heading BOOLEAN NOT NULL DEFAULT false;`);
     // Exclusão lógica (soft delete) da tarefa/subtarefa: fica INATIVA (some do quadro,
     // minhas tarefas, calendário e produtividade) mas guarda quem/quando "excluiu"
     // para auditoria. O Gestor pode restaurar pela "Lixeira".

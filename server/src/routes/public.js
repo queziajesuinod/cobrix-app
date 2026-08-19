@@ -74,8 +74,11 @@ router.post('/signup', async (req, res) => {
     );
     const plan = planRes.rows[0];
     if (!plan) return res.status(400).json({ error: 'Plano indisponível' });
-    const price = period === 'annual' ? plan.price_annual : plan.price_monthly;
-    if (price == null) return res.status(400).json({ error: 'Este plano não oferece o período selecionado' });
+    // price_annual guarda o valor POR MÊS do plano anual. A cobrança anual é única
+    // e equivale a 12x esse valor (paga-se uma vez ao ano); a mensal é o valor cheio.
+    const monthlyRate = period === 'annual' ? plan.price_annual : plan.price_monthly;
+    if (monthlyRate == null) return res.status(400).json({ error: 'Este plano não oferece o período selecionado' });
+    const price = period === 'annual' ? Number(monthlyRate) * 12 : Number(monthlyRate);
 
     // E-mail único (users.email é UNIQUE).
     const emailTaken = await query(`SELECT 1 FROM ${SCHEMA}.users WHERE LOWER(email) = $1`, [email]);

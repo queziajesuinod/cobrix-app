@@ -61,6 +61,21 @@ async function firstStageId(companyId) {
   return r.rows[0]?.id || null;
 }
 
+// Coluna onde a OCORRÊNCIA deve nascer. Respeita a coluna "casa" do template
+// (t.stage_id) quando ela ainda existe e é uma coluna aberta (não "Concluído") —
+// assim rotinas recorrentes criadas para/movidas a uma coluna dinâmica mantêm as
+// próximas ocorrências nessa coluna. Fallback: 1ª coluna ("A fazer").
+async function occurrenceStageId(t) {
+  if (t.stage_id) {
+    const s = await query(
+      `SELECT id FROM ${SCHEMA}.task_stages WHERE id=$1 AND company_id=$2 AND is_done=false`,
+      [t.stage_id, t.company_id]
+    );
+    if (s.rows[0]) return t.stage_id;
+  }
+  return firstStageId(t.company_id);
+}
+
 // Clona recursivamente os subitens do template (srcParentId) sob newParentId, como
 // nós reais da ocorrência (is_template=false), mantendo source_node_id p/ rastreio.
 async function cloneChildren(srcParentId, newParentId, companyId, stageId) {
@@ -69,9 +84,9 @@ async function cloneChildren(srcParentId, newParentId, companyId, stageId) {
     const r = await query(
       `INSERT INTO ${SCHEMA}.task_nodes
          (company_id, group_id, parent_id, stage_id, kind, title, description, assignee_id, priority, due_date,
-          recurrence, is_template, source_node_id, client_id, contract_id, position, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'none',false,$11,$12,$13,$14,$15) RETURNING id`,
-      [companyId, k.group_id, newParentId, stageId, k.kind, k.title, k.description, k.assignee_id, k.priority, k.due_date, k.id, k.client_id, k.contract_id, k.position, k.created_by]
+          recurrence, is_template, source_node_id, client_id, contract_id, position, created_by, is_heading)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'none',false,$11,$12,$13,$14,$15,$16) RETURNING id`,
+      [companyId, k.group_id, newParentId, stageId, k.kind, k.title, k.description, k.assignee_id, k.priority, k.due_date, k.id, k.client_id, k.contract_id, k.position, k.created_by, k.is_heading]
     );
     await cloneChildren(k.id, r.rows[0].id, companyId, stageId);
   }
@@ -84,7 +99,7 @@ async function ensureOccurrence(t, dueISO) {
     [t.id, dueISO]
   );
   if (exists.rows[0]) return 0;
-  const stageId = await firstStageId(t.company_id);
+  const stageId = await occurrenceStageId(t);
   const pos = await query(
     `SELECT COALESCE(MAX(position),-1)+1 AS p FROM ${SCHEMA}.task_nodes
       WHERE company_id=$1 AND COALESCE(group_id,0)=COALESCE($2,0) AND parent_id IS NULL AND is_template=false`,

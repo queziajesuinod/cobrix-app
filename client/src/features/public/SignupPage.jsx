@@ -19,8 +19,11 @@ const BRL = (v) => v == null
 const EMPTY = { company_name: '', admin_name: '', admin_email: '', admin_password: '', document: '', phone: '', code: '' }
 
 function PlanCard({ plan, period, selected, onSelect }) {
-  const price = period === 'annual' ? plan.price_annual : plan.price_monthly
-  const available = price != null
+  // Tanto o campo mensal quanto o anual guardam o valor POR MÊS; no anual a
+  // cobrança é única (12x esse valor, paga uma vez ao ano).
+  const monthly = period === 'annual' ? plan.price_annual : plan.price_monthly
+  const available = monthly != null
+  const annualTotal = period === 'annual' && monthly != null ? Number(monthly) * 12 : null
   return (
     <Card
       onClick={available ? onSelect : undefined}
@@ -42,8 +45,13 @@ function PlanCard({ plan, period, selected, onSelect }) {
       <Box sx={{ mt: 1 }}>
         {available ? (
           <>
-            <Typography variant="h4" sx={{ fontWeight: 800, lineHeight: 1.1 }}>{BRL(price)}</Typography>
-            <Typography variant="caption" color="text.secondary">{period === 'annual' ? 'por ano' : 'por mês'}</Typography>
+            <Typography variant="h4" sx={{ fontWeight: 800, lineHeight: 1.1 }}>{BRL(monthly)}</Typography>
+            <Typography variant="caption" color="text.secondary" display="block">por mês</Typography>
+            {period === 'annual' && (
+              <Typography variant="caption" sx={{ fontWeight: 700, color: 'primary.main' }}>
+                cobrado {BRL(annualTotal)} 1×/ano
+              </Typography>
+            )}
           </>
         ) : (
           <Typography variant="body2" color="text.secondary">Indisponível no {period === 'annual' ? 'anual' : 'mensal'}</Typography>
@@ -68,7 +76,8 @@ export default function SignupPage() {
   const plans = plansQuery.data?.plans || []
 
   const selectedPlan = useMemo(() => plans.find((p) => p.id === planId) || null, [plans, planId])
-  const selectedPrice = selectedPlan ? (period === 'annual' ? selectedPlan.price_annual : selectedPlan.price_monthly) : null
+  const selectedMonthly = selectedPlan ? (period === 'annual' ? selectedPlan.price_annual : selectedPlan.price_monthly) : null
+  const selectedCharge = selectedMonthly == null ? null : (period === 'annual' ? Number(selectedMonthly) * 12 : Number(selectedMonthly))
 
   const signup = useMutation({
     mutationFn: (payload) => publicService.signup(payload),
@@ -193,7 +202,8 @@ export default function SignupPage() {
         <Card sx={{ p: { xs: 2.5, md: 3 }, mt: 3 }}>
           <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.5 }}>Seus dados</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            Plano <strong>{selectedPlan.name}</strong> · {period === 'annual' ? 'Anual' : 'Mensal'} · <strong>{BRL(selectedPrice)}</strong>
+            Plano <strong>{selectedPlan.name}</strong> · {period === 'annual' ? 'Anual' : 'Mensal'} · <strong>{BRL(selectedMonthly)}</strong>/mês
+            {period === 'annual' && <> · cobrança única de <strong>{BRL(selectedCharge)}</strong></>}
           </Typography>
           <Divider sx={{ mb: 2 }} />
           {error && <Alert severity="warning" sx={{ mb: 2 }}>{error}</Alert>}

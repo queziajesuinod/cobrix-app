@@ -49,6 +49,7 @@ import ViewKanbanIcon from '@mui/icons-material/ViewKanban'
 import ReceiptLongIcon from '@mui/icons-material/ReceiptLong'
 
 const drawerWidth = 268
+const miniWidth = 76
 
 // Etiqueta "Novo" nos itens de menu: aparece por N dias a partir da data de
 // publicação (campo `since: 'AAAA-MM-DD'` no item). É "versionada" — defina a
@@ -147,6 +148,15 @@ export default function AppShell({ children }) {
   const theme = useTheme()
   const isMdUp = useMediaQuery(theme.breakpoints.up('md'))
   const [open, setOpen] = React.useState(isMdUp)
+  // Sidebar "mini" (só ícones) no desktop — preferência persistida.
+  const [collapsed, setCollapsed] = React.useState(() => {
+    try { return localStorage.getItem('sidebar-collapsed') === '1' } catch { return false }
+  })
+  const toggleCollapsed = () => setCollapsed((c) => {
+    const next = !c
+    try { localStorage.setItem('sidebar-collapsed', next ? '1' : '0') } catch { /* ignore */ }
+    return next
+  })
   const navigate = useNavigate()
   const location = useLocation()
   const { user, logout, selectedCompanyId } = useAuth()
@@ -242,7 +252,12 @@ export default function AppShell({ children }) {
   // Cor de destaque do item ativo (segue o tema).
   const activeBg = alpha(theme.palette.primary.main, mode === 'dark' ? 0.24 : 0.12)
 
-  const drawer = (
+  // `mini` = sidebar recolhida (só no desktop). Define a largura efetiva usada
+  // pela AppBar, pelo main e pela própria gaveta.
+  const mini = isMdUp && collapsed
+  const navWidth = mini ? miniWidth : drawerWidth
+
+  const drawerContent = (compact) => (
     <Box
       sx={{
         height: '100%',
@@ -255,27 +270,37 @@ export default function AppShell({ children }) {
       }}
     >
       {/* Logo */}
-      <Box sx={{ px: 2.5, py: 2.25, display: 'flex', alignItems: 'center', gap: 1 }}>
-        <Box sx={{ width: 32, height: 32, borderRadius: '10px', background: 'linear-gradient(135deg,#5b8def,#8E2DE2)' }} />
-        <Typography variant="h6" sx={{ fontWeight: 800, letterSpacing: 0.3 }}>Cobrix</Typography>
+      <Box sx={{ px: compact ? 0 : 2.5, py: 2.25, display: 'flex', alignItems: 'center', justifyContent: compact ? 'center' : 'flex-start', gap: 1 }}>
+        <Box sx={{ width: 32, height: 32, borderRadius: '10px', flexShrink: 0, background: 'linear-gradient(135deg,#5b8def,#8E2DE2)' }} />
+        {!compact && <Typography variant="h6" sx={{ fontWeight: 800, letterSpacing: 0.3 }}>Cobrix</Typography>}
       </Box>
 
       {/* Bloco de perfil */}
-      <Box sx={{ px: 2, pb: 2, textAlign: 'center' }}>
-        <Avatar sx={{ width: 64, height: 64, mx: 'auto', mb: 1, bgcolor: 'primary.main', fontSize: 26, fontWeight: 700 }}>
-          {initials}
-        </Avatar>
-        <Typography variant="subtitle1" sx={{ fontWeight: 700, wordBreak: 'break-word' }} noWrap>
-          {displayName}
-        </Typography>
-        <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, mt: 0.5 }}>
-          <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: '#4caf50' }} />
-          <Typography variant="caption" color="text.secondary">{roleLabel} · Online</Typography>
+      {compact ? (
+        <Box sx={{ pb: 2, textAlign: 'center' }}>
+          <Tooltip title={`${displayName} · ${roleLabel}`} placement="right">
+            <Avatar sx={{ width: 40, height: 40, mx: 'auto', bgcolor: 'primary.main', fontSize: 16, fontWeight: 700 }}>
+              {initials}
+            </Avatar>
+          </Tooltip>
         </Box>
-      </Box>
+      ) : (
+        <Box sx={{ px: 2, pb: 2, textAlign: 'center' }}>
+          <Avatar sx={{ width: 64, height: 64, mx: 'auto', mb: 1, bgcolor: 'primary.main', fontSize: 26, fontWeight: 700 }}>
+            {initials}
+          </Avatar>
+          <Typography variant="subtitle1" sx={{ fontWeight: 700, wordBreak: 'break-word' }} noWrap>
+            {displayName}
+          </Typography>
+          <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, mt: 0.5 }}>
+            <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: '#4caf50' }} />
+            <Typography variant="caption" color="text.secondary">{roleLabel} · Online</Typography>
+          </Box>
+        </Box>
+      )}
 
-      {/* Seletor de empresa (master) */}
-      <CompanySelector />
+      {/* Seletor de empresa (master) — oculto no modo mini */}
+      {!compact && <CompanySelector />}
 
       {/* Navegação em seções — scroll sem barra visível */}
       <Box
@@ -291,70 +316,83 @@ export default function AppShell({ children }) {
           <List
             key={section.label}
             subheader={
-              <ListSubheader
-                disableSticky
-                sx={{
-                  bgcolor: 'transparent',
-                  color: '#ec407a',
-                  fontWeight: 700,
-                  fontSize: 11,
-                  letterSpacing: 1,
-                  textTransform: 'uppercase',
-                  lineHeight: '32px',
-                }}
-              >
-                {section.label}
-              </ListSubheader>
+              compact ? null : (
+                <ListSubheader
+                  disableSticky
+                  sx={{
+                    bgcolor: 'transparent',
+                    color: '#ec407a',
+                    fontWeight: 700,
+                    fontSize: 11,
+                    letterSpacing: 1,
+                    textTransform: 'uppercase',
+                    lineHeight: '32px',
+                  }}
+                >
+                  {section.label}
+                </ListSubheader>
+              )
             }
-            sx={{ px: 1.25 }}
+            sx={{ px: compact ? 0.75 : 1.25 }}
           >
             {section.items.map((item) => (
-              <ListItemButton
-                key={item.to}
-                component={NavLink}
-                to={item.to}
-                end
-                onClick={() => {
-                  if (showNewBadge(item)) markSeen.mutate(item.to)
-                  if (!isMdUp) setOpen(false)
-                }}
-                sx={{
-                  mb: 0.5,
-                  borderRadius: 2,
-                  color: 'text.secondary',
-                  '& .MuiListItemIcon-root': { color: 'text.secondary', minWidth: 40 },
-                  '&:hover': { bgcolor: 'action.hover' },
-                  '&.active': {
-                    bgcolor: activeBg,
-                    color: 'primary.main',
-                    '& .MuiListItemIcon-root': { color: 'primary.main' },
-                  },
-                }}
-              >
-                <ListItemIcon>{item.icon}</ListItemIcon>
-                <ListItemText primary={item.label} primaryTypographyProps={{ fontSize: 14, fontWeight: 600 }} />
-                {showNewBadge(item) && (
-                  <Chip
-                    label="Novo"
-                    size="small"
-                    sx={{ height: 18, fontSize: 10, fontWeight: 700, bgcolor: '#ec407a', color: '#fff', '& .MuiChip-label': { px: 0.75 } }}
-                  />
-                )}
-              </ListItemButton>
+              <Tooltip key={item.to} title={compact ? item.label : ''} placement="right" disableHoverListener={!compact}>
+                <ListItemButton
+                  component={NavLink}
+                  to={item.to}
+                  end
+                  onClick={() => {
+                    if (showNewBadge(item)) markSeen.mutate(item.to)
+                    if (!isMdUp) setOpen(false)
+                  }}
+                  sx={{
+                    mb: 0.5,
+                    borderRadius: 2,
+                    color: 'text.secondary',
+                    justifyContent: compact ? 'center' : 'flex-start',
+                    px: compact ? 1 : 2,
+                    '& .MuiListItemIcon-root': { color: 'text.secondary', minWidth: compact ? 0 : 40 },
+                    '&:hover': { bgcolor: 'action.hover' },
+                    '&.active': {
+                      bgcolor: activeBg,
+                      color: 'primary.main',
+                      '& .MuiListItemIcon-root': { color: 'primary.main' },
+                    },
+                  }}
+                >
+                  <ListItemIcon sx={{ justifyContent: 'center' }}>{item.icon}</ListItemIcon>
+                  {!compact && <ListItemText primary={item.label} primaryTypographyProps={{ fontSize: 14, fontWeight: 600 }} />}
+                  {!compact && showNewBadge(item) && (
+                    <Chip
+                      label="Novo"
+                      size="small"
+                      sx={{ height: 18, fontSize: 10, fontWeight: 700, bgcolor: '#ec407a', color: '#fff', '& .MuiChip-label': { px: 0.75 } }}
+                    />
+                  )}
+                </ListItemButton>
+              </Tooltip>
             ))}
           </List>
         ))}
       </Box>
 
       <Divider />
-      <List sx={{ px: 1.25 }}>
-        <ListItemButton
-          onClick={() => { logout(); navigate('/login') }}
-          sx={{ borderRadius: 2, color: 'text.secondary', '& .MuiListItemIcon-root': { color: 'text.secondary', minWidth: 40 } }}
-        >
-          <ListItemIcon><LogoutIcon /></ListItemIcon>
-          <ListItemText primary="Sair" primaryTypographyProps={{ fontSize: 14, fontWeight: 600 }} />
-        </ListItemButton>
+      <List sx={{ px: compact ? 0.75 : 1.25 }}>
+        <Tooltip title={compact ? 'Sair' : ''} placement="right" disableHoverListener={!compact}>
+          <ListItemButton
+            onClick={() => { logout(); navigate('/login') }}
+            sx={{
+              borderRadius: 2,
+              color: 'text.secondary',
+              justifyContent: compact ? 'center' : 'flex-start',
+              px: compact ? 1 : 2,
+              '& .MuiListItemIcon-root': { color: 'text.secondary', minWidth: compact ? 0 : 40 },
+            }}
+          >
+            <ListItemIcon sx={{ justifyContent: 'center' }}><LogoutIcon /></ListItemIcon>
+            {!compact && <ListItemText primary="Sair" primaryTypographyProps={{ fontSize: 14, fontWeight: 600 }} />}
+          </ListItemButton>
+        </Tooltip>
       </List>
     </Box>
   )
@@ -365,27 +403,29 @@ export default function AppShell({ children }) {
         position="fixed"
         elevation={0}
         sx={{
-          width: { md: `calc(100% - ${drawerWidth}px)` },
-          ml: { md: `${drawerWidth}px` },
+          width: { md: `calc(100% - ${navWidth}px)` },
+          ml: { md: `${navWidth}px` },
           bgcolor: 'background.paper',
           color: 'text.primary',
           borderBottom: '1px solid',
           borderColor: 'divider',
+          transition: theme.transitions.create(['width', 'margin']),
         }}
       >
         <Toolbar sx={{ gap: 1 }}>
-          <IconButton
-            onClick={() => setOpen(!open)}
-            sx={{
-              display: { md: 'none' },
-              color: 'primary.contrastText',
-              bgcolor: 'primary.main',
-              '&:hover': { bgcolor: 'primary.dark' },
-            }}
-            size="small"
-          >
-            <MenuIcon />
-          </IconButton>
+          <Tooltip title={isMdUp ? (collapsed ? 'Expandir menu' : 'Recolher menu') : 'Menu'}>
+            <IconButton
+              onClick={() => (isMdUp ? toggleCollapsed() : setOpen(!open))}
+              sx={{
+                color: 'primary.contrastText',
+                bgcolor: 'primary.main',
+                '&:hover': { bgcolor: 'primary.dark' },
+              }}
+              size="small"
+            >
+              <MenuIcon />
+            </IconButton>
+          </Tooltip>
 
           {/* Breadcrumb */}
           <Box sx={{ minWidth: 0 }}>
@@ -544,14 +584,14 @@ export default function AppShell({ children }) {
         </Toolbar>
       </AppBar>
 
-      <Box component="nav" sx={{ width: { md: drawerWidth }, flexShrink: { md: 0 } }}>
+      <Box component="nav" sx={{ width: { md: navWidth }, flexShrink: { md: 0 }, transition: theme.transitions.create('width') }}>
         {isMdUp ? (
           <Drawer
             variant="permanent"
             open
-            sx={{ '& .MuiDrawer-paper': { width: drawerWidth, boxSizing: 'border-box', border: 'none' } }}
+            sx={{ '& .MuiDrawer-paper': { width: navWidth, boxSizing: 'border-box', border: 'none', overflowX: 'hidden', transition: theme.transitions.create('width') } }}
           >
-            {drawer}
+            {drawerContent(mini)}
           </Drawer>
         ) : (
           <Drawer
@@ -561,12 +601,12 @@ export default function AppShell({ children }) {
             ModalProps={{ keepMounted: true }}
             sx={{ '& .MuiDrawer-paper': { width: drawerWidth, boxSizing: 'border-box', border: 'none' } }}
           >
-            {drawer}
+            {drawerContent(false)}
           </Drawer>
         )}
       </Box>
 
-      <Box component="main" sx={{ flexGrow: 1, p: { xs: 2, md: 3 }, width: { md: `calc(100% - ${drawerWidth}px)` } }}>
+      <Box component="main" sx={{ flexGrow: 1, p: { xs: 2, md: 3 }, width: { md: `calc(100% - ${navWidth}px)` } }}>
         <Toolbar />
         {pageAllowed ? children : (
           <Box sx={{ py: 10, textAlign: 'center', color: 'text.secondary' }}>
