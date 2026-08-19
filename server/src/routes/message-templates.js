@@ -28,6 +28,15 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
       customTypes = rows.rows.map(r => r.type);
     }
     const gatewayReady = await isGatewayConfigured(companyId);
+    // pixReady = a empresa consegue gerar um Pix copia e cola (Efí OU chave Pix
+    // estática). É o que decide se as cobranças saem com o Pix em balão separado
+    // ({{quebra}}), então é o flag que a tela usa para mostrar esses modelos.
+    let hasPixKey = false;
+    if (companyId) {
+      const p = await query(`SELECT pix_key FROM ${SCHEMA}.companies WHERE id=$1`, [companyId]);
+      hasPixKey = Boolean(p.rows[0]?.pix_key);
+    }
+    const pixReady = gatewayReady || hasPixKey;
     let audit = null;
     if (companyId) {
       const a = await query(
@@ -45,6 +54,7 @@ router.get('/', requireAuth, companyScope(true), async (req, res) => {
       defaults: DEFAULT_TEMPLATES,
       customTypes,
       gatewayReady,
+      pixReady,
       audit,
       placeholders: PLACEHOLDERS.map(p => ({
         ...p,

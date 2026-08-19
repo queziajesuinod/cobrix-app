@@ -2,8 +2,13 @@
 const { query, withClient } = require('../db');
 const { requireAuth, companyScope } = require('./auth');
 const { runDaily } = require('../jobs/billing-cron');
-const { sendWhatsapp } = require('../services/messenger');
-const { msgPre, msgDue, msgLate } = require('../services/message-templates');
+const { sendWhatsappSequence } = require('../services/messenger');
+const {
+  msgPreSegments,
+  msgDueSegments,
+  msgLateSegments,
+  joinSegmentsWithMarker,
+} = require('../services/message-templates');
 const { ensureGatewayPaymentLink } = require('../services/payment-gateway');
 const { resolvePixPayment } = require('../services/pix-resolver');
 const { sendBillingEmail } = require('../services/mailer');
@@ -383,7 +388,7 @@ router.post('/notify', requireAuth, companyScope(true), requirePermission('billi
         await query(`UPDATE ${SCHEMA}.billing_notifications SET billing_id=$1 WHERE id=$2`, [billingId, notifId]);
       }
 
-      const map = { pre: msgPre, due: msgDue, late: msgLate };
+      const map = { pre: msgPreSegments, due: msgDueSegments, late: msgLateSegments };
       const recipientName = row.client_responsavel || row.client_name;
       const clientDocument = {
         cpf: row.client_document_cpf || null,
@@ -404,7 +409,7 @@ router.post('/notify', requireAuth, companyScope(true), requirePermission('billi
       });
       const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
       const copyPaste = gatewaySummary?.copyPaste || null;
-      const text = await map[typ]({
+      const segments = await map[typ]({
         nome: recipientName,
         responsavel: row.client_responsavel,
         client_name: row.client_name,
@@ -421,9 +426,11 @@ router.post('/notify', requireAuth, companyScope(true), requirePermission('billi
         payment_qrcode: null,
         payment_expires_at_iso: gatewaySummary?.expiresAtIso || null,
       });
+      const text = joinSegmentsWithMarker(segments);
 
-      // envia via EVO com config da empresa (fora de qualquer lock/conexão retida)
-      const evo = await sendWhatsapp(req.companyId, { number: row.client_phone, text });
+      // envia via EVO com config da empresa (fora de qualquer lock/conexão retida),
+      // em camadas (balões) para o Pix copia e cola sair sozinho
+      const evo = await sendWhatsappSequence(req.companyId, { number: row.client_phone, segments });
 
       // canal de e-mail (best-effort) com o mesmo conteúdo/PIX
       let email = { ok: false, skipped: true };

@@ -10,7 +10,8 @@
 // da tabela billing_notifications — sem precisar reconstruí-la.
 
 const { query } = require('../db');
-const { sendWhatsapp } = require('../services/messenger');
+const { sendWhatsappSequence } = require('../services/messenger');
+const { splitRenderedSegments } = require('../services/message-templates');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 const MAX_RETRIES = Number(process.env.NOTIFICATION_MAX_RETRIES || 3);
@@ -77,9 +78,12 @@ async function runNotificationRetry() {
     console.log(`[RETRY] ${failed.length} notificação(ões) para reenviar`);
 
     for (const n of failed) {
+      // A mensagem foi salva com o marcador {{quebra}} preservado, então o retry
+      // reconstrói os mesmos balões. Sem marcador (mensagens antigas) = 1 balão.
+      const segments = splitRenderedSegments(n.message);
       let evo = { ok: false, error: 'unknown' };
       try {
-        evo = await sendWhatsapp(n.company_id, { number: n.to_number, text: n.message });
+        evo = await sendWhatsappSequence(n.company_id, { number: n.to_number, segments });
       } catch (err) {
         evo = { ok: false, error: err.message };
       }

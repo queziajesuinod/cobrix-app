@@ -1,7 +1,12 @@
 // server/src/jobs/billing-cron.js
 const { query, withClient } = require("../db");
-const { sendWhatsapp } = require("../services/messenger");
-const { msgPre, msgDue, msgLate } = require("../services/message-templates");
+const { sendWhatsappSequence } = require("../services/messenger");
+const {
+  msgPreSegments,
+  msgDueSegments,
+  msgLateSegments,
+  joinSegmentsWithMarker,
+} = require("../services/message-templates");
 const { ensureGatewayPaymentLink } = require("../services/payment-gateway");
 const { resolvePixPayment } = require("../services/pix-resolver");
 const { sendBillingEmail } = require("../services/mailer");
@@ -388,7 +393,7 @@ async function sendPreReminders(now = new Date(), companyId = null) {
       });
       const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
       const copyPaste = gatewaySummary?.copyPaste || null;
-      const text = await msgPre({
+      const segments = await msgPreSegments({
         nome: recipientName,
         responsavel: c.client_responsavel,
         client_name: c.client_name,
@@ -404,9 +409,10 @@ async function sendPreReminders(now = new Date(), companyId = null) {
         payment_qrcode: null,
         payment_expires_at_iso: gatewaySummary?.expiresAtIso || null,
       });
+      const text = joinSegmentsWithMarker(segments);
 
       let evo = { ok: false, error: "no-phone" };
-      try { evo = await sendWhatsapp(c.company_id, { number: c.client_phone, text }, { throttle: true }); }
+      try { evo = await sendWhatsappSequence(c.company_id, { number: c.client_phone, segments }, { throttle: true }); }
       catch (e) { evo = { ok: false, error: e.message }; }
       let email = { ok: false, skipped: true };
       if (c.client_email) {
@@ -517,7 +523,7 @@ async function sendDueReminders(now = new Date(), companyId = null, opts = {}) {
       });
       const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
       const copyPaste = gatewaySummary?.copyPaste || null;
-      const text = await msgDue({
+      const segments = await msgDueSegments({
         nome: recipientName,
         responsavel: r.client_responsavel,
         client_name: r.client_name,
@@ -534,9 +540,10 @@ async function sendDueReminders(now = new Date(), companyId = null, opts = {}) {
         payment_qrcode: null,
         payment_expires_at_iso: gatewaySummary?.expiresAtIso || null,
       });
+      const text = joinSegmentsWithMarker(segments);
 
       let evo = { ok: false, error: "no-phone" };
-      try { evo = await sendWhatsapp(r.company_id, { number: r.client_phone, text }, { throttle: true }); }
+      try { evo = await sendWhatsappSequence(r.company_id, { number: r.client_phone, segments }, { throttle: true }); }
       catch (e) { evo = { ok: false, error: e.message }; }
       let email = { ok: false, skipped: true };
       if (r.client_email) {
@@ -649,7 +656,7 @@ async function sendLateRemindersForTarget(now, target, companyId, modeFilter, op
       });
       const gatewaySummary = summarizeGatewayPayment(gatewayPayment);
       const copyPaste = gatewaySummary?.copyPaste || null;
-      const text = await msgLate({
+      const segments = await msgLateSegments({
         nome: recipientName,
         responsavel: r.client_responsavel,
         client_name: r.client_name,
@@ -666,9 +673,10 @@ async function sendLateRemindersForTarget(now, target, companyId, modeFilter, op
         payment_qrcode: null,
         payment_expires_at_iso: gatewaySummary?.expiresAtIso || null,
       });
+      const text = joinSegmentsWithMarker(segments);
 
       let evo = { ok: false, error: "no-phone" };
-      try { evo = await sendWhatsapp(r.company_id, { number: r.client_phone, text }, { throttle: true }); }
+      try { evo = await sendWhatsappSequence(r.company_id, { number: r.client_phone, segments }, { throttle: true }); }
       catch (e) { evo = { ok: false, error: e.message }; }
       let email = { ok: false, skipped: true };
       if (r.client_email) {

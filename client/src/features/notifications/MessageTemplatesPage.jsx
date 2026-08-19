@@ -21,24 +21,25 @@ import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined'
 import RestoreIcon from '@mui/icons-material/Restore'
 import DragIndicatorIcon from '@mui/icons-material/DragIndicator'
 import EditNoteIcon from '@mui/icons-material/EditNote'
+import AddCommentIcon from '@mui/icons-material/AddComment'
 import WhatsAppIcon from '@mui/icons-material/WhatsApp'
 import EmailIcon from '@mui/icons-material/Email'
 
 const TEMPLATE_TYPES = [
-  { key: 'pre', title: 'Pré-vencimento (sem gateway)', description: 'Aviso enviado três dias antes para empresas sem link Pix.' },
-  { key: 'pre_gateway', title: 'Pré-vencimento (com gateway)', description: 'Versão enviada quando existe link de pagamento automático.' },
-  { key: 'due', title: 'Dia do vencimento (sem gateway)', description: 'Mensagem enviada no dia do vencimento sem link Pix.' },
-  { key: 'due_gateway', title: 'Dia do vencimento (com gateway)', description: 'Mensagem com link Pix enviada no D0.' },
-  { key: 'late', title: 'Em atraso (sem gateway)', description: 'Cobrança enviada quatro dias após o vencimento.' },
-  { key: 'late_gateway', title: 'Em atraso (com gateway)', description: 'Cobrança com link Pix para empresas integradas ao gateway.' },
-  { key: 'due_weekly', title: 'Semanal - dia do vencimento (sem gateway)', description: 'Mensagem enviada no dia do vencimento para cobranças semanais.' },
-  { key: 'due_weekly_gateway', title: 'Semanal - dia do vencimento (com gateway)', description: 'Mensagem enviada no dia do vencimento com link Pix.' },
-  { key: 'late_weekly', title: 'Semanal - em atraso (sem gateway)', description: 'Cobrança enviada dois dias após o vencimento.' },
-  { key: 'late_weekly_gateway', title: 'Semanal - em atraso (com gateway)', description: 'Cobrança enviada dois dias após o vencimento com link Pix.' },
-  { key: 'due_custom', title: 'Data personalizada - dia do vencimento (sem gateway)', description: 'Mensagem enviada no dia da data personalizada.' },
-  { key: 'due_custom_gateway', title: 'Data personalizada - dia do vencimento (com gateway)', description: 'Mensagem enviada no dia da data personalizada com link Pix.' },
-  { key: 'late_custom', title: 'Data personalizada - em atraso (sem gateway)', description: 'Cobrança enviada quatro dias após o vencimento.' },
-  { key: 'late_custom_gateway', title: 'Data personalizada - em atraso (com gateway)', description: 'Cobrança enviada quatro dias após o vencimento com link Pix.' },
+  { key: 'pre', title: 'Pré-vencimento (só chave Pix)', description: 'Manda só a chave Pix no texto. Usado quando não há Pix copia e cola.' },
+  { key: 'pre_gateway', title: 'Pré-vencimento (Pix copia e cola)', description: 'Manda o Pix copia e cola (Efí ou chave Pix estática) — em balão separado com {{quebra}}.' },
+  { key: 'due', title: 'Dia do vencimento (só chave Pix)', description: 'Manda só a chave Pix no dia do vencimento.' },
+  { key: 'due_gateway', title: 'Dia do vencimento (Pix copia e cola)', description: 'Manda o Pix copia e cola no dia do vencimento — em balão separado.' },
+  { key: 'late', title: 'Em atraso (só chave Pix)', description: 'Cobrança em atraso com a chave Pix crua.' },
+  { key: 'late_gateway', title: 'Em atraso (Pix copia e cola)', description: 'Cobrança em atraso com o Pix copia e cola — em balão separado.' },
+  { key: 'due_weekly', title: 'Semanal - dia do vencimento (só chave Pix)', description: 'Cobrança semanal no vencimento, só com a chave Pix.' },
+  { key: 'due_weekly_gateway', title: 'Semanal - dia do vencimento (Pix copia e cola)', description: 'Cobrança semanal no vencimento, com o Pix copia e cola em balão separado.' },
+  { key: 'late_weekly', title: 'Semanal - em atraso (só chave Pix)', description: 'Cobrança semanal em atraso, só com a chave Pix.' },
+  { key: 'late_weekly_gateway', title: 'Semanal - em atraso (Pix copia e cola)', description: 'Cobrança semanal em atraso, com o Pix copia e cola em balão separado.' },
+  { key: 'due_custom', title: 'Data personalizada - dia do vencimento (só chave Pix)', description: 'Cobrança em data personalizada, só com a chave Pix.' },
+  { key: 'due_custom_gateway', title: 'Data personalizada - dia do vencimento (Pix copia e cola)', description: 'Cobrança em data personalizada, com o Pix copia e cola em balão separado.' },
+  { key: 'late_custom', title: 'Data personalizada - em atraso (só chave Pix)', description: 'Cobrança personalizada em atraso, só com a chave Pix.' },
+  { key: 'late_custom_gateway', title: 'Data personalizada - em atraso (Pix copia e cola)', description: 'Cobrança personalizada em atraso, com o Pix copia e cola em balão separado.' },
   { key: 'paid', title: 'Pagamento confirmado', description: 'Mensagem enviada quando o pagamento é confirmado.' },
 ];
 
@@ -73,7 +74,11 @@ export default function MessageTemplatesPage() {
   const visibleTypes = useMemo(() => {
     if (channel === 'email') return EMAIL_TEMPLATE_TYPES
     if (!data) return TEMPLATE_TYPES
-    if (data.gatewayReady) {
+    // Mostra os modelos com Pix copia e cola (em balões) quando a empresa
+    // consegue gerar Pix — por Efí OU chave Pix estática. É o que reflete o que
+    // realmente é enviado. Fallback p/ gatewayReady se o backend for antigo.
+    const pixReady = data.pixReady ?? data.gatewayReady
+    if (pixReady) {
       return TEMPLATE_TYPES.filter(({ key }) => isGatewayKey(key) || alwaysVisibleKeys.has(key))
     }
     return TEMPLATE_TYPES.filter(({ key }) => !isGatewayKey(key))
@@ -118,11 +123,22 @@ export default function MessageTemplatesPage() {
   const renderPreview = (text) => {
     if (!text) return ''
     return text.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (match, key) => {
+      if (key === 'quebra') return match
       if (Object.prototype.hasOwnProperty.call(placeholderExamples, key)) {
         return placeholderExamples[key]
       }
       return match
     })
+  }
+
+  // Divide o modelo no marcador {{quebra}} em balões separados, como o WhatsApp
+  // enviará. Cada trecho vira uma mensagem própria (útil p/ o Pix copia e cola).
+  const renderPreviewSegments = (text) => {
+    if (!text) return []
+    return String(text)
+      .split(/\{\{\s*quebra\s*\}\}/gi)
+      .map((part) => renderPreview(part).trim())
+      .filter((part) => part.length > 0)
   }
 
   const mutation = useMutation({
@@ -158,6 +174,13 @@ export default function MessageTemplatesPage() {
 
       return { ...prev, [type]: next }
     })
+  }
+
+  // Insere uma quebra de balão ({{quebra}}) no ponto do cursor. Cada quebra faz
+  // o WhatsApp enviar dali em diante como uma NOVA mensagem. Não depende do token
+  // estar na lista de campos — é o jeito direto de separar o Pix em outro balão.
+  const handleInsertBreak = (type) => {
+    handleInsertToken(type, '\n\n{{quebra}}\n\n')
   }
 
   const handleDrop = (type, event) => {
@@ -267,9 +290,19 @@ export default function MessageTemplatesPage() {
                 icon={<EditNoteIcon/>}
                 iconColor="primary.main"
                 action={(
-                  <Button size="small" startIcon={<RestoreIcon />} onClick={() => handleReset(key)}>
-                    Padrão
-                  </Button>
+                  <Stack direction="row" spacing={1}>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      startIcon={<AddCommentIcon />}
+                      onClick={() => handleInsertBreak(key)}
+                    >
+                      Novo balão
+                    </Button>
+                    <Button size="small" startIcon={<RestoreIcon />} onClick={() => handleReset(key)}>
+                      Padrão
+                    </Button>
+                  </Stack>
                 )}
               >
                 <Stack sx={{ display: 'flex', flexDirection: 'column', gap: 2, flexGrow: 1 }}>
@@ -291,24 +324,65 @@ export default function MessageTemplatesPage() {
                     fullWidth
                   />
 
+                  <Typography variant="caption" color="text.secondary">
+                    Onde aparecer <b>{'{{quebra}}'}</b> o WhatsApp começa uma nova mensagem (balão).
+                    Posicione o cursor e clique em <b>Novo balão</b> — ex.: deixe o Pix copia e cola
+                    ({'{{payment_code}}'}) sozinho no último balão, fácil de copiar.
+                  </Typography>
+
                   <Box>
-                    <Typography variant="caption" color="text.secondary">
-                      Pré-visualização com dados de exemplo
-                    </Typography>
-                    <Box
-                      sx={{
-                        mt: 1,
-                        p: 1.5,
-                        bgcolor: 'grey.100',
-                        borderRadius: 1,
-                        fontFamily: 'monospace',
-                        fontSize: 13,
-                        whiteSpace: 'pre-line',
-                        minHeight: 150,
-                      }}
-                    >
-                      {renderPreview(currentValue) || 'Sem conteúdo.'}
-                    </Box>
+                    {(() => {
+                      const segments = renderPreviewSegments(currentValue)
+                      return (
+                        <>
+                          <Typography variant="caption" color="text.secondary">
+                            Pré-visualização (como o cliente vê no WhatsApp)
+                            {segments.length > 1 ? ` · ${segments.length} balões` : ''}
+                          </Typography>
+                          <Stack
+                            sx={(theme) => ({
+                              mt: 1,
+                              p: 1.5,
+                              gap: 1,
+                              minHeight: 150,
+                              borderRadius: 1.5,
+                              alignItems: 'flex-end',
+                              justifyContent: segments.length === 0 ? 'center' : 'flex-start',
+                              bgcolor: theme.palette.mode === 'dark' ? '#0b141a' : '#efeae2',
+                              border: `1px solid ${theme.palette.divider}`,
+                            })}
+                          >
+                            {segments.length === 0 ? (
+                              <Typography variant="body2" color="text.secondary">
+                                Sem conteúdo.
+                              </Typography>
+                            ) : (
+                              segments.map((segment, index) => (
+                                <Box
+                                  key={index}
+                                  sx={(theme) => ({
+                                    maxWidth: '88%',
+                                    px: 1.25,
+                                    py: 0.75,
+                                    borderRadius: 2,
+                                    borderTopRightRadius: 0.5,
+                                    fontSize: 13,
+                                    lineHeight: 1.45,
+                                    whiteSpace: 'pre-line',
+                                    wordBreak: 'break-word',
+                                    boxShadow: theme.shadows[1],
+                                    bgcolor: theme.palette.mode === 'dark' ? '#005c4b' : '#d9fdd3',
+                                    color: theme.palette.mode === 'dark' ? '#e9edef' : '#111b21',
+                                  })}
+                                >
+                                  {segment}
+                                </Box>
+                              ))
+                            )}
+                          </Stack>
+                        </>
+                      )
+                    })()}
                   </Box>
                 </Stack>
               </PapperBlock>

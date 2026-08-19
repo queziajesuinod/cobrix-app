@@ -49,17 +49,17 @@ Equipe Financeira
 
 Seu {{contract_type}} referente ao mês de {{reference_month}} vencerá em {{due_date}}, no valor de {{amount}}.
 
-Você pode pagar acessando o link seguro abaixo:
-{{payment_link}}
-
-Se preferir Pix copia e cola:
-{{payment_code}}
+Para sua comodidade, o código Pix copia e cola vai na próxima mensagem — é só copiar e pagar. 🙂
 
 Ficamos à disposição caso precise de algo.
 
 Atenciosamente,
 Equipe Financeira
-{{company_name}}`,
+{{company_name}}
+
+{{quebra}}
+
+{{payment_code}}`,
 
   due: `Olá {{client_name}}, tudo bem?
 
@@ -77,17 +77,17 @@ Equipe Financeira
 
 Seu pagamento do {{contract_type}} ({{reference_month}}) vence HOJE, {{due_date}}, no valor de {{amount}}.
 
-Pague agora pelo link:
-{{payment_link}}
-
-Ou use o Pix copia e cola:
-{{payment_code}}
+Envio o código Pix copia e cola na próxima mensagem — é só copiar e pagar.
 
 Qualquer dúvida, fale com a gente.
 
 Atenciosamente,
 Equipe Financeira
-{{company_name}}`,
+{{company_name}}
+
+{{quebra}}
+
+{{payment_code}}`,
 
   late: `Olá {{client_name}}, tudo bem?
 
@@ -105,17 +105,17 @@ Equipe Financeira
 
 Percebemos que o pagamento do {{contract_type}} ({{reference_month}}) está em atraso desde {{due_date}}. Valor: {{amount}}.
 
-Você pode regularizar acessando este link:
-{{payment_link}}
+Para regularizar, o código Pix copia e cola vai na próxima mensagem. Se já pagou, desconsidere esta mensagem.
 
-Ou utilize o Pix copia e cola:
-{{payment_code}}
-
-Se já pagou, desconsidere esta mensagem. Qualquer dúvida, fale conosco.
+Qualquer dúvida, fale conosco.
 
 Atenciosamente,
 Equipe Financeira
-{{company_name}}`,
+{{company_name}}
+
+{{quebra}}
+
+{{payment_code}}`,
 
   paid: `Olá {{client_name}}, tudo bem?
 
@@ -201,7 +201,14 @@ const PLACEHOLDERS = [
   { key: 'payment_qrcode', label: 'QR Code em base64', example: 'data:image/png;base64,...' },
   { key: 'payment_expires_at', label: 'Expira em (dd/mm/aaaa hh:mm)', example: '25/09/2025 23:59' },
   { key: 'payment_expires_at_iso', label: 'Expira em (ISO8601)', example: '2025-09-25T23:59:00Z' },
+  { key: 'quebra', label: 'Quebra de mensagem (inicia um novo balão no WhatsApp)', example: '' },
 ];
+
+// Marcador que divide o template em vários balões de WhatsApp. Cada trecho entre
+// marcadores vira uma mensagem separada, enviada em sequência com um pequeno
+// atraso — útil para mandar o Pix copia e cola sozinho, fácil de copiar.
+// No e-mail e em qualquer render de string única o marcador é apenas removido.
+const SEGMENT_TOKEN_RE = /\{\{\s*quebra\s*\}\}/gi;
 
 const CACHE_TTL_MS = 60_000;
 const templateCache = new Map();
@@ -376,7 +383,9 @@ function buildBindings(ctx = {}) {
   };
 }
 
-async function renderMessage(type, ctx = {}) {
+// Carrega o template do tipo e monta os bindings a partir do contexto. Reusado
+// tanto pelo render de string única quanto pelo render segmentado (balões).
+async function prepareRender(type, ctx = {}) {
   const companyId =
     ctx.companyId ??
     ctx.company_id ??
@@ -396,7 +405,50 @@ async function renderMessage(type, ctx = {}) {
     if (!ctx.payment_expires_at_iso && gatewayPayment.expiresAtIso) paymentCtx.payment_expires_at_iso = gatewayPayment.expiresAtIso;
   }
   const bindings = buildBindings({ ...ctx, ...paymentCtx, empresa: companyName, pix, pix_key: pix });
-  return applyTemplate(template, bindings);
+  return { template, bindings };
+}
+
+// Divide o template no marcador {{quebra}} ANTES de aplicar as variáveis (o
+// applyTemplate apagaria o token por ser uma variável desconhecida). Aplica os
+// bindings em cada trecho, remove espaços nas pontas e descarta segmentos
+// vazios (ex.: balão do Pix quando não há copia e cola disponível).
+function splitTemplateSegments(template, bindings) {
+  if (!template) return [];
+  return String(template)
+    .split(SEGMENT_TOKEN_RE)
+    .map((part) => applyTemplate(part, bindings).trim())
+    .filter((part) => part.length > 0);
+}
+
+// Junta segmentos já renderizados preservando o marcador {{quebra}}, para gravar
+// uma única coluna `message` de onde o retry consegue reconstruir os balões.
+function joinSegmentsWithMarker(segments) {
+  return (segments || []).filter(Boolean).join('\n\n{{quebra}}\n\n');
+}
+
+// Divide uma mensagem JÁ renderizada (com o marcador literal {{quebra}}) de volta
+// em balões. Usado pelo worker de retry, que reenvia o texto salvo no banco.
+// Sem marcador (mensagens antigas) retorna um único balão.
+function splitRenderedSegments(message) {
+  if (!message) return [];
+  return String(message)
+    .split(SEGMENT_TOKEN_RE)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+}
+
+// Render em texto único (compatível com o comportamento antigo). Se o template
+// tiver {{quebra}}, os segmentos são unidos por linha em branco.
+async function renderMessage(type, ctx = {}) {
+  const { template, bindings } = await prepareRender(type, ctx);
+  const segments = splitTemplateSegments(template, bindings);
+  return segments.join('\n\n');
+}
+
+// Render em segmentos: um item por balão de WhatsApp, na ordem do template.
+async function renderMessageSegments(type, ctx = {}) {
+  const { template, bindings } = await prepareRender(type, ctx);
+  return splitTemplateSegments(template, bindings);
 }
 
 function hasGatewayContext(ctx = {}) {
@@ -442,6 +494,18 @@ async function msgPaid(ctx) {
   return renderMessage('paid', ctx);
 }
 
+// Variantes segmentadas (uma mensagem por balão) para o envio em camadas no
+// WhatsApp. Mesma resolução de tipo das versões de string única.
+async function msgPreSegments(ctx) {
+  return renderMessageSegments(resolveTemplateType('pre', ctx), ctx);
+}
+async function msgDueSegments(ctx) {
+  return renderMessageSegments(resolveTemplateType('due', ctx), ctx);
+}
+async function msgLateSegments(ctx) {
+  return renderMessageSegments(resolveTemplateType('late', ctx), ctx);
+}
+
 async function getTemplatesForCompany(companyId) {
   const result = { ...DEFAULT_TEMPLATES };
   if (!companyId) return result;
@@ -478,7 +542,13 @@ module.exports = {
   msgDue,
   msgLate,
   msgPaid,
+  msgPreSegments,
+  msgDueSegments,
+  msgLateSegments,
   renderMessage,
+  renderMessageSegments,
+  joinSegmentsWithMarker,
+  splitRenderedSegments,
   getTemplatesForCompany,
   upsertTemplate,
   clearTemplateCache,
