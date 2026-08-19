@@ -47,6 +47,7 @@ import AccountBalanceIcon from '@mui/icons-material/AccountBalance'
 import QueryStatsIcon from '@mui/icons-material/QueryStats'
 import ViewKanbanIcon from '@mui/icons-material/ViewKanban'
 import ReceiptLongIcon from '@mui/icons-material/ReceiptLong'
+import LocalOfferIcon from '@mui/icons-material/LocalOffer'
 
 const drawerWidth = 268
 const miniWidth = 76
@@ -125,6 +126,7 @@ const buildSections = (role) => [
         items: [
           { to: '/companies', label: 'Empresas', icon: <BusinessIcon /> },
           { to: '/admin/plans', label: 'Planos', icon: <LayersIcon /> },
+          { to: '/admin/coupons', label: 'Cupons', icon: <LocalOfferIcon />, since: '2026-08-19' },
           { to: '/admin/subscriptions', label: 'Assinaturas', icon: <ReceiptLongIcon />, since: '2026-08-04' },
           { to: '/admin/permissions', label: 'Perfis e permissões', icon: <AdminPanelSettingsIcon /> },
           { to: '/system/health', label: 'Saúde do sistema', icon: <MonitorHeartIcon /> },

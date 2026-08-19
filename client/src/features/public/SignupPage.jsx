@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import {
@@ -84,7 +84,29 @@ export default function SignupPage() {
     onError: (err) => setError(err?.response?.data?.error || 'Falha ao concluir a inscrição.'),
   })
 
+  // Cupom: valida ao vivo contra o plano/período selecionados.
+  const [couponResult, setCouponResult] = useState(null)
+  const validateCoupon = useMutation({
+    mutationFn: (payload) => publicService.validateCoupon(payload),
+    onSuccess: (d) => setCouponResult(d),
+    onError: (err) => setCouponResult({ valid: false, message: err?.response?.data?.message || 'Falha ao validar o cupom.' }),
+  })
+
+  // Trocar plano/período invalida um cupom já aplicado (preço muda / elegibilidade).
+  useEffect(() => { setCouponResult(null) }, [planId, period])
+
+  const handleApplyCoupon = () => {
+    const code = form.code.trim()
+    if (!code) { setCouponResult({ valid: false, message: 'Digite um código de cupom.' }); return }
+    if (!selectedPlan) { setCouponResult({ valid: false, message: 'Selecione um plano primeiro.' }); return }
+    validateCoupon.mutate({ code, plan_id: selectedPlan.id, period })
+  }
+
+  // Valor efetivo a cobrar agora (com desconto do cupom, se válido).
+  const chargeNow = couponResult?.valid ? Number(couponResult.final_amount) : selectedCharge
+
   const setField = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }))
+  const setCode = (e) => { setForm((f) => ({ ...f, code: e.target.value })); setCouponResult(null) }
 
   const handleSubmit = (e) => {
     e.preventDefault()
@@ -119,6 +141,11 @@ export default function SignupPage() {
           <Typography color="text.secondary" sx={{ mt: 0.5 }}>
             Plano <strong>{data?.plan}</strong> · {data?.period === 'annual' ? 'anual' : 'mensal'} · <strong>{BRL(data?.amount)}</strong>
           </Typography>
+          {data?.discount > 0 && (
+            <Typography variant="body2" sx={{ color: 'success.main', fontWeight: 600 }}>
+              Cupom {data?.coupon?.code} aplicado: −{BRL(data.discount)} (de {BRL(data.originalAmount)})
+            </Typography>
+          )}
 
           {pix && (pix.qrCodeImage || pix.copyPaste) ? (
             <Box sx={{ mt: 2 }}>
@@ -201,10 +228,16 @@ export default function SignupPage() {
       {selectedPlan && (
         <Card sx={{ p: { xs: 2.5, md: 3 }, mt: 3 }}>
           <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.5 }}>Seus dados</Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: couponResult?.valid ? 0.5 : 2 }}>
             Plano <strong>{selectedPlan.name}</strong> · {period === 'annual' ? 'Anual' : 'Mensal'} · <strong>{BRL(selectedMonthly)}</strong>/mês
             {period === 'annual' && <> · cobrança única de <strong>{BRL(selectedCharge)}</strong></>}
           </Typography>
+          {couponResult?.valid && (
+            <Typography variant="body2" sx={{ mb: 2, fontWeight: 700, color: 'success.main' }}>
+              Com o cupom {couponResult.code}: você paga <strong>{BRL(chargeNow)}</strong> na 1ª cobrança
+              {' '}(de {BRL(selectedCharge)}). As próximas seguem o valor normal.
+            </Typography>
+          )}
           <Divider sx={{ mb: 2 }} />
           {error && <Alert severity="warning" sx={{ mb: 2 }}>{error}</Alert>}
           <Box component="form" onSubmit={handleSubmit}>
@@ -227,8 +260,35 @@ export default function SignupPage() {
               <Grid item xs={12} sm={6}>
                 <TextField fullWidth type="password" label="Senha" value={form.admin_password} onChange={setField('admin_password')} helperText="Mínimo 6 caracteres" />
               </Grid>
-              <Grid item xs={12} sm={6}>
-                <TextField fullWidth label="Código de cupom (opcional)" value={form.code} onChange={setField('code')} />
+              <Grid item xs={12}>
+                <Stack direction="row" spacing={1} alignItems="flex-start">
+                  <TextField
+                    fullWidth
+                    label="Código de cupom (opcional)"
+                    value={form.code}
+                    onChange={setCode}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleApplyCoupon() } }}
+                  />
+                  <Button
+                    variant="outlined"
+                    onClick={handleApplyCoupon}
+                    disabled={validateCoupon.isPending || !form.code.trim()}
+                    sx={{ height: 56, whiteSpace: 'nowrap', px: 3 }}
+                  >
+                    {validateCoupon.isPending ? '…' : 'Aplicar'}
+                  </Button>
+                </Stack>
+                {couponResult && (
+                  couponResult.valid ? (
+                    <Typography variant="body2" sx={{ mt: 1, color: 'success.main', fontWeight: 600 }}>
+                      Cupom {couponResult.code} aplicado — desconto de {BRL(couponResult.discount)} na 1ª cobrança.
+                    </Typography>
+                  ) : (
+                    <Typography variant="body2" sx={{ mt: 1, color: 'warning.main' }}>
+                      {couponResult.message || 'Cupom inválido.'}
+                    </Typography>
+                  )
+                )}
               </Grid>
             </Grid>
             <Stack direction="row" justifyContent="flex-end" sx={{ mt: 3 }}>

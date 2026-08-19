@@ -8,6 +8,7 @@ const express = require('express');
 const { query, withClient } = require('../db');
 const { ensureDateOnly, formatISODate } = require('../utils/date-only');
 const { resolvePixPayment } = require('../services/pix-resolver');
+const { validateCoupon, redeemCoupon } = require('../services/coupons');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 const router = express.Router();
@@ -93,6 +94,18 @@ router.post('/signup', async (req, res) => {
     const profRes = await query(`SELECT id FROM ${SCHEMA}.profiles WHERE name = 'Administrador' LIMIT 1`);
     const adminProfileId = profRes.rows[0]?.id || null;
 
+    // Cupom (opcional): valida e aplica só na 1ª cobrança. O contrato mantém o
+    // preço cheio (renovações não são descontadas). Cupom inválido bloqueia,
+    // para o cadastro não seguir cobrando cheio quando o usuário esperava desconto.
+    let couponInfo = null;
+    let firstAmount = price;
+    if (code) {
+      const v = await validateCoupon(code, { planId: plan.id, period, amount: price });
+      if (!v.valid) return res.status(400).json({ error: v.message, field: 'code', reason: v.reason });
+      couponInfo = v;
+      firstAmount = v.finalAmount;
+    }
+
     const today = ensureDateOnly(new Date()) || new Date();
     const todayIso = formatISODate(today);
     const endIso = formatISODate(new Date(today.getFullYear() + 10, today.getMonth(), today.getDate()));
@@ -163,7 +176,7 @@ router.post('/signup', async (req, res) => {
            VALUES ($1, $2, $3, $4, 'pending')
            ON CONFLICT (contract_id, billing_date) DO NOTHING
            RETURNING id`,
-          [ownerId, ownerContractId, todayIso, price]
+          [ownerId, ownerContractId, todayIso, firstAmount]
         );
         const firstBillingId = billRes.rows[0]?.id || null;
         await client.query(
@@ -181,9 +194,30 @@ router.post('/signup', async (req, res) => {
            VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending_payment') RETURNING id`,
           [newCompanyId, plan.id, period, ownerId, ownerClientId, ownerContractId, code]
         );
+        const newSubscriptionId = subRes.rows[0].id;
+
+        // Resgata o cupom na mesma transação (atômico com limite). Se o limite
+        // estourou entre validar e resgatar, aborta tudo.
+        if (couponInfo) {
+          const red = await redeemCoupon(client, {
+            couponId: couponInfo.coupon.id,
+            subscriptionId: newSubscriptionId,
+            companyId: newCompanyId,
+            planId: plan.id,
+            period,
+            originalAmount: price,
+            discountAmount: couponInfo.discount,
+            finalAmount: firstAmount,
+          });
+          if (!red.redeemed) {
+            const e = new Error('Este cupom esgotou o limite de usos. Tente novamente sem o cupom.');
+            e.status = 409;
+            throw e;
+          }
+        }
 
         await client.query('COMMIT');
-        return { companyId: newCompanyId, subscriptionId: subRes.rows[0].id, contractId: ownerContractId, firstBillingId, description };
+        return { companyId: newCompanyId, subscriptionId: newSubscriptionId, contractId: ownerContractId, firstBillingId, description };
       } catch (err) {
         await client.query('ROLLBACK');
         throw err;
@@ -199,7 +233,7 @@ router.post('/signup', async (req, res) => {
         companyId: ownerId,
         contractId: result.contractId,
         billingId: result.firstBillingId,
-        amount: Number(price),
+        amount: Number(firstAmount),
         dueDate: todayIso,
         contractDescription: result.description,
         clientName: companyName,
@@ -209,7 +243,7 @@ router.post('/signup', async (req, res) => {
         pix = {
           copyPaste: link.copyPaste || null,
           qrCodeImage: link.qrCodeImage || null,
-          amount: Number(link.amount || price),
+          amount: Number(link.amount || firstAmount),
         };
       }
     }
@@ -221,16 +255,58 @@ router.post('/signup', async (req, res) => {
       subscriptionId: result.subscriptionId,
       plan: plan.name,
       period,
-      amount: Number(price),
+      amount: Number(firstAmount),
+      originalAmount: Number(price),
+      discount: couponInfo ? Number(couponInfo.discount) : 0,
+      coupon: couponInfo ? { code: couponInfo.coupon.code } : null,
       pix,
       message: 'Cadastro criado. Pague o PIX abaixo — assim que o pagamento for confirmado, seu acesso será liberado automaticamente.',
     });
   } catch (err) {
+    if (err && err.status) {
+      return res.status(err.status).json({ error: err.message });
+    }
     if (String(err.message || '').includes('duplicate key')) {
       return res.status(409).json({ error: 'Este e-mail já está cadastrado' });
     }
     console.error('[public/signup] falhou', err);
     res.status(500).json({ error: 'Falha ao concluir a inscrição. Tente novamente.' });
+  }
+});
+
+// Pré-validação pública de cupom — o cadastro mostra o desconto ao vivo antes
+// de finalizar. Não resgata nada; só calcula o preview sobre o preço do plano.
+router.post('/coupon/validate', async (req, res) => {
+  const b = req.body || {};
+  const code = b.code ? String(b.code).trim() : '';
+  const planId = Number(b.plan_id);
+  const period = String(b.period || 'monthly').toLowerCase();
+  if (!code) return res.status(400).json({ valid: false, message: 'Informe um cupom.' });
+  try {
+    const planRes = await query(
+      `SELECT id, price_monthly, price_annual FROM ${SCHEMA}.plans WHERE id = $1 AND active = true`,
+      [planId]
+    );
+    const plan = planRes.rows[0];
+    if (!plan) return res.status(400).json({ valid: false, message: 'Plano indisponível' });
+    const monthlyRate = period === 'annual' ? plan.price_annual : plan.price_monthly;
+    if (monthlyRate == null) return res.status(400).json({ valid: false, message: 'Plano não oferece este período' });
+    const price = period === 'annual' ? Number(monthlyRate) * 12 : Number(monthlyRate);
+
+    const v = await validateCoupon(code, { planId: plan.id, period, amount: price });
+    if (!v.valid) return res.json({ valid: false, reason: v.reason, message: v.message });
+    return res.json({
+      valid: true,
+      code: v.coupon.code,
+      discount_type: v.coupon.discount_type,
+      discount_value: Number(v.coupon.discount_value),
+      original_amount: v.originalAmount,
+      discount: v.discount,
+      final_amount: v.finalAmount,
+    });
+  } catch (e) {
+    console.error('[public/coupon/validate] falhou', e);
+    res.status(500).json({ valid: false, message: 'Falha ao validar cupom' });
   }
 });
 

@@ -150,6 +150,48 @@ async function initDb() {
       );
     `);
     await c.query(`CREATE INDEX IF NOT EXISTS idx_plan_price_adjustments_plan ON ${schema}.plan_price_adjustments(plan_id, created_at DESC);`);
+    // Cupons de desconto para a assinatura SaaS (aplicados na 1ª cobrança do
+    // signup). discount_type='percent' usa discount_value como %, 'fixed' como
+    // valor em R$. plan_ids NULL = vale para todos os planos. max_redemptions
+    // NULL = ilimitado; redeemed_count é incrementado a cada uso confirmado.
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.coupons (
+        id SERIAL PRIMARY KEY,
+        code TEXT NOT NULL UNIQUE,
+        description TEXT,
+        discount_type TEXT NOT NULL DEFAULT 'percent',
+        discount_value NUMERIC(14,2) NOT NULL,
+        applies_to_period TEXT NOT NULL DEFAULT 'any',
+        plan_ids INTEGER[],
+        min_amount NUMERIC(14,2),
+        max_redemptions INTEGER,
+        redeemed_count INTEGER NOT NULL DEFAULT 0,
+        starts_at DATE,
+        expires_at DATE,
+        active BOOLEAN NOT NULL DEFAULT true,
+        created_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    await c.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_coupons_code_upper ON ${schema}.coupons(UPPER(code));`);
+    // Auditoria: um registro por uso de cupom (qual assinatura/empresa e quanto
+    // foi descontado). Serve de trilha e para relatórios de campanha.
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.coupon_redemptions (
+        id SERIAL PRIMARY KEY,
+        coupon_id INTEGER NOT NULL REFERENCES ${schema}.coupons(id) ON DELETE CASCADE,
+        subscription_id INTEGER,
+        company_id INTEGER,
+        plan_id INTEGER,
+        period TEXT,
+        original_amount NUMERIC(14,2),
+        discount_amount NUMERIC(14,2),
+        final_amount NUMERIC(14,2),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_coupon_redemptions_coupon ON ${schema}.coupon_redemptions(coupon_id, created_at DESC);`);
     await c.query(`
       CREATE TABLE IF NOT EXISTS clients (
         id SERIAL PRIMARY KEY,
