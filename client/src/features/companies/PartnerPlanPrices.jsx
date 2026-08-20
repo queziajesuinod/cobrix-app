@@ -74,8 +74,8 @@ export default function PartnerPlanPrices({ companyId }) {
 
       <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>Preços de revenda</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-        Defina o preço de venda por plano. Não pode ficar abaixo do piso (definido pela plataforma).
-        Os acessos de cada plano são fixos — só a empresa padrão os altera. Vazio = usa o piso.
+        Defina o preço de venda por plano. Não pode ficar abaixo do <strong>piso</strong> — que é o preço do parceiro
+        que te trouxe (ou da plataforma, se você vende direto). Os acessos são fixos (só a plataforma altera). Vazio = usa o piso.
       </Typography>
 
       {msg && <Alert severity={msg.type} sx={{ mb: 1.5 }} onClose={() => setMsg(null)}>{msg.text}</Alert>}

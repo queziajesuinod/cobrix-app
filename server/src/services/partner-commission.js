@@ -331,4 +331,35 @@ async function settleCommissionsByChargeBilling(billingId) {
   return { settled: upd.rowCount };
 }
 
-module.exports = { accrueForPaidBilling, commissionAmount, chargePartnerCommissions, settleCommissionsByChargeBilling };
+// Cron: ~N minutos depois de acumular, dispara a cobrança automática das comissões
+// (agrupa o que acumulou no intervalo por par credor↔parceiro). O atraso deixa
+// juntar vários pagamentos próximos numa cobrança só. Gera PIX + WhatsApp.
+const AUTOCHARGE_ENABLED = String(process.env.COMMISSION_AUTOCHARGE_ENABLED ?? 'true') !== 'false';
+const AUTOCHARGE_DELAY_MIN = Math.max(1, Number(process.env.COMMISSION_AUTOCHARGE_DELAY_MIN || 2));
+
+async function runCommissionAutoCharge() {
+  if (!AUTOCHARGE_ENABLED) return { charged: 0, disabled: true };
+  // Pares (credor, parceiro) com comissões 'accrued' cuja MAIS ANTIGA já passou do
+  // atraso — ou seja, o lote "assentou" e pode ser cobrado.
+  const due = await query(
+    `SELECT payee_company_id, payer_company_id
+       FROM ${SCHEMA}.partner_commissions
+      WHERE status='accrued'
+      GROUP BY payee_company_id, payer_company_id
+     HAVING MIN(created_at) <= now() - make_interval(mins => $1)`,
+    [AUTOCHARGE_DELAY_MIN]
+  );
+  let charged = 0;
+  for (const row of due.rows) {
+    try {
+      await chargePartnerCommissions({ payeeCompanyId: row.payee_company_id, partnerId: row.payer_company_id });
+      charged += 1;
+    } catch (err) {
+      logger.error({ err, payee: row.payee_company_id, payer: row.payer_company_id }, '[commission-autocharge] falha ao cobrar');
+    }
+  }
+  if (charged) logger.info({ charged }, '[commission-autocharge] cobranças de comissão geradas');
+  return { charged };
+}
+
+module.exports = { accrueForPaidBilling, commissionAmount, chargePartnerCommissions, settleCommissionsByChargeBilling, runCommissionAutoCharge };

@@ -356,21 +356,26 @@ router.get('/:id/partner-prices', requireAuth, async (req, res) => {
   if (!Number.isInteger(id)) return res.status(400).json({ error: 'id inválido' });
   if (!canReadCompany(req.user, req.companyId, id)) return res.status(403).json({ error: 'Sem permissão' });
   try {
-    // Autossuficiente: planos ativos com o PISO (price_*), a contagem de acessos
-    // (fixos) e o preço de revenda deste parceiro (my_price_*). Assim o parceiro
-    // precifica sem depender da rota de planos (que é só master).
+    // Autossuficiente: planos ativos com o PISO, a contagem de acessos (fixos) e o
+    // preço de revenda deste parceiro (my_price_*). Multinível: o PISO é o preço do
+    // parceiro ACIMA (parent_partner_id) — pra não furar o preço de quem o trouxe.
+    // Sem parceiro pai (ou sem preço dele), cai no piso da plataforma (preço do plano).
+    const parentRes = await query('SELECT parent_partner_id FROM companies WHERE id=$1', [id]);
+    const parentId = parentRes.rows[0]?.parent_partner_id || null;
     const r = await query(
       `SELECT p.id AS plan_id, p.name, p.active,
-              p.price_monthly, p.price_annual,
+              COALESCE(parent_pp.price_monthly, p.price_monthly) AS price_monthly,
+              COALESCE(parent_pp.price_annual, p.price_annual) AS price_annual,
               COALESCE(array_length(p.permission_keys, 1), 0) AS permission_count,
-              pp.price_monthly AS my_price_monthly, pp.price_annual AS my_price_annual
+              my_pp.price_monthly AS my_price_monthly, my_pp.price_annual AS my_price_annual
          FROM plans p
-         LEFT JOIN partner_plan_prices pp ON pp.plan_id = p.id AND pp.partner_id = $1
+         LEFT JOIN partner_plan_prices my_pp ON my_pp.plan_id = p.id AND my_pp.partner_id = $1
+         LEFT JOIN partner_plan_prices parent_pp ON parent_pp.plan_id = p.id AND parent_pp.partner_id = $2
         WHERE p.active = true
-        ORDER BY p.price_monthly ASC NULLS LAST, p.name ASC`,
-      [id]
+        ORDER BY COALESCE(parent_pp.price_monthly, p.price_monthly) ASC NULLS LAST, p.name ASC`,
+      [id, parentId]
     );
-    res.json({ plans: r.rows });
+    res.json({ plans: r.rows, floor_from: parentId ? 'partner' : 'platform' });
   } catch (err) {
     console.error('[partner-prices] GET', err);
     res.status(500).json({ error: 'Falha ao carregar preços de revenda' });
@@ -383,14 +388,23 @@ router.put('/:id/partner-prices/:planId', requireAuth, async (req, res) => {
   if (!Number.isInteger(id) || !Number.isInteger(planId)) return res.status(400).json({ error: 'Parâmetros inválidos' });
   if (!canWriteCompany(req.user, req.companyId, id)) return res.status(403).json({ error: 'Sem permissão' });
   try {
-    const comp = await query('SELECT is_partner FROM companies WHERE id=$1', [id]);
+    const comp = await query('SELECT is_partner, parent_partner_id FROM companies WHERE id=$1', [id]);
     if (!comp.rows[0]) return res.status(404).json({ error: 'Empresa não encontrada' });
     if (!comp.rows[0].is_partner) return res.status(400).json({ error: 'Empresa não é parceira' });
 
     const pl = await query('SELECT price_monthly, price_annual FROM plans WHERE id=$1', [planId]);
     if (!pl.rows[0]) return res.status(404).json({ error: 'Plano não encontrado' });
-    const floorM = pl.rows[0].price_monthly == null ? null : Number(pl.rows[0].price_monthly);
-    const floorA = pl.rows[0].price_annual == null ? null : Number(pl.rows[0].price_annual);
+    // Piso = preço do parceiro ACIMA (parent), se houver; senão o piso da plataforma.
+    let floorM = pl.rows[0].price_monthly == null ? null : Number(pl.rows[0].price_monthly);
+    let floorA = pl.rows[0].price_annual == null ? null : Number(pl.rows[0].price_annual);
+    const parentId = comp.rows[0].parent_partner_id || null;
+    if (parentId) {
+      const pp = await query('SELECT price_monthly, price_annual FROM partner_plan_prices WHERE partner_id=$1 AND plan_id=$2', [parentId, planId]);
+      if (pp.rows[0]) {
+        if (pp.rows[0].price_monthly != null) floorM = Number(pp.rows[0].price_monthly);
+        if (pp.rows[0].price_annual != null) floorA = Number(pp.rows[0].price_annual);
+      }
+    }
 
     const pm = parsePartnerMoney(req.body?.price_monthly);
     const pa = parsePartnerMoney(req.body?.price_annual);

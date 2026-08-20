@@ -41,6 +41,7 @@ const { runGatewayReconcile } = require('./jobs/gateway-reconcile');
 const { runNotificationRetry } = require('./jobs/notification-retry');
 const { runTasksDaily } = require('./jobs/tasks-cron');
 const { runSubscriptionLifecycle } = require('./jobs/subscription-lifecycle');
+const { runCommissionAutoCharge } = require('./services/partner-commission');
 const { withCronLock } = require('./utils/cron-lock');
 const { sendOpsAlert } = require('./services/alerts');
 const logger = require('./utils/logger');
@@ -102,6 +103,9 @@ scheduleCronJob('RETRY', process.env.CRON_RETRY || '*/30 * * * *', runNotificati
 scheduleCronJob('TASKS_DAILY', process.env.CRON_TASKS || '0 8 * * *', runTasksDaily);
 // Assinaturas: efetiva cancelamentos com carência vencida (default: 6h todo dia)
 scheduleCronJob('SUBSCRIPTION', process.env.CRON_SUBSCRIPTION || '0 6 * * *', runSubscriptionLifecycle);
+// Revenda: auto-cobrança das comissões acumuladas (default: a cada 1 min; cobra o
+// que acumulou há >= COMMISSION_AUTOCHARGE_DELAY_MIN, padrão 2 min). Gera PIX+WhatsApp.
+scheduleCronJob('COMMISSION_AUTOCHARGE', process.env.CRON_COMMISSION_AUTOCHARGE || '* * * * *', runCommissionAutoCharge);
 
 // Gateway fallback polling
 const gatewayPollMs = Number(process.env.GATEWAY_POLL_MS || 300000);
