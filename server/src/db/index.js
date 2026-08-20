@@ -513,6 +513,13 @@ async function initDb() {
     // Recebedor da despesa (para quem foi pago): fornecedor, locador, órgão etc.
     await c.query(`ALTER TABLE ${schema}.finance_expenses ADD COLUMN IF NOT EXISTS payee TEXT;`);
     await c.query(`CREATE INDEX IF NOT EXISTS idx_fin_exp_category ON ${schema}.finance_expenses (company_id, category);`);
+    // Parcelamento (compra parcelada, DIFERENTE de recorrência/assinatura): as N
+    // parcelas mensais compartilham o mesmo installment_group para poder excluir
+    // todas de uma vez; installment_no/total guardam "k de N" para exibição.
+    await c.query(`ALTER TABLE ${schema}.finance_expenses ADD COLUMN IF NOT EXISTS installment_group TEXT;`);
+    await c.query(`ALTER TABLE ${schema}.finance_expenses ADD COLUMN IF NOT EXISTS installment_no INTEGER;`);
+    await c.query(`ALTER TABLE ${schema}.finance_expenses ADD COLUMN IF NOT EXISTS installment_total INTEGER;`);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_fin_exp_installment_group ON ${schema}.finance_expenses (company_id, installment_group);`);
 
     // Metas financeiras anuais (orçado) por empresa: 1 linha por ano.
     await c.query(`

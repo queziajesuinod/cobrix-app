@@ -77,6 +77,7 @@ function EntryDialog({ kind, entry, onClose, onSaved, notify }) {
     amount: entry?.amount != null ? String(entry.amount) : '',
     date: entry?.[dateField] ? String(entry[dateField]).slice(0, 10) : '',
     is_recurring: Boolean(entry?.is_recurring),
+    installments: 1,
     expense_type: entry?.expense_type || 'variable',
     category: entry?.category || '',
     payee: entry?.payee || '',
@@ -128,7 +129,10 @@ function EntryDialog({ kind, entry, onClose, onSaved, notify }) {
         amount: Number(form.amount),
         [dateField]: form.date,
       }
-      if (isExpense && !isEdit) payload.is_recurring = form.is_recurring
+      if (isExpense && !isEdit) {
+        payload.is_recurring = form.is_recurring
+        payload.installments = Math.max(1, parseInt(form.installments, 10) || 1)
+      }
       if (isExpense) {
         payload.expense_type = form.expense_type
         payload.category = form.category.trim() || null
@@ -203,10 +207,32 @@ function EntryDialog({ kind, entry, onClose, onSaved, notify }) {
             </TextField>
           )}
           {isExpense && !isEdit && (
-            <FormControlLabel
-              control={<Switch checked={form.is_recurring} onChange={(e) => setForm((f) => ({ ...f, is_recurring: e.target.checked }))} />}
-              label="Despesa recorrente (o sistema lança sozinho todo mês)"
-            />
+            <>
+              <FormControlLabel
+                control={(
+                  <Switch
+                    checked={form.is_recurring}
+                    disabled={Number(form.installments) > 1}
+                    onChange={(e) => setForm((f) => ({ ...f, is_recurring: e.target.checked, installments: e.target.checked ? 1 : f.installments }))}
+                  />
+                )}
+                label="Despesa recorrente — assinatura (repete todo mês, sem fim)"
+              />
+              <TextField
+                label="Parcelas"
+                type="number"
+                inputProps={{ min: 1, max: 120, step: 1 }}
+                value={form.installments}
+                disabled={form.is_recurring}
+                onChange={(e) => setForm((f) => ({ ...f, installments: e.target.value }))}
+                fullWidth
+                helperText={
+                  Number(form.installments) > 1
+                    ? `Compra parcelada: cria ${form.installments} lançamentos mensais de ${BRL(form.amount)} cada (o "Valor" acima é o de UMA parcela). A 1ª na data informada; as demais nos meses seguintes como "a pagar".`
+                    : 'Compra parcelada? Informe o nº de parcelas (o mesmo valor se repete a cada mês). Deixe 1 para à vista.'
+                }
+              />
+            </>
           )}
           {!isExpense && (
             <>
@@ -262,7 +288,13 @@ function toItem(kind, r) {
     amount,
     [df]: r[df] || null,
   }
-  if (kind === 'expense') { item.is_recurring = !!r.is_recurring; item.expense_type = r.expense_type || 'variable' }
+  if (kind === 'expense') {
+    item.is_recurring = !!r.is_recurring
+    item.expense_type = r.expense_type || 'variable'
+    item.category = String(r.category ?? '').trim() || null
+    item.payee = String(r.payee ?? '').trim() || null
+    item.installments = Math.max(1, parseInt(r.installments, 10) || 1)
+  }
   return item
 }
 
@@ -274,7 +306,7 @@ function ImportPreviewDialog({ kind, rows, onClose, onConfirm, submitting }) {
     description: r.description ?? '',
     amount: Number.isFinite(r.amount) ? r.amount : '',
     [df]: r[df] ?? '',
-    ...(isExpense ? { is_recurring: !!r.is_recurring, expense_type: r.expense_type || 'variable' } : {}),
+    ...(isExpense ? { is_recurring: !!r.is_recurring, expense_type: r.expense_type || 'variable', category: r.category ?? '', payee: r.payee ?? '', installments: Math.max(1, parseInt(r.installments, 10) || 1) } : {}),
   })))
   const update = (i, field, value) => setData((d) => d.map((row, idx) => (idx === i ? { ...row, [field]: value } : row)))
 
@@ -301,9 +333,12 @@ function ImportPreviewDialog({ kind, rows, onClose, onConfirm, submitting }) {
                 <TableCell sx={{ width: 32 }}>#</TableCell>
                 <TableCell>Nomenclatura</TableCell>
                 <TableCell>Descrição</TableCell>
+                {isExpense && <TableCell>Categoria</TableCell>}
+                {isExpense && <TableCell>Recebedor</TableCell>}
                 <TableCell>Valor</TableCell>
                 <TableCell>{isExpense ? 'Pagamento' : 'Recebimento'}</TableCell>
                 {isExpense && <TableCell>Recorrente</TableCell>}
+                {isExpense && <TableCell>Parcelas</TableCell>}
                 <TableCell>Status</TableCell>
               </TableRow>
             </TableHead>
@@ -315,9 +350,12 @@ function ImportPreviewDialog({ kind, rows, onClose, onConfirm, submitting }) {
                     <TableCell sx={{ color: 'text.disabled' }}>{i + 1}</TableCell>
                     <TableCell><TextField size="small" variant="standard" value={r.label} onChange={(e) => update(i, 'label', e.target.value)} error={errs.includes('nomenclatura')} sx={{ minWidth: 140 }} /></TableCell>
                     <TableCell><TextField size="small" variant="standard" value={r.description} onChange={(e) => update(i, 'description', e.target.value)} sx={{ minWidth: 160 }} /></TableCell>
+                    {isExpense && <TableCell><TextField size="small" variant="standard" value={r.category} onChange={(e) => update(i, 'category', e.target.value)} sx={{ minWidth: 130 }} /></TableCell>}
+                    {isExpense && <TableCell><TextField size="small" variant="standard" value={r.payee} onChange={(e) => update(i, 'payee', e.target.value)} sx={{ minWidth: 130 }} /></TableCell>}
                     <TableCell><TextField size="small" variant="standard" type="number" inputProps={{ step: '0.01', min: 0 }} value={r.amount} onChange={(e) => update(i, 'amount', e.target.value)} error={errs.includes('valor')} sx={{ width: 110 }} /></TableCell>
                     <TableCell><TextField size="small" variant="standard" type="date" value={r[df]} onChange={(e) => update(i, df, e.target.value)} error={errs.includes('data')} sx={{ width: 150 }} InputLabelProps={{ shrink: true }} /></TableCell>
-                    {isExpense && <TableCell><Switch size="small" checked={!!r.is_recurring} onChange={(e) => update(i, 'is_recurring', e.target.checked)} /></TableCell>}
+                    {isExpense && <TableCell><Switch size="small" checked={!!r.is_recurring} disabled={Number(r.installments) > 1} onChange={(e) => update(i, 'is_recurring', e.target.checked)} /></TableCell>}
+                    {isExpense && <TableCell><TextField size="small" variant="standard" type="number" inputProps={{ min: 1, max: 120, step: 1 }} value={r.installments} onChange={(e) => update(i, 'installments', e.target.value)} sx={{ width: 64 }} /></TableCell>}
                     <TableCell>
                       {errs.length === 0
                         ? <Chip size="small" color="success" variant="outlined" label="OK" />
@@ -578,7 +616,12 @@ function ExpensesTab({ notify, range, canManage }) {
   const toggleAll = () => setSelected(allSelected ? new Set() : new Set(allIds))
 
   const handleDelete = async (row) => {
-    const ok = await confirm({ title: 'Excluir despesa', description: `Excluir "${row.label}" (${fmtDate(row.paid_at)})?`, confirmText: 'Excluir', tone: 'danger' })
+    // Parcelada: excluir uma remove todas as parcelas do grupo (é uma compra só).
+    const isInstallment = row.installment_group && Number(row.installment_total) > 1
+    const description = isInstallment
+      ? `Esta é uma compra parcelada (${row.installment_total}x). Excluir remove TODAS as ${row.installment_total} parcelas de "${row.label.replace(/\s*\(\d+\/\d+\)\s*$/, '')}". Continuar?`
+      : `Excluir "${row.label}" (${fmtDate(row.paid_at)})?`
+    const ok = await confirm({ title: isInstallment ? 'Excluir parcelamento' : 'Excluir despesa', description, confirmText: 'Excluir', tone: 'danger' })
     if (ok) del.mutate(row.id)
   }
   const handleBulkDelete = async () => {

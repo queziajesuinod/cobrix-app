@@ -50,11 +50,12 @@ function toBool(v) {
 }
 
 const REV_HEADERS = ['Nomenclatura', 'Descrição', 'Valor', 'Data de recebimento (dd/mm/aaaa)']
-const EXP_HEADERS = ['Nomenclatura', 'Descrição', 'Valor', 'Data de pagamento (dd/mm/aaaa)', 'Recorrente (sim/não)', 'Tipo (fixa/variável)']
+const EXP_HEADERS = ['Nomenclatura', 'Descrição', 'Categoria', 'Recebedor', 'Valor', 'Data de pagamento (dd/mm/aaaa)', 'Recorrente (sim/não)', 'Parcelas', 'Tipo (fixa/variável)']
 const REV_SAMPLE = [['Consultoria avulsa', 'Serviço extra ao cliente X', '1500,00', '10/07/2026']]
 const EXP_SAMPLE = [
-  ['Aluguel', 'Aluguel do escritório', '2000,00', '05/07/2026', 'sim', 'fixa'],
-  ['Material de escritório', 'Compra pontual', '350,50', '12/07/2026', 'não', 'variável'],
+  ['Aluguel', 'Aluguel do escritório', 'Aluguel', 'Imobiliária Silva', '2000,00', '05/07/2026', 'sim', '1', 'fixa'],
+  ['Material de escritório', 'Compra pontual', 'Material de escritório', 'Papelaria Central', '350,50', '12/07/2026', 'não', '1', 'variável'],
+  ['Notebook', 'Parcelado — Valor é o de UMA parcela', 'Equipamentos', 'Loja XYZ', '1500,00', '20/07/2026', 'não', '3', 'variável'],
 ]
 
 export async function downloadModelo(kind) {
@@ -79,9 +80,12 @@ export async function parseFile(kind, file) {
       ? {
           label: str(pick(r, 'nomenclatura', 'nome')),
           description: strOrNull(pick(r, 'descrição', 'descricao', 'descrição breve')),
+          category: strOrNull(pick(r, 'categoria')),
+          payee: strOrNull(pick(r, 'recebedor', 'fornecedor', 'recebedor / fornecedor')),
           amount: toAmount(pick(r, 'valor')),
           paid_at: toIsoDate(pick(r, 'data de pagamento', 'data')),
           is_recurring: toBool(pick(r, 'recorrente', 'recorrente (sim/não)', 'recorrente (sim/nao)')),
+          installments: Math.max(1, parseInt(pick(r, 'parcelas', 'parcela', 'qtd parcelas'), 10) || 1),
           expense_type: str(pick(r, 'tipo', 'tipo (fixa/variável)', 'tipo (fixa/variavel)')) || 'variável',
         }
       : {

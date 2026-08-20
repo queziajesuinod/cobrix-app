@@ -1,5 +1,6 @@
+const crypto = require('crypto');
 const express = require('express');
-const { query } = require('../db');
+const { query, withClient } = require('../db');
 const { requireAuth, companyScope } = require('./auth');
 const { requirePermission, requireAnyPermission, getEffectivePermissions } = require('../services/permissions');
 const { respondError } = require('../utils/http-error');
@@ -60,6 +61,32 @@ function addOneMonth(date, day) {
   const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
   const d = Math.min(day || base.getDate(), lastDay);
   return new Date(target.getFullYear(), target.getMonth(), d);
+}
+
+// Insere uma despesa PARCELADA: N linhas mensais do MESMO valor, ligadas por um
+// installment_group (para excluir todas juntas). A 1ª parcela fica na data
+// informada com o status recebido; as demais nascem 'pending' (a pagar) nos meses
+// seguintes. `run(text, params)` aceita tanto o client de uma transação quanto o
+// query padrão — assim serve ao cadastro (transacional) e à importação.
+async function insertInstallmentRows(run, { companyId, label, description, amount, paidAt, expenseType, category, payee, status, userId, installments }) {
+  const n = Math.min(Math.max(parseInt(installments, 10) || 1, 1), 120);
+  const group = crypto.randomUUID();
+  const start = ensureDateOnly(paidAt);
+  const dayRef = start.getDate();
+  const out = [];
+  let cursor = start;
+  for (let k = 0; k < n; k++) {
+    const date = k === 0 ? start : addOneMonth(cursor, dayRef);
+    cursor = date;
+    const r = await run(
+      `INSERT INTO ${SCHEMA}.finance_expenses
+         (company_id, label, description, amount, paid_at, is_recurring, recurrence_active, expense_type, category, payee, status, installment_group, installment_no, installment_total, created_by)
+       VALUES ($1,$2,$3,$4,$5,false,false,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+      [companyId, `${label} (${k + 1}/${n})`, description, amount, formatISODate(date), expenseType, category, payee, (k === 0 ? status : 'pending'), group, k + 1, n, userId]
+    );
+    out.push(r.rows[0]);
+  }
+  return out;
 }
 
 // Identidade de uma recorrência: mesma conta = mesmo label + descrição
@@ -283,9 +310,33 @@ router.post('/expenses', requireAuth, companyScope(true), requirePermission('fin
     const expenseType = parseExpenseType(req.body?.expense_type);
     const category = parseFreeText(req.body?.category);
     const payee = parseFreeText(req.body?.payee);
+    // Parcelamento: nº de parcelas mensais (teto 120). >1 gera N lançamentos do
+    // MESMO valor, um por mês. Não é recorrência (assinatura) — tem fim; por isso
+    // is_recurring fica false. Recorrência e parcelamento são mutuamente exclusivos.
+    const installments = Math.min(Math.max(parseInt(req.body?.installments, 10) || 1, 1), 120);
     // Por padrão a despesa lançada manualmente já é 'paid' (o usuário está
     // registrando algo pago); pode marcar como pendente ('a pagar').
     const status = req.body?.status === 'pending' ? 'pending' : 'paid';
+
+    if (installments > 1) {
+      // Despesa PARCELADA: cria as N parcelas numa transação (tudo ou nada).
+      const created = await withClient(async (client) => {
+        await client.query('BEGIN');
+        try {
+          const out = await insertInstallmentRows((t, p) => client.query(t, p), {
+            companyId: req.companyId, label, description, amount, paidAt,
+            expenseType, category, payee, status, userId: req.user.id, installments,
+          });
+          await client.query('COMMIT');
+          return out;
+        } catch (err) {
+          await client.query('ROLLBACK');
+          throw err;
+        }
+      });
+      return res.status(201).json({ ...created[0], installments: created.length });
+    }
+
     const r = await query(
       `INSERT INTO ${SCHEMA}.finance_expenses
          (company_id, label, description, amount, paid_at, is_recurring, recurrence_active, expense_type, category, payee, status, created_by)
@@ -337,16 +388,21 @@ router.post('/expenses/import', requireAuth, companyScope(true), requirePermissi
           const amount = parseAmount(it.amount);
           const paidAt = parseDate(it.paid_at, 'Data de pagamento');
           const description = it.description ? String(it.description).trim() || null : null;
-          const isRecurring = Boolean(it.is_recurring);
           const expenseType = parseExpenseType(it.expense_type);
           const category = parseFreeText(it.category);
           const payee = parseFreeText(it.payee);
-          await query(
-            `INSERT INTO ${SCHEMA}.finance_expenses
-               (company_id, label, description, amount, paid_at, is_recurring, recurrence_active, expense_type, category, payee, created_by)
-             VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10)`,
-            [req.companyId, label, description, amount, paidAt, isRecurring, expenseType, category, payee, req.user.id]
-          );
+          const installments = Math.min(Math.max(parseInt(it.installments, 10) || 1, 1), 120);
+          if (installments > 1) {
+            await insertInstallmentRows(query, { companyId: req.companyId, label, description, amount, paidAt, expenseType, category, payee, status: 'paid', userId: req.user.id, installments });
+          } else {
+            const isRecurring = Boolean(it.is_recurring);
+            await query(
+              `INSERT INTO ${SCHEMA}.finance_expenses
+                 (company_id, label, description, amount, paid_at, is_recurring, recurrence_active, expense_type, category, payee, created_by)
+               VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10)`,
+              [req.companyId, label, description, amount, paidAt, isRecurring, expenseType, category, payee, req.user.id]
+            );
+          }
           imported++;
         } catch (e) { errors.push({ line: i + 2, error: e.message }); }
       }
@@ -430,17 +486,23 @@ router.post('/expenses/import', requireAuth, companyScope(true), requirePermissi
           continue;
         }
         // Só a "fonte" de cada identidade fica recorrente; os demais meses são histórico.
-        const isRecurring = sourceIdx.has(i);
-        if (isRecurring) recurringSeries++;
         const expenseType = parseExpenseType(it.expense_type);
         const category = parseFreeText(it.category);
         const payee = parseFreeText(it.payee);
-        await query(
-          `INSERT INTO ${SCHEMA}.finance_expenses
-             (company_id, label, description, amount, paid_at, is_recurring, recurrence_active, expense_type, category, payee, created_by)
-           VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10)`,
-          [req.companyId, label, description, amount, paidAt, isRecurring, expenseType, category, payee, req.user.id]
-        );
+        const installments = Math.min(Math.max(parseInt(it.installments, 10) || 1, 1), 120);
+        if (installments > 1) {
+          // Parcelada: expande em N lançamentos (não entra na série de recorrência).
+          await insertInstallmentRows(query, { companyId: req.companyId, label, description, amount, paidAt, expenseType, category, payee, status: 'paid', userId: req.user.id, installments });
+        } else {
+          const isRecurring = sourceIdx.has(i);
+          if (isRecurring) recurringSeries++;
+          await query(
+            `INSERT INTO ${SCHEMA}.finance_expenses
+               (company_id, label, description, amount, paid_at, is_recurring, recurrence_active, expense_type, category, payee, created_by)
+             VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10)`,
+            [req.companyId, label, description, amount, paidAt, isRecurring, expenseType, category, payee, req.user.id]
+          );
+        }
         imported++;
       } catch (e) { errors.push({ line: i + 2, error: e.message }); }
     }
@@ -499,9 +561,18 @@ router.patch('/expenses/:id/pay', requireAuth, companyScope(true), requirePermis
 router.delete('/expenses/:id', requireAuth, companyScope(true), requirePermission('finance.expenses.manage'), async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const r = await query(`DELETE FROM ${SCHEMA}.finance_expenses WHERE id=$1 AND company_id=$2 RETURNING id`, [id, req.companyId]);
-    if (!r.rows[0]) return res.status(404).json({ error: 'Despesa não encontrada' });
-    res.json({ ok: true });
+    // Parcelamento: excluir UMA parcela remove TODAS as parcelas do grupo (é uma
+    // compra só). Despesa avulsa/recorrente exclui apenas a própria linha.
+    const cur = await query(
+      `SELECT installment_group FROM ${SCHEMA}.finance_expenses WHERE id=$1 AND company_id=$2`,
+      [id, req.companyId]
+    );
+    if (!cur.rows[0]) return res.status(404).json({ error: 'Despesa não encontrada' });
+    const group = cur.rows[0].installment_group;
+    const r = group
+      ? await query(`DELETE FROM ${SCHEMA}.finance_expenses WHERE company_id=$1 AND installment_group=$2 RETURNING id`, [req.companyId, group])
+      : await query(`DELETE FROM ${SCHEMA}.finance_expenses WHERE id=$1 AND company_id=$2 RETURNING id`, [id, req.companyId]);
+    res.json({ ok: true, deleted: r.rowCount });
   } catch (e) { respondError(res, e); }
 });
 
