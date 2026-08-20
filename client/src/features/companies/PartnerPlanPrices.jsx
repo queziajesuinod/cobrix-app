@@ -12,7 +12,8 @@ const BRL = (v) => v == null ? '—' : Number(v).toLocaleString('pt-BR', { style
 // acessos/estrutura do plano são da empresa padrão (não editáveis aqui). Cada preço
 // deve ser >= piso do plano (validado no backend). Salva plano a plano. Autossuficiente:
 // busca planos + piso + meu preço do endpoint (não depende da rota de planos do master).
-export default function PartnerPlanPrices({ companyId }) {
+export default function PartnerPlanPrices({ companyId, resellerStatus = 'active' }) {
+  const resellerLocked = resellerStatus === 'link_locked' || resellerStatus === 'network_seized'
   const qc = useQueryClient()
   const pricesQ = useQuery({
     queryKey: ['partner-prices', companyId],
@@ -62,15 +63,24 @@ export default function PartnerPlanPrices({ companyId }) {
   return (
     <Box sx={{ mt: 1 }}>
       <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>Link de indicação</Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-        Quem se cadastrar por este link vira seu cliente: a assinatura é cobrada por você (no seu PIX/gateway) pelos preços abaixo.
-      </Typography>
-      <Stack direction="row" spacing={1} sx={{ mb: 2.5 }}>
-        <TextField value={referralLink} fullWidth size="small" InputProps={{ readOnly: true }} onFocus={(e) => e.target.select()} />
-        <Button variant="outlined" onClick={() => { navigator?.clipboard?.writeText(referralLink).catch(() => {}); setMsg({ type: 'success', text: 'Link copiado.' }) }}>
-          Copiar
-        </Button>
-      </Stack>
+      {resellerLocked ? (
+        <Alert severity="warning" sx={{ mb: 2.5, mt: 1 }}>
+          Seu link de indicação está <strong>desativado</strong> enquanto a revenda estiver bloqueada por inadimplência.
+          Regularize a comissão em aberto para reativá-lo.
+        </Alert>
+      ) : (
+        <>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+            Quem se cadastrar por este link vira seu cliente: a assinatura é cobrada por você (no seu PIX/gateway) pelos preços abaixo.
+          </Typography>
+          <Stack direction="row" spacing={1} sx={{ mb: 2.5 }}>
+            <TextField value={referralLink} fullWidth size="small" InputProps={{ readOnly: true }} onFocus={(e) => e.target.select()} />
+            <Button variant="outlined" onClick={() => { navigator?.clipboard?.writeText(referralLink).catch(() => {}); setMsg({ type: 'success', text: 'Link copiado.' }) }}>
+              Copiar
+            </Button>
+          </Stack>
+        </>
+      )}
 
       <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>Preços de revenda</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>

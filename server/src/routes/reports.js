@@ -2,6 +2,7 @@ const express = require('express');
 const { query } = require('../db');
 const { requireAuth, companyScope } = require('./auth');
 const { ensureDateOnly, formatISODate } = require('../utils/date-only');
+const { parsePaidAt } = require('../utils/payment-date');
 const { sendWhatsapp } = require('../services/messenger');
 const { computeRiskScore } = require('../services/risk');
 const { requirePermission, getEffectivePermissions } = require('../services/permissions');
@@ -387,7 +388,7 @@ async function cancelOverdueBillings(companyId, ids) {
   return updated.rows;
 }
 
-async function markBillingsPaid(companyId, billings) {
+async function markBillingsPaid(companyId, billings, paidAt = null) {
   const ids = [...new Set((billings || []).map((item) => Number(item.billing_id)).filter((item) => Number.isInteger(item) && item > 0))];
   if (!ids.length) {
     return { updatedCount: 0, totalPaidAmount: 0, rows: [] };
@@ -396,12 +397,12 @@ async function markBillingsPaid(companyId, billings) {
   const updated = await query(
     `UPDATE ${SCHEMA}.billings
        SET status='paid',
-           gateway_paid_at = COALESCE(gateway_paid_at, NOW())
+           gateway_paid_at = COALESCE($3::timestamptz, gateway_paid_at, NOW())
      WHERE company_id = $1
        AND id = ANY($2::int[])
        AND LOWER(COALESCE(status, 'pending')) = 'pending'
      RETURNING id, contract_id, billing_date, amount`,
-    [companyId, ids]
+    [companyId, ids, paidAt]
   );
 
   for (const row of updated.rows) {
@@ -529,6 +530,8 @@ router.post('/overdue-clients/client/:clientId/mark-paid', requireAuth, companyS
     const clientId = parseClientId(req.params.clientId);
     const filters = parseFilters(req.body || {});
     const billingIds = parseBillingIds(req.body?.billingIds);
+    const paid = parsePaidAt(req.body?.paid_at);
+    if (paid.error) return res.status(400).json({ error: paid.error });
 
     const report = await listOverdueBillings({
       companyId,
@@ -543,7 +546,7 @@ router.post('/overdue-clients/client/:clientId/mark-paid', requireAuth, companyS
       return res.json({ ok: true, updated: 0, totalPaidAmount: 0 });
     }
 
-    const result = await markBillingsPaid(companyId, report.data);
+    const result = await markBillingsPaid(companyId, report.data, paid.date);
 
     return res.json({
       ok: true,
@@ -589,7 +592,9 @@ router.post('/overdue-clients/billing/:billingId/mark-paid', requireAuth, compan
       return res.json({ ok: true, updated: 0, alreadyPaid: true, billingId });
     }
 
-    const result = await markBillingsPaid(companyId, [row]);
+    const paid = parsePaidAt(req.body?.paid_at);
+    if (paid.error) return res.status(400).json({ error: paid.error });
+    const result = await markBillingsPaid(companyId, [row], paid.date);
 
     return res.json({
       ok: true,

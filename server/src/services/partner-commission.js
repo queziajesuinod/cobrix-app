@@ -11,6 +11,7 @@ const { query } = require('../db');
 const { formatISODate } = require('../utils/date-only');
 const { resolvePixPayment } = require('./pix-resolver');
 const { sendWhatsapp } = require('./messenger');
+const { revertResellerIfCaughtUp } = require('./reseller-enforcement');
 const logger = require('../utils/logger');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
@@ -98,7 +99,7 @@ async function accrueForPaidBilling({ billingId = null, contractId }) {
 
     // Assinatura ligada a este contrato (no tenant do recebedor).
     const subRes = await query(
-      `SELECT id, plan_id, period, partner_id, owner_company_id
+      `SELECT id, company_id, plan_id, period, partner_id, owner_company_id
          FROM ${SCHEMA}.company_subscriptions
         WHERE contract_id = $1
         ORDER BY created_at DESC LIMIT 1`,
@@ -124,76 +125,131 @@ async function accrueForPaidBilling({ billingId = null, contractId }) {
     if (floorRate == null) return { skipped: true, reason: 'sem-piso' };
     const floor = per === 'annual' ? Number(floorRate) * 12 : Number(floorRate);
 
-    const commissions = [];
+    // ── Liquidação em CASCATA ────────────────────────────────────────────────
+    // Em vez de o coletor pagar cada payee direto (estrela), o dinheiro sobe nível
+    // a nível: cada parceiro só liquida com o pai DIRETO e a base chega à Padrão
+    // pelo parceiro do topo da cadeia. O sub-parceiro NUNCA vê a Padrão.
+    const collector = payer;              // sub.owner_company_id — quem recebeu do cliente
+    const subscriberId = sub.company_id;  // a empresa-cliente da assinatura (folha da cadeia)
 
-    // Base: comissão da Padrão (sempre garantida).
+    // Base sobre o piso (comissão da Padrão) — entra PRIMEIRO na trava dos 100%.
     const ownerRes = await query(`SELECT id FROM ${SCHEMA}.companies WHERE is_saas_owner = true LIMIT 1`);
     const padraoId = ownerRes.rows[0]?.id || null;
-    if (padraoId) {
-      const amount = commissionAmount(plan.partner_commission_type, plan.partner_commission_value, floor);
-      if (amount > 0) {
-        commissions.push({
-          payee: padraoId, kind: 'base',
-          rate_type: plan.partner_commission_type, rate_value: plan.partner_commission_value, amount,
-        });
+    const baseRaw = padraoId ? commissionAmount(plan.partner_commission_type, plan.partner_commission_value, floor) : 0;
+
+    // Cadeia COMPLETA de ancestrais do coletor até o topo (direto da Padrão). Inclui
+    // nós com override 0 — em cascata o repasse passa por TODOS eles (do pai mais
+    // próximo ao topo).
+    const chain = [];
+    {
+      const startRes = await query(`SELECT parent_partner_id FROM ${SCHEMA}.companies WHERE id = $1`, [sub.partner_id]);
+      let ancestorId = startRes.rows[0]?.parent_partner_id || null;
+      let guard = 0;
+      while (ancestorId && guard++ < 50) {
+        const a = await query(
+          `SELECT id, parent_partner_id, is_partner, partner_override_type, partner_override_value, reseller_status
+             FROM ${SCHEMA}.companies WHERE id = $1`,
+          [ancestorId]
+        );
+        const arow = a.rows[0];
+        if (!arow) break;
+        chain.push(arow);
+        ancestorId = arow.parent_partner_id || null;
       }
     }
 
-    // Overrides: sobe a cadeia de ancestrais (parceiro pai, avô…) até a raiz.
-    const startRes = await query(`SELECT parent_partner_id FROM ${SCHEMA}.companies WHERE id = $1`, [sub.partner_id]);
-    let ancestorId = startRes.rows[0]?.parent_partner_id || null;
-    let guard = 0;
-    while (ancestorId && guard++ < 50) {
-      const a = await query(
-        `SELECT id, parent_partner_id, is_partner, partner_override_type, partner_override_value
-           FROM ${SCHEMA}.companies WHERE id = $1`,
-        [ancestorId]
-      );
-      const arow = a.rows[0];
-      if (!arow) break;
-      if (arow.is_partner) {
-        const amount = commissionAmount(arow.partner_override_type, arow.partner_override_value, floor);
-        if (amount > 0) {
-          commissions.push({
-            payee: arow.id, kind: 'override',
-            rate_type: arow.partner_override_type, rate_value: arow.partner_override_value, amount,
-          });
-        }
-      }
-      ancestorId = arow.parent_partner_id || null;
-    }
-
-    // TRAVA dos 100%: o total de comissões nunca passa de 100% do piso. A base da
-    // Padrão é paga PRIMEIRO (sempre garantida); os overrides recebem só o que
-    // sobrar, em ordem (parceiro pai mais próximo primeiro). Assim o parceiro nunca
-    // deve mais do que o piso — vendendo ao piso, ele fica no zero, nunca negativo.
+    // TRAVA dos 100%: o total nunca passa do piso. A base da Padrão é apurada
+    // PRIMEIRO (sempre garantida); os overrides recebem só o que sobrar, em ordem
+    // (pai mais próximo primeiro). Vendendo ao piso o parceiro fica no zero.
     let budget = floor;
-    for (const c of commissions) {
-      const capped = Math.min(Number(c.amount) || 0, Math.max(0, round2(budget)));
-      c.amount = round2(capped);
-      budget = round2(budget - c.amount);
-    }
-    const dueCommissions = commissions.filter((c) => c.amount > 0);
+    const baseAmount = round2(Math.min(baseRaw, Math.max(0, round2(budget))));
+    budget = round2(budget - baseAmount);
+    const overrides = chain.map((n) => {
+      const raw = n.is_partner ? commissionAmount(n.partner_override_type, n.partner_override_value, floor) : 0;
+      const capped = round2(Math.min(raw, Math.max(0, round2(budget))));
+      budget = round2(budget - capped);
+      return capped;
+    });
 
-    const payerInfo = await companyInfo(payer);
+    // RECEBEDORES subindo a cadeia: cada parceiro retém seu override e repassa o
+    // resto; no topo, a Padrão retém a base. (payee, kept = o que fica com ele)
+    // Parceiro com a revenda TOMADA (network_seized, >6m inadimplente): não retém
+    // nada — vira só passagem e o override dele é DIRECIONADO à Padrão.
+    let seizedToPadrao = 0;
+    const recipients = chain.map((n, i) => {
+      const seized = n.reseller_status === 'network_seized';
+      if (seized) seizedToPadrao = round2(seizedToPadrao + overrides[i]);
+      return {
+        company: n.id, kept: seized ? 0 : overrides[i], kind: 'override',
+        rate_type: n.partner_override_type, rate_value: n.partner_override_value,
+      };
+    });
+    const padraoKept = round2(baseAmount + seizedToPadrao);
+    if (padraoId && padraoKept > 0) {
+      recipients.push({
+        company: padraoId, kept: padraoKept, kind: 'base',
+        rate_type: plan.partner_commission_type, rate_value: plan.partner_commission_value,
+      });
+    }
+
+    // ARESTAS filho→pai. O valor da aresta que chega no recebedor m = soma dos
+    // 'kept' de m até o topo (tudo que precisa subir a partir dali). O payer é o nó
+    // logo abaixo; reparent_target é o filho DIRETO desse payer no caminho.
+    const payerChain = [collector, ...recipients.slice(0, -1).map((r) => r.company)];
+    const edges = [];
+    let suffix = 0;
+    for (let m = recipients.length - 1; m >= 0; m--) {
+      suffix = round2(suffix + recipients[m].kept);
+      edges[m] = {
+        payer: payerChain[m],
+        payee: recipients[m].company,
+        amount: suffix,
+        kept: recipients[m].kept,
+        kind: recipients[m].kind,
+        rate_type: recipients[m].rate_type,
+        rate_value: recipients[m].rate_value,
+        reparentTarget: m === 0 ? subscriberId : payerChain[m - 1],
+      };
+    }
+
+    const infoCache = new Map();
+    const getInfo = async (id) => {
+      if (!infoCache.has(id)) infoCache.set(id, await companyInfo(id));
+      return infoCache.get(id);
+    };
+
     let inserted = 0;
-    for (const c of dueCommissions) {
-      if (c.payee === payer) continue; // nunca cobra do próprio recebedor
+    let prevCommId = null; // a aresta imediatamente ABAIXO (p/ cobrança gatilhada, Etapa 2)
+    for (const e of edges) {
+      if (e.amount <= 0) break;                       // amounts não-crescem subindo → acabou
+      if (e.payer === e.payee) { prevCommId = null; continue; } // nunca cobra de si mesmo
       const r = await query(
         `INSERT INTO ${SCHEMA}.partner_commissions
-           (subscription_id, billing_id, contract_id, payer_company_id, payee_company_id, kind, period, floor_amount, rate_type, rate_value, amount)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+           (subscription_id, billing_id, contract_id, payer_company_id, payee_company_id, kind, period, floor_amount, rate_type, rate_value, amount, kept_amount, reparent_target_id, parent_commission_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
          ON CONFLICT (billing_id, payee_company_id) WHERE billing_id IS NOT NULL DO NOTHING
          RETURNING id`,
-        [sub.id, billingId, contractId, payer, c.payee, c.kind, per, floor, c.rate_type, c.rate_value, c.amount]
+        [sub.id, billingId, contractId, e.payer, e.payee, e.kind, per, floor, e.rate_type, e.rate_value, e.amount, e.kept, e.reparentTarget, prevCommId]
       );
-      const commId = r.rows[0]?.id;
-      if (!commId) continue; // já existia (idempotência) → não relança no financeiro
+      let commId = r.rows[0]?.id;
+      if (!commId) {
+        // Já existia (idempotência) — recupera o id p/ manter o encadeamento da cascata.
+        if (billingId) {
+          const ex = await query(`SELECT id FROM ${SCHEMA}.partner_commissions WHERE billing_id=$1 AND payee_company_id=$2 LIMIT 1`, [billingId, e.payee]);
+          prevCommId = ex.rows[0]?.id || null;
+        } else {
+          prevCommId = null;
+        }
+        continue;
+      }
+      prevCommId = commId;
       inserted += 1;
-      // Interage com o Gerenciador Financeiro: receita (payee) + despesa a pagar (payer).
-      await generateFinanceEntries({ commId, payer, payerInfo, payee: c.payee, kind: c.kind, amount: c.amount, subscriptionId: sub.id });
+      // Financeiro: receita (payee) + despesa a pagar (payer) do VALOR da aresta. Cada
+      // nó intermediário fica com receita(entra) − despesa(sobe) = o override dele.
+      const payerInfo = await getInfo(e.payer);
+      await generateFinanceEntries({ commId, payer: e.payer, payerInfo, payee: e.payee, kind: e.kind, amount: e.amount, subscriptionId: sub.id });
     }
-    if (inserted) logger.info({ contractId, billingId, subscriptionId: sub.id, inserted }, '[commission] comissões acumuladas');
+    if (inserted) logger.info({ contractId, billingId, subscriptionId: sub.id, inserted }, '[commission] comissões acumuladas (cascata)');
     return { accrued: inserted };
   } catch (err) {
     logger.error({ err, contractId, billingId }, '[commission] falha ao acumular comissão');
@@ -261,12 +317,17 @@ async function ensureCommissionClientContract(payeeCompanyId, contact) {
 // o contato do parceiro. As comissões passam a 'charged' e serão baixadas quando o
 // pagamento confirmar (settleCommissionsByChargeBilling, no fluxo de pagamento).
 async function chargePartnerCommissions({ payeeCompanyId, partnerId }) {
+  // Cobrança em cascata GATILHADA: só cobra as arestas ELEGÍVEIS — a do coletor
+  // (sem aresta abaixo) ou aquela cuja aresta de baixo (parent_commission_id) já
+  // foi quitada. Assim o Teifelt só é cobrado da base depois que o X paga o Teifelt.
   const acc = await query(
-    `SELECT id, amount FROM ${SCHEMA}.partner_commissions
-      WHERE payee_company_id=$1 AND payer_company_id=$2 AND status='accrued'`,
+    `SELECT c.id, c.amount FROM ${SCHEMA}.partner_commissions c
+       LEFT JOIN ${SCHEMA}.partner_commissions p ON p.id = c.parent_commission_id
+      WHERE c.payee_company_id=$1 AND c.payer_company_id=$2 AND c.status='accrued'
+        AND (c.parent_commission_id IS NULL OR p.status='settled')`,
     [payeeCompanyId, partnerId]
   );
-  if (!acc.rows.length) { const e = new Error('Nenhuma comissão em aberto para cobrar deste parceiro'); e.status = 400; throw e; }
+  if (!acc.rows.length) { const e = new Error('Nenhuma comissão liberada para cobrança deste parceiro (aguardando o repasse do nível abaixo)'); e.status = 400; throw e; }
   const total = round2(acc.rows.reduce((a, r) => a + Number(r.amount), 0));
   const ids = acc.rows.map((r) => r.id);
 
@@ -317,7 +378,7 @@ async function settleCommissionsByChargeBilling(billingId) {
     `UPDATE ${SCHEMA}.partner_commissions
         SET status='settled', settled_at=now()
       WHERE charge_billing_id=$1 AND status='charged'
-      RETURNING finance_expense_id`,
+      RETURNING finance_expense_id, payer_company_id`,
     [billingId]
   );
   const expIds = upd.rows.map((r) => r.finance_expense_id).filter(Boolean);
@@ -327,6 +388,13 @@ async function settleCommissionsByChargeBilling(billingId) {
         WHERE id = ANY($1::int[]) AND status <> 'paid'`,
       [expIds]
     );
+  }
+  // Reversão imediata do lifecycle de revenda: se um parceiro que estava inadimplente
+  // acabou de quitar a base, restaura a rede dele e destrava (best-effort).
+  const payers = [...new Set(upd.rows.map((r) => r.payer_company_id).filter(Boolean))];
+  for (const pid of payers) {
+    try { await revertResellerIfCaughtUp(pid); }
+    catch (err) { logger.warn({ err, partnerId: pid }, '[commission] falha ao reverter revenda no settle'); }
   }
   return { settled: upd.rowCount };
 }
@@ -339,14 +407,19 @@ const AUTOCHARGE_DELAY_MIN = Math.max(1, Number(process.env.COMMISSION_AUTOCHARG
 
 async function runCommissionAutoCharge() {
   if (!AUTOCHARGE_ENABLED) return { charged: 0, disabled: true };
-  // Pares (credor, parceiro) com comissões 'accrued' cuja MAIS ANTIGA já passou do
-  // atraso — ou seja, o lote "assentou" e pode ser cobrado.
+  // Pares (credor, parceiro) com comissões 'accrued' ELEGÍVEIS (aresta do coletor ou
+  // com a aresta de baixo já quitada) cuja mais antiga já "assentou" pelo atraso. O
+  // relógio de uma aresta de cima começa no settled_at da aresta de baixo — assim a
+  // base do Teifelt só é cobrada depois que o X paga o Teifelt (cascata gatilhada).
   const due = await query(
-    `SELECT payee_company_id, payer_company_id
-       FROM ${SCHEMA}.partner_commissions
-      WHERE status='accrued'
-      GROUP BY payee_company_id, payer_company_id
-     HAVING MIN(created_at) <= now() - make_interval(mins => $1)`,
+    `SELECT c.payee_company_id, c.payer_company_id
+       FROM ${SCHEMA}.partner_commissions c
+       LEFT JOIN ${SCHEMA}.partner_commissions p ON p.id = c.parent_commission_id
+      WHERE c.status='accrued'
+        AND (c.parent_commission_id IS NULL OR p.status='settled')
+      GROUP BY c.payee_company_id, c.payer_company_id
+     HAVING MIN(CASE WHEN c.parent_commission_id IS NULL THEN c.created_at ELSE p.settled_at END)
+              <= now() - make_interval(mins => $1)`,
     [AUTOCHARGE_DELAY_MIN]
   );
   let charged = 0;
@@ -362,4 +435,4 @@ async function runCommissionAutoCharge() {
   return { charged };
 }
 
-module.exports = { accrueForPaidBilling, commissionAmount, chargePartnerCommissions, settleCommissionsByChargeBilling, runCommissionAutoCharge };
+module.exports = { accrueForPaidBilling, commissionAmount, chargePartnerCommissions, settleCommissionsByChargeBilling, runCommissionAutoCharge, resolvePartnerContact };

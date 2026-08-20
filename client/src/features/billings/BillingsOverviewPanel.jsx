@@ -10,6 +10,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { formatDateOnly } from '@/utils/date'
 import TableSkeleton from '@/components/TableSkeleton'
 import EmptyState from '@/components/EmptyState'
+import { useConfirm } from '@/components/ConfirmDialog'
 import { useSensitive } from '@/features/permissions/useSensitive'
 
 const label = (t) => t === 'pre' ? 'Avisado (D-4)' : t === 'due' ? 'Vence hoje (D0)' : 'Atrasado (D+3)'
@@ -98,8 +99,9 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
     }),
     enabled: !!ym
   })
+  const confirm = useConfirm()
   const bulk = useMutation({
-    mutationFn: ({ contractId, y, m, status }) => billingsService.setMonthStatus(contractId, y, m, status),
+    mutationFn: ({ contractId, y, m, status, paidAt }) => billingsService.setMonthStatus(contractId, y, m, status, paidAt),
     onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ['billings_overview'] })
       qc.invalidateQueries({ queryKey: ['billings'] })
@@ -265,7 +267,18 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
                 <Stack direction="row" spacing={1} sx={{ mb: 1.5, flexWrap: 'wrap', gap: 1 }}>
                   <Tooltip title="Marcar o mês inteiro como PAGO">
                     <span>
-                      <Button size="small" variant="contained" disabled={allPaid || isCanceled || bulk.isPending} onClick={() => bulk.mutate({ contractId: it.contract_id, y, m, status: 'paid' })}>Marcar mês PAGO</Button>
+                      <Button
+                        size="small" variant="contained" disabled={allPaid || isCanceled || bulk.isPending}
+                        onClick={async () => {
+                          const paidAt = await confirm({
+                            title: 'Marcar mês como pago',
+                            description: `Confirme a data do pagamento do contrato #${it.contract_id}.`,
+                            confirmText: 'Marcar como pago',
+                            dateField: true,
+                          })
+                          if (paidAt) bulk.mutate({ contractId: it.contract_id, y, m, status: 'paid', paidAt })
+                        }}
+                      >Marcar mês PAGO</Button>
                     </span>
                   </Tooltip>
                   <Tooltip title="Cancelar cobrança do mês">

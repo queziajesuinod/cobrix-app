@@ -114,11 +114,15 @@ router.post('/signup', async (req, res) => {
     // assinatura (tenant/cliente/contrato/cobrança/PIX) e o preço é o de revenda dele.
     // Só vale para parceiro ATIVO e com forma de recebimento (PIX ou gateway próprio);
     // senão cai no fluxo normal (Padrão) — nunca travar a venda.
+    // Parceiro com a revenda TRAVADA (link_locked/network_seized por inadimplência)
+    // não onboarda novos — cai no fluxo normal (Padrão). reseller_status é separado
+    // de status: o parceiro segue com acesso, só não pode revender.
     let partner = null;
     if (partnerIdRaw && Number.isInteger(partnerIdRaw)) {
       const pr = await query(
         `SELECT id, pix_key, efi_client_id_enc FROM ${SCHEMA}.companies
-          WHERE id=$1 AND is_partner=true AND status <> 'canceled'`,
+          WHERE id=$1 AND is_partner=true AND status <> 'canceled'
+            AND (reseller_status IS NULL OR reseller_status = 'active')`,
         [partnerIdRaw]
       );
       const p = pr.rows[0];

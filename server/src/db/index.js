@@ -128,6 +128,17 @@ async function initDb() {
     // é sempre garantida (a Padrão mantém o sistema). 'percent' (% do piso) ou 'fixed'.
     await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS partner_override_type TEXT NOT NULL DEFAULT 'percent';`);
     await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS partner_override_value NUMERIC(14,2) NOT NULL DEFAULT 0;`);
+    // Lifecycle de inadimplência da REVENDA (parceiro não repassa a base à Padrão).
+    // É SEPARADO de companies.status (o gate de login não lê isto): travar a revenda
+    // não tira o acesso do parceiro ao sistema — a assinatura própria dele continua.
+    //   reseller_status: 'active' | 'link_locked' (>3m: não onboarda novos) |
+    //     'network_seized' (>6m: toda a comissão da rede dele é direcionada à Padrão).
+    //   reseller_delinquent_since: início da inadimplência da base (marcos 3m/6m).
+    //   original_parent_partner_id: guarda o pai antes de um re-parent forçado, p/
+    //     reverter quando o parceiro do meio quitar (reversível em qualquer estágio).
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS reseller_status TEXT NOT NULL DEFAULT 'active';`);
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS reseller_delinquent_since DATE;`);
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS original_parent_partner_id INTEGER REFERENCES ${schema}.companies(id) ON DELETE SET NULL;`);
     // Assinatura: liga a empresa-cliente provisionada ao seu plano e ao
     // contrato/cliente criados no tenant do owner. É por aqui que a ativação
     // (Fase 3) sabe qual empresa liberar quando o pagamento confirma.
@@ -239,6 +250,19 @@ async function initDb() {
     // via PIX/WhatsApp. status vai de 'accrued' → 'charged' (cobrada) → 'settled' (paga).
     await c.query(`ALTER TABLE ${schema}.partner_commissions ADD COLUMN IF NOT EXISTS charge_billing_id INTEGER;`);
     await c.query(`CREATE INDEX IF NOT EXISTS idx_partner_comm_charge ON ${schema}.partner_commissions(charge_billing_id) WHERE charge_billing_id IS NOT NULL;`);
+    // Liquidação em CASCATA (ver memória partner-reseller-commission-model): cada
+    // comissão vira uma ARESTA filho→pai. O sub-parceiro só liquida com o pai direto
+    // e a base sobe nível a nível até a Padrão (o sub-parceiro nunca vê a Padrão).
+    //   kept_amount = quanto o PAYEE retém como override próprio (na aresta da Padrão
+    //     = a base inteira); o resto (amount - kept_amount) ele repassa pra cima.
+    //   reparent_target_id = o filho DIRETO do payer nesse caminho — quem é
+    //     re-parenteado pra Padrão se o payer ficar inadimplente com o pai (Etapa 4).
+    //   parent_commission_id = a aresta imediatamente ABAIXO desta; a cobrança em
+    //     cascata (Etapa 2) só libera esta aresta quando a de baixo é quitada.
+    await c.query(`ALTER TABLE ${schema}.partner_commissions ADD COLUMN IF NOT EXISTS kept_amount NUMERIC(14,2);`);
+    await c.query(`ALTER TABLE ${schema}.partner_commissions ADD COLUMN IF NOT EXISTS reparent_target_id INTEGER;`);
+    await c.query(`ALTER TABLE ${schema}.partner_commissions ADD COLUMN IF NOT EXISTS parent_commission_id INTEGER;`);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_partner_comm_parent ON ${schema}.partner_commissions(parent_commission_id) WHERE parent_commission_id IS NOT NULL;`);
     await c.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_partner_comm_billing_payee ON ${schema}.partner_commissions(billing_id, payee_company_id) WHERE billing_id IS NOT NULL;`);
     await c.query(`CREATE INDEX IF NOT EXISTS idx_partner_comm_payee ON ${schema}.partner_commissions(payee_company_id, status);`);
     await c.query(`CREATE INDEX IF NOT EXISTS idx_partner_comm_payer ON ${schema}.partner_commissions(payer_company_id, status);`);

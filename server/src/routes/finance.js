@@ -5,6 +5,7 @@ const { requireAuth, companyScope } = require('./auth');
 const { requirePermission, requireAnyPermission, getEffectivePermissions } = require('../services/permissions');
 const { respondError } = require('../utils/http-error');
 const { ensureDateOnly, formatISODate } = require('../utils/date-only');
+const { parsePaidAt } = require('../utils/payment-date');
 const { r2, r4, buildKpis, evolucaoPonto, computeProjecao, computeInsights, computeHealthScore } = require('../services/finance-dashboard');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
@@ -606,10 +607,16 @@ router.put('/paid-contracts/:id', requireAuth, companyScope(true), requirePermis
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) return res.status(400).json({ error: 'id inválido' });
     const amount = parseAmount(req.body?.amount);
+    // Data de pagamento opcional: corrige o gateway_paid_at de uma cobrança já paga.
+    const paid = parsePaidAt(req.body?.paid_at);
+    if (paid.error) return res.status(400).json({ error: paid.error });
     const r = await query(
-      `UPDATE ${SCHEMA}.billings SET amount=$1, updated_at=now()
+      `UPDATE ${SCHEMA}.billings
+          SET amount=$1,
+              gateway_paid_at = COALESCE($4::timestamptz, gateway_paid_at),
+              updated_at=now()
         WHERE id=$2 AND company_id=$3 AND LOWER(status)='paid' RETURNING id`,
-      [amount, id, req.companyId]
+      [amount, id, req.companyId, paid.date]
     );
     if (!r.rows[0]) return res.status(404).json({ error: 'Cobrança paga não encontrada' });
     res.json({ ok: true });

@@ -1,6 +1,6 @@
 import React from 'react'
 import {
-  Dialog, DialogContent, DialogActions, Button, Box, Typography,
+  Dialog, DialogContent, DialogActions, Button, Box, Typography, TextField,
 } from '@mui/material'
 import { alpha } from '@mui/material/styles'
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded'
@@ -8,13 +8,24 @@ import HelpOutlineRoundedIcon from '@mui/icons-material/HelpOutlineRounded'
 
 const ConfirmContext = React.createContext(null)
 
+// Data de hoje no formato YYYY-MM-DD (local, sem shift de fuso).
+function todayIso() {
+  const d = new Date()
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
 // Provider de confirmação: expõe um confirm() que retorna uma Promise<boolean>
-// e renderiza um único diálogo MUI estilizado (substitui o window.confirm nativo).
+// (substitui o window.confirm nativo). Com a opção { dateField: true } o diálogo
+// mostra um campo de data (padrão: hoje) e resolve com a data escolhida (string
+// YYYY-MM-DD) no confirmar, ou null no cancelar — para "marcar como pago" na data certa.
 export function ConfirmProvider({ children }) {
   const [state, setState] = React.useState(null) // { opts, resolve }
+  const [dateValue, setDateValue] = React.useState(todayIso())
 
   const confirm = React.useCallback((options) => {
     const opts = typeof options === 'string' ? { description: options } : (options || {})
+    setDateValue(opts.dateDefault || todayIso())
     return new Promise((resolve) => setState({ opts, resolve }))
   }, [])
 
@@ -29,13 +40,17 @@ export function ConfirmProvider({ children }) {
   const danger = opts.tone === 'danger'
   const color = danger ? 'error' : (opts.color || 'primary')
   const Icon = danger ? WarningAmberRoundedIcon : HelpOutlineRoundedIcon
+  const hasDate = Boolean(opts.dateField)
+  // Confirmar → boolean puro, ou a data escolhida quando dateField. Cancelar → false/null.
+  const onConfirm = () => handleClose(hasDate ? (dateValue || null) : true)
+  const onCancel = () => handleClose(hasDate ? null : false)
 
   return (
     <ConfirmContext.Provider value={confirm}>
       {children}
       <Dialog
         open={Boolean(state)}
-        onClose={() => handleClose(false)}
+        onClose={onCancel}
         maxWidth="xs"
         fullWidth
         slotProps={{ paper: { sx: { borderRadius: 3, p: { xs: 0.5, sm: 1 } } } }}
@@ -64,13 +79,26 @@ export function ConfirmProvider({ children }) {
               {opts.description}
             </Typography>
           )}
+          {hasDate && (
+            <TextField
+              type="date"
+              label={opts.dateLabel || 'Data do pagamento'}
+              value={dateValue}
+              onChange={(e) => setDateValue(e.target.value)}
+              inputProps={{ max: todayIso() }}
+              InputLabelProps={{ shrink: true }}
+              fullWidth
+              size="small"
+              sx={{ mt: 2.5 }}
+            />
+          )}
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 3, pt: 0, gap: 1.25 }}>
           <Button
             fullWidth
             variant="outlined"
             color="inherit"
-            onClick={() => handleClose(false)}
+            onClick={onCancel}
             sx={{ borderRadius: 2, textTransform: 'none', fontWeight: 600 }}
           >
             {opts.cancelText || 'Cancelar'}
@@ -81,7 +109,8 @@ export function ConfirmProvider({ children }) {
             color={color}
             disableElevation
             autoFocus
-            onClick={() => handleClose(true)}
+            disabled={hasDate && !dateValue}
+            onClick={onConfirm}
             sx={{ borderRadius: 2, textTransform: 'none', fontWeight: 700 }}
           >
             {opts.confirmText || 'Confirmar'}

@@ -32,7 +32,7 @@ export const financeService = {
   importExpenses: async (items, opts = {}) => (await api.post('/finance/expenses/import', { items, force: opts.force === true })).data,
   paidContracts: async (params = {}) => (await api.get('/finance/paid-contracts', { params })).data,
   reversePaidContract: async (id) => (await api.patch(`/finance/paid-contracts/${id}/reverse`)).data,
-  updatePaidContract: async (id, amount) => (await api.put(`/finance/paid-contracts/${id}`, { amount })).data,
+  updatePaidContract: async (id, amount, paidAt) => (await api.put(`/finance/paid-contracts/${id}`, { amount, paid_at: paidAt })).data,
 }
 
 export default financeService

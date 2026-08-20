@@ -17,6 +17,7 @@ const { activateSubscriptionForContract } = require('../jobs/gateway-reconcile')
 const { accrueForPaidBilling } = require('../services/partner-commission');
 const { isGatewayConfigured } = require('../services/company-gateway');
 const { ensureDateOnly, formatISODate } = require('../utils/date-only');
+const { parsePaidAt } = require('../utils/payment-date');
 const { normalizeBillingIntervalMonths, isBillingMonthFor } = require('../jobs/billing-cron');
 const { withCronLock } = require('../utils/cron-lock');
 const { respondError } = require('../utils/http-error');
@@ -489,6 +490,10 @@ router.put('/:id/status', requireAuth, companyScope(true), requirePermission('bi
   if (!validStatus(status)) return res.status(400).json({ error: 'status inválido' });
   const billingId = Number(req.params.id);
   if (!billingId) return res.status(400).json({ error: 'cobrança inválida' });
+  // Data de pagamento opcional (só faz sentido ao marcar como pago). Ausente = NOW().
+  const paid = parsePaidAt(req.body?.paid_at);
+  if (paid.error) return res.status(400).json({ error: paid.error });
+  const paidAt = status === 'paid' ? paid.date : null;
   try {
     const existing = await query(
       `
@@ -507,13 +512,13 @@ router.put('/:id/status', requireAuth, companyScope(true), requirePermission('bi
       SET status=$1,
           updated_at=NOW(),
           gateway_paid_at = CASE
-            WHEN $1 = 'paid' THEN COALESCE(gateway_paid_at, NOW())
+            WHEN $1 = 'paid' THEN COALESCE($4::timestamptz, gateway_paid_at, NOW())
             ELSE NULL
           END
       FROM ${SCHEMA}.contracts c
       WHERE b.id=$2 AND c.id=b.contract_id AND c.company_id=$3
       RETURNING b.id, b.status
-    `, [status, billingId, req.companyId]);
+    `, [status, billingId, req.companyId, paidAt]);
     if (!updated.rows[0]) return res.status(404).json({ error: 'Cobrança não encontrada' });
 
     if (status === 'paid' && previousStatus !== 'paid') {
@@ -527,7 +532,7 @@ router.put('/:id/status', requireAuth, companyScope(true), requirePermission('bi
           billingId,
           companyId: req.companyId,
           amount: row.amount,
-          paymentDate: new Date(),
+          paymentDate: paidAt || new Date(),
           detail: { source: 'manual-status', status: 'CONCLUIDA' },
         });
       } catch (notifyErr) {
@@ -585,6 +590,9 @@ router.put('/by-contract/:contractId/month/:year/:month/status', requireAuth, co
   const status = String(req.body?.status || '').toLowerCase();
   if (!validStatus(status)) return res.status(400).json({ error: 'status inválido' });
   if (!contractId || !year || !month) return res.status(400).json({ error: 'parâmetros inválidos' });
+  const paid = parsePaidAt(req.body?.paid_at);
+  if (paid.error) return res.status(400).json({ error: paid.error });
+  const paidAt = status === 'paid' ? paid.date : null;
 
   try {
     const c = await query(`SELECT id, value, billing_day FROM ${SCHEMA}.contracts WHERE id=$1 AND company_id=$2`, [contractId, req.companyId]);
@@ -604,12 +612,12 @@ router.put('/by-contract/:contractId/month/:year/:month/status', requireAuth, co
       UPDATE ${SCHEMA}.billings b
       SET status = $1,
           updated_at = now(),
-          gateway_paid_at = CASE WHEN $1 = 'paid' THEN COALESCE(gateway_paid_at, NOW()) ELSE NULL END
+          gateway_paid_at = CASE WHEN $1 = 'paid' THEN COALESCE($5::timestamptz, gateway_paid_at, NOW()) ELSE NULL END
       WHERE b.contract_id = $2
         AND EXTRACT(YEAR FROM b.billing_date) = $3
         AND EXTRACT(MONTH FROM b.billing_date) = $4
       RETURNING b.id
-    `, [status, contractId, year, month]);
+    `, [status, contractId, year, month, paidAt]);
 
     // Se marcou o mês como PAGO mas não havia nenhuma cobrança gerada (ex.: o
     // usuário marcou antes do dia de vencimento, ou o cron ainda não rodou),
@@ -624,11 +632,11 @@ router.put('/by-contract/:contractId/month/:year/:month/status', requireAuth, co
       const amount = Number(contract.value || 0);
       const ins = await query(`
         INSERT INTO ${SCHEMA}.billings (company_id, contract_id, billing_date, amount, status, gateway_paid_at)
-        VALUES ($1,$2,$3,$4,'paid',NOW())
+        VALUES ($1,$2,$3,$4,'paid',COALESCE($5::timestamptz, NOW()))
         ON CONFLICT (contract_id, billing_date)
-        DO UPDATE SET status='paid', gateway_paid_at=COALESCE(${SCHEMA}.billings.gateway_paid_at, NOW()), updated_at=now()
+        DO UPDATE SET status='paid', gateway_paid_at=COALESCE($5::timestamptz, ${SCHEMA}.billings.gateway_paid_at, NOW()), updated_at=now()
         RETURNING id
-      `, [req.companyId, contractId, billingDate, amount]);
+      `, [req.companyId, contractId, billingDate, amount, paidAt]);
       created = ins.rows[0]?.id || null;
     }
 

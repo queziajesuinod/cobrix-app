@@ -832,18 +832,23 @@ function ExpenseSplitBar({ fixed, variable }) {
 
 function EditPaidDialog({ row, onClose, onSaved, notify }) {
   const [amount, setAmount] = React.useState(String(row.amount ?? ''))
+  const [paidAt, setPaidAt] = React.useState(String(row.gateway_paid_at || row.billing_date || '').slice(0, 10))
+  const todayStr = new Date().toISOString().slice(0, 10)
   const mut = useMutation({
-    mutationFn: () => financeService.updatePaidContract(row.billing_id, Number(amount)),
-    onSuccess: () => { notify('Valor atualizado.'); onSaved(); onClose() },
+    mutationFn: () => financeService.updatePaidContract(row.billing_id, Number(amount), paidAt || undefined),
+    onSuccess: () => { notify('Pagamento atualizado.'); onSaved(); onClose() },
     onError: (e) => notify(e?.response?.data?.error || 'Falha ao salvar.', 'error'),
   })
-  const valid = Number.isFinite(Number(amount)) && Number(amount) >= 0
+  const valid = Number.isFinite(Number(amount)) && Number(amount) >= 0 && Boolean(paidAt)
   return (
     <Dialog open onClose={onClose} maxWidth="xs" fullWidth slotProps={{ paper: { sx: { borderRadius: 3 } } }}>
-      <DialogTitle sx={{ fontWeight: 700 }}>Editar valor pago</DialogTitle>
+      <DialogTitle sx={{ fontWeight: 700 }}>Editar pagamento</DialogTitle>
       <DialogContent dividers>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>Cobrança #{row.billing_id} · {row.client_name}</Typography>
-        <TextField label="Valor (R$)" type="number" inputProps={{ step: '0.01', min: 0 }} value={amount} onChange={(e) => setAmount(e.target.value)} fullWidth autoFocus />
+        <Stack spacing={2}>
+          <TextField label="Valor (R$)" type="number" inputProps={{ step: '0.01', min: 0 }} value={amount} onChange={(e) => setAmount(e.target.value)} fullWidth autoFocus />
+          <TextField label="Data do pagamento" type="date" value={paidAt} onChange={(e) => setPaidAt(e.target.value)} inputProps={{ max: todayStr }} InputLabelProps={{ shrink: true }} fullWidth />
+        </Stack>
       </DialogContent>
       <DialogActions sx={{ px: 3, py: 2 }}>
         <Button onClick={onClose} color="inherit">Cancelar</Button>
@@ -896,7 +901,7 @@ function PaidContractsTab({ notify, range, canManage }) {
                 <TableCell align="right">
                   {canManage ? (
                     <>
-                      <Tooltip title="Editar valor"><IconButton size="small" onClick={() => setEditRow(r)}><EditIcon fontSize="small" /></IconButton></Tooltip>
+                      <Tooltip title="Editar valor/data"><IconButton size="small" onClick={() => setEditRow(r)}><EditIcon fontSize="small" /></IconButton></Tooltip>
                       <Tooltip title="Estornar"><IconButton size="small" color="warning" onClick={() => handleReverse(r)}><DeleteSweepIcon fontSize="small" /></IconButton></Tooltip>
                     </>
                   ) : <Typography variant="caption" color="text.secondary">—</Typography>}

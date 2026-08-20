@@ -88,7 +88,7 @@ router.get("/", requireAuth, async (req, res) => {
     return res.json([]);
   }
   const r = await query(
-    `SELECT id, name, pix_key, evo_api_url, evo_api_key, evo_instance, clients_limit, contracts_limit, plan_id, status, is_saas_owner, is_partner, parent_partner_id, partner_override_type, partner_override_value, created_at, updated_at,
+    `SELECT id, name, pix_key, evo_api_url, evo_api_key, evo_instance, clients_limit, contracts_limit, plan_id, status, is_saas_owner, is_partner, parent_partner_id, partner_override_type, partner_override_value, reseller_status, reseller_delinquent_since, created_at, updated_at,
             (SELECT COALESCE(NULLIF(cu.name,''), cu.email) FROM users cu WHERE cu.id = companies.created_by) AS created_by_name,
             (SELECT COALESCE(NULLIF(eu.name,''), eu.email) FROM users eu WHERE eu.id = companies.updated_by) AS updated_by_name,
             efi_client_id_enc, efi_client_secret_enc, efi_cert_base64_enc FROM companies WHERE id = ANY($1::int[]) ORDER BY id DESC`,
@@ -102,7 +102,7 @@ router.get("/", requireAuth, async (req, res) => {
 router.get("/:id", requireAuth, async (req, res) => {
   const id = Number(req.params.id);
   if (!canReadCompany(req.user, req.companyId, id)) return res.status(403).json({ error: "Sem permissão" });
-  const r = await query(`SELECT id, name, pix_key, evo_api_url, evo_api_key, evo_instance, clients_limit, contracts_limit, plan_id, status, is_saas_owner, is_partner, parent_partner_id, partner_override_type, partner_override_value, created_at, updated_at,
+  const r = await query(`SELECT id, name, pix_key, evo_api_url, evo_api_key, evo_instance, clients_limit, contracts_limit, plan_id, status, is_saas_owner, is_partner, parent_partner_id, partner_override_type, partner_override_value, reseller_status, reseller_delinquent_since, created_at, updated_at,
     (SELECT COALESCE(NULLIF(cu.name,''), cu.email) FROM users cu WHERE cu.id = companies.created_by) AS created_by_name,
     (SELECT COALESCE(NULLIF(eu.name,''), eu.email) FROM users eu WHERE eu.id = companies.updated_by) AS updated_by_name,
     efi_client_id_enc, efi_client_secret_enc, efi_cert_base64_enc FROM companies WHERE id=$1`, [id]);

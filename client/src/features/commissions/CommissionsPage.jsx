@@ -140,7 +140,9 @@ export default function CommissionsPage() {
                   </TableBody>
                 </Table>
                 <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-                  O acerto é dado baixa por quem recebe. Se você tem o Gerenciador Financeiro, cada comissão também aparece como despesa "a pagar".
+                  Você acerta apenas com a sua <strong>linha de cima direta</strong> (o "Credor" acima) — ela repassa o restante
+                  para cima. O acerto é dado baixa por quem recebe. Se você tem o Gerenciador Financeiro, cada comissão também
+                  aparece como despesa "a pagar".
                 </Typography>
               </>
             )}

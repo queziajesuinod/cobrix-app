@@ -225,7 +225,7 @@ export default function OverdueClientsPage() {
   });
 
   const markClientPaidMutation = useMutation({
-    mutationFn: ({ clientId }) => reportsService.markOverdueClientPaid(clientId, apiFilters),
+    mutationFn: ({ clientId, paidAt }) => reportsService.markOverdueClientPaid(clientId, { ...apiFilters, paid_at: paidAt }),
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['reports-overdue-clients'] });
       setSnack({
@@ -244,7 +244,7 @@ export default function OverdueClientsPage() {
   });
 
   const markBillingPaidMutation = useMutation({
-    mutationFn: ({ billingId }) => reportsService.markOverdueBillingPaid(billingId),
+    mutationFn: ({ billingId, paidAt }) => reportsService.markOverdueBillingPaid(billingId, { paid_at: paidAt }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['reports-overdue-clients'] });
       setSnack({
@@ -387,25 +387,27 @@ export default function OverdueClientsPage() {
   };
 
   const markClientPaid = async (row) => {
-    const ok = await confirm({
+    const paidAt = await confirm({
       title: 'Marcar cliente como pago',
-      description: `Marcar TODAS as cobranças em atraso do cliente "${row.client_name}" como pagas?`,
+      description: `Marcar TODAS as cobranças em atraso do cliente "${row.client_name}" como pagas. Confirme a data do pagamento.`,
       confirmText: 'Marcar como pago',
       color: 'success',
+      dateField: true,
     });
-    if (!ok) return;
-    markClientPaidMutation.mutate({ clientId: row.client_id });
+    if (!paidAt) return;
+    markClientPaidMutation.mutate({ clientId: row.client_id, paidAt });
   };
 
   const markBillingPaid = async (row) => {
-    const ok = await confirm({
+    const paidAt = await confirm({
       title: 'Marcar cobrança como paga',
-      description: `Marcar a cobrança #${row.billing_id} como paga?`,
+      description: `Confirme a data do pagamento da cobrança #${row.billing_id}.`,
       confirmText: 'Marcar como pago',
       color: 'success',
+      dateField: true,
     });
-    if (!ok) return;
-    markBillingPaidMutation.mutate({ billingId: row.billing_id });
+    if (!paidAt) return;
+    markBillingPaidMutation.mutate({ billingId: row.billing_id, paidAt });
   };
 
   const isClientNotifying = (clientId) =>
