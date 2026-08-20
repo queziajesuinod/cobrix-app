@@ -506,6 +506,13 @@ async function initDb() {
     // Default 'paid' mantém o histórico existente como pago; só as ocorrências geradas
     // pela recorrência nascem 'pending' até serem confirmadas como pagas.
     await c.query(`ALTER TABLE ${schema}.finance_expenses ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'paid';`);
+    // Categoria da despesa (Assinatura, Aluguel, Impostos/Taxas…) — lista DINÂMICA:
+    // texto livre cujas sugestões vêm dos valores já usados pela empresa. Alimenta o
+    // gráfico "Despesas por categoria" (antes agrupado por label, na falta de catálogo).
+    await c.query(`ALTER TABLE ${schema}.finance_expenses ADD COLUMN IF NOT EXISTS category TEXT;`);
+    // Recebedor da despesa (para quem foi pago): fornecedor, locador, órgão etc.
+    await c.query(`ALTER TABLE ${schema}.finance_expenses ADD COLUMN IF NOT EXISTS payee TEXT;`);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_fin_exp_category ON ${schema}.finance_expenses (company_id, category);`);
 
     // Metas financeiras anuais (orçado) por empresa: 1 linha por ano.
     await c.query(`

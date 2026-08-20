@@ -34,6 +34,12 @@ function parseExpenseType(value) {
   const t = String(value || '').trim().toLowerCase();
   return (t === 'fixed' || t === 'fixo' || t === 'fixa') ? 'fixed' : 'variable';
 }
+// Texto livre opcional (categoria, recebedor): trim, null se vazio, teto de tamanho.
+function parseFreeText(value, max = 80) {
+  if (value == null) return null;
+  const v = String(value).trim();
+  return v ? v.slice(0, max) : null;
+}
 
 // Intervalo [from, to) a partir de from/to (AAAA-MM-DD) ou ym (AAAA-MM).
 function parseRange(q = {}) {
@@ -91,7 +97,7 @@ async function generateRecurringExpenses(companyId, now = new Date()) {
     // Todos os lançamentos desta identidade (histórico + já gerados), do mais
     // recente para o mais antigo.
     const all = await query(
-      `SELECT id, label, description, amount, paid_at, expense_type, created_by
+      `SELECT id, label, description, amount, paid_at, expense_type, category, payee, created_by
          FROM ${SCHEMA}.finance_expenses
         WHERE company_id = $1
           AND LOWER(TRIM(label)) = LOWER(TRIM($2))
@@ -125,9 +131,9 @@ async function generateRecurringExpenses(companyId, now = new Date()) {
         // então não deve descontar do saldo até ser confirmada como paga.
         await query(
           `INSERT INTO ${SCHEMA}.finance_expenses
-             (company_id, label, description, amount, paid_at, is_recurring, recurrence_active, expense_type, recurrence_of, status, created_by)
-           VALUES ($1,$2,$3,$4,$5,false,false,$6,$7,'pending',$8)`,
-          [companyId, latest.label, latest.description, latest.amount, formatISODate(next), latest.expense_type || 'variable', src.id, latest.created_by]
+             (company_id, label, description, amount, paid_at, is_recurring, recurrence_active, expense_type, category, payee, recurrence_of, status, created_by)
+           VALUES ($1,$2,$3,$4,$5,false,false,$6,$7,$8,$9,'pending',$10)`,
+          [companyId, latest.label, latest.description, latest.amount, formatISODate(next), latest.expense_type || 'variable', latest.category || null, latest.payee || null, src.id, latest.created_by]
         );
         existing.add(nextKey);
       }
@@ -245,6 +251,28 @@ router.get('/expenses', requireAuth, companyScope(true), requirePermission('fina
   } catch (e) { respondError(res, e); }
 });
 
+// Opções dinâmicas para os campos de despesa: categorias e recebedores já usados
+// pela empresa (alimentam o autocomplete "lista ou acrescenta" no formulário).
+router.get('/expenses/options', requireAuth, companyScope(true), requirePermission('finance.expenses.view'), async (req, res) => {
+  try {
+    const r = await query(
+      `SELECT
+         ARRAY(
+           SELECT DISTINCT TRIM(category) FROM ${SCHEMA}.finance_expenses
+            WHERE company_id = $1 AND category IS NOT NULL AND TRIM(category) <> ''
+            ORDER BY TRIM(category)
+         ) AS categories,
+         ARRAY(
+           SELECT DISTINCT TRIM(payee) FROM ${SCHEMA}.finance_expenses
+            WHERE company_id = $1 AND payee IS NOT NULL AND TRIM(payee) <> ''
+            ORDER BY TRIM(payee)
+         ) AS payees`,
+      [req.companyId]
+    );
+    res.json({ categories: r.rows[0]?.categories || [], payees: r.rows[0]?.payees || [] });
+  } catch (e) { respondError(res, e); }
+});
+
 router.post('/expenses', requireAuth, companyScope(true), requirePermission('finance.expenses.manage'), async (req, res) => {
   try {
     const label = parseLabel(req.body?.label);
@@ -253,14 +281,16 @@ router.post('/expenses', requireAuth, companyScope(true), requirePermission('fin
     const description = req.body?.description != null ? String(req.body.description).trim() || null : null;
     const isRecurring = Boolean(req.body?.is_recurring);
     const expenseType = parseExpenseType(req.body?.expense_type);
+    const category = parseFreeText(req.body?.category);
+    const payee = parseFreeText(req.body?.payee);
     // Por padrão a despesa lançada manualmente já é 'paid' (o usuário está
     // registrando algo pago); pode marcar como pendente ('a pagar').
     const status = req.body?.status === 'pending' ? 'pending' : 'paid';
     const r = await query(
       `INSERT INTO ${SCHEMA}.finance_expenses
-         (company_id, label, description, amount, paid_at, is_recurring, recurrence_active, expense_type, status, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9) RETURNING *`,
-      [req.companyId, label, description, amount, paidAt, isRecurring, expenseType, status, req.user.id]
+         (company_id, label, description, amount, paid_at, is_recurring, recurrence_active, expense_type, category, payee, status, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [req.companyId, label, description, amount, paidAt, isRecurring, expenseType, category, payee, status, req.user.id]
     );
     res.status(201).json(r.rows[0]);
   } catch (e) { respondError(res, e); }
@@ -275,11 +305,13 @@ router.put('/expenses/:id', requireAuth, companyScope(true), requirePermission('
     const paidAt = parseDate(req.body?.paid_at, 'Data de pagamento');
     const description = req.body?.description != null ? String(req.body.description).trim() || null : null;
     const expenseType = parseExpenseType(req.body?.expense_type);
+    const category = parseFreeText(req.body?.category);
+    const payee = parseFreeText(req.body?.payee);
     const r = await query(
       `UPDATE ${SCHEMA}.finance_expenses
-          SET label=$1, description=$2, amount=$3, paid_at=$4, expense_type=$5, updated_by=$6, updated_at=now()
-        WHERE id=$7 AND company_id=$8 RETURNING *`,
-      [label, description, amount, paidAt, expenseType, req.user.id, id, req.companyId]
+          SET label=$1, description=$2, amount=$3, paid_at=$4, expense_type=$5, category=$6, payee=$7, updated_by=$8, updated_at=now()
+        WHERE id=$9 AND company_id=$10 RETURNING *`,
+      [label, description, amount, paidAt, expenseType, category, payee, req.user.id, id, req.companyId]
     );
     if (!r.rows[0]) return res.status(404).json({ error: 'Despesa não encontrada' });
     res.json(r.rows[0]);
@@ -307,11 +339,13 @@ router.post('/expenses/import', requireAuth, companyScope(true), requirePermissi
           const description = it.description ? String(it.description).trim() || null : null;
           const isRecurring = Boolean(it.is_recurring);
           const expenseType = parseExpenseType(it.expense_type);
+          const category = parseFreeText(it.category);
+          const payee = parseFreeText(it.payee);
           await query(
             `INSERT INTO ${SCHEMA}.finance_expenses
-               (company_id, label, description, amount, paid_at, is_recurring, recurrence_active, expense_type, created_by)
-             VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8)`,
-            [req.companyId, label, description, amount, paidAt, isRecurring, expenseType, req.user.id]
+               (company_id, label, description, amount, paid_at, is_recurring, recurrence_active, expense_type, category, payee, created_by)
+             VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10)`,
+            [req.companyId, label, description, amount, paidAt, isRecurring, expenseType, category, payee, req.user.id]
           );
           imported++;
         } catch (e) { errors.push({ line: i + 2, error: e.message }); }
@@ -399,11 +433,13 @@ router.post('/expenses/import', requireAuth, companyScope(true), requirePermissi
         const isRecurring = sourceIdx.has(i);
         if (isRecurring) recurringSeries++;
         const expenseType = parseExpenseType(it.expense_type);
+        const category = parseFreeText(it.category);
+        const payee = parseFreeText(it.payee);
         await query(
           `INSERT INTO ${SCHEMA}.finance_expenses
-             (company_id, label, description, amount, paid_at, is_recurring, recurrence_active, expense_type, created_by)
-           VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8)`,
-          [req.companyId, label, description, amount, paidAt, isRecurring, expenseType, req.user.id]
+             (company_id, label, description, amount, paid_at, is_recurring, recurrence_active, expense_type, category, payee, created_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10)`,
+          [req.companyId, label, description, amount, paidAt, isRecurring, expenseType, category, payee, req.user.id]
         );
         imported++;
       } catch (e) { errors.push({ line: i + 2, error: e.message }); }
@@ -798,12 +834,14 @@ router.get('/dashboard/despesas-categoria', ...dashGuard, async (req, res) => {
     const mes = parseMes(req.query.mes);
     const from = isoFirst(ano, mes);
     const to = isoFirst(mes === 12 ? ano + 1 : ano, mes === 12 ? 1 : mes + 1);
+    // Agrupa pela CATEGORIA quando informada; na falta dela (dados antigos), cai
+    // no label — assim o gráfico continua populado durante a transição.
     const cat = await query(
-      `SELECT fe.label AS nome, fe.expense_type,
+      `SELECT COALESCE(NULLIF(TRIM(fe.category), ''), fe.label) AS nome, fe.expense_type,
               SUM(fe.amount)::numeric(14,2) AS valor
          FROM ${SCHEMA}.finance_expenses fe
         WHERE fe.company_id = $1 AND fe.status = 'paid' AND fe.paid_at >= $2::date AND fe.paid_at < $3::date
-        GROUP BY fe.label, fe.expense_type
+        GROUP BY COALESCE(NULLIF(TRIM(fe.category), ''), fe.label), fe.expense_type
        HAVING SUM(fe.amount) <> 0
         ORDER BY SUM(fe.amount) DESC`,
       [req.companyId, from, to]

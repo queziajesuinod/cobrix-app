@@ -5,6 +5,7 @@ const { ensureDateOnly, formatISODate } = require('../utils/date-only');
 const { sendWhatsapp } = require('../services/messenger');
 const { computeRiskScore } = require('../services/risk');
 const { requirePermission, getEffectivePermissions } = require('../services/permissions');
+const { activateSubscriptionForContract } = require('../jobs/gateway-reconcile');
 
 // Redige (mascara) campos sensíveis conforme as permissões do usuário.
 async function sensitiveFlags(user) {
@@ -404,6 +405,13 @@ async function markBillingsPaid(companyId, billings) {
 
   for (const row of updated.rows) {
     await setContractMonthStatusPaid(row.contract_id, companyId, row.billing_date);
+    // SaaS: se a cobrança quitada é a mensalidade de uma assinatura pendente,
+    // libera o acesso da empresa-cliente. Idempotente / no-op fora de assinatura.
+    try {
+      await activateSubscriptionForContract(row.contract_id);
+    } catch (activateErr) {
+      console.error('[overdue-mark-paid] falha ao ativar assinatura contract=%s err=%s', row.contract_id, activateErr.message);
+    }
   }
 
   const totalPaidAmount = updated.rows.reduce((sum, row) => sum + Number(row.amount || 0), 0);

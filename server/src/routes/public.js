@@ -106,6 +106,11 @@ router.post('/signup', async (req, res) => {
       firstAmount = v.finalAmount;
     }
 
+    // Cupom cobriu 100% da 1ª cobrança → não há PIX a pagar. Nesse caso a
+    // cobrança já nasce paga e a empresa/assinatura entram ATIVAS na hora
+    // (sem QR Code, acesso liberado direto).
+    const fullyPaid = firstAmount <= 0;
+
     const today = ensureDateOnly(new Date()) || new Date();
     const todayIso = formatISODate(today);
     const endIso = formatISODate(new Date(today.getFullYear() + 10, today.getMonth(), today.getDate()));
@@ -132,8 +137,8 @@ router.post('/signup', async (req, res) => {
         // 1) Empresa-cliente provisionada (aguardando pagamento).
         const compRes = await client.query(
           `INSERT INTO ${SCHEMA}.companies (name, status, plan_id, clients_limit, contracts_limit)
-           VALUES ($1, 'pending_payment', $2, $3, $4) RETURNING id`,
-          [companyName, plan.id, plan.clients_limit, plan.contracts_limit]
+           VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+          [companyName, fullyPaid ? 'active' : 'pending_payment', plan.id, plan.clients_limit, plan.contracts_limit]
         );
         const newCompanyId = compRes.rows[0].id;
 
@@ -172,27 +177,27 @@ router.post('/signup', async (req, res) => {
         // last_billed_date=hoje para o billing-cron NÃO gerar uma cobrança
         // duplicada no mesmo dia (dedup da 1ª mensalidade).
         const billRes = await client.query(
-          `INSERT INTO ${SCHEMA}.billings (company_id, contract_id, billing_date, amount, status)
-           VALUES ($1, $2, $3, $4, 'pending')
+          `INSERT INTO ${SCHEMA}.billings (company_id, contract_id, billing_date, amount, status, gateway_paid_at)
+           VALUES ($1, $2, $3, $4, $5, ${fullyPaid ? 'now()' : 'NULL'})
            ON CONFLICT (contract_id, billing_date) DO NOTHING
            RETURNING id`,
-          [ownerId, ownerContractId, todayIso, firstAmount]
+          [ownerId, ownerContractId, todayIso, firstAmount, fullyPaid ? 'paid' : 'pending']
         );
         const firstBillingId = billRes.rows[0]?.id || null;
         await client.query(
           `INSERT INTO ${SCHEMA}.contract_month_status (company_id, contract_id, year, month, status)
-           VALUES ($1, $2, $3, $4, 'pending')
+           VALUES ($1, $2, $3, $4, $5)
            ON CONFLICT (contract_id, year, month) DO NOTHING`,
-          [ownerId, ownerContractId, today.getFullYear(), today.getMonth() + 1]
+          [ownerId, ownerContractId, today.getFullYear(), today.getMonth() + 1, fullyPaid ? 'paid' : 'pending']
         );
         await client.query(`UPDATE ${SCHEMA}.contracts SET last_billed_date=$1 WHERE id=$2`, [todayIso, ownerContractId]);
 
         // 5) Assinatura (a "cola") — status pending_payment até o pagamento confirmar.
         const subRes = await client.query(
           `INSERT INTO ${SCHEMA}.company_subscriptions
-             (company_id, plan_id, period, owner_company_id, client_id, contract_id, promo_code, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending_payment') RETURNING id`,
-          [newCompanyId, plan.id, period, ownerId, ownerClientId, ownerContractId, code]
+             (company_id, plan_id, period, owner_company_id, client_id, contract_id, promo_code, status, activated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, ${fullyPaid ? 'now()' : 'NULL'}) RETURNING id`,
+          [newCompanyId, plan.id, period, ownerId, ownerClientId, ownerContractId, code, fullyPaid ? 'active' : 'pending_payment']
         );
         const newSubscriptionId = subRes.rows[0].id;
 
@@ -228,7 +233,7 @@ router.post('/signup', async (req, res) => {
     // (dinâmico) quando o owner tem gateway; senão cai no PIX estático da chave
     // PIX do owner. Best-effort: sem gateway nem chave, segue sem PIX.
     let pix = null;
-    if (result.firstBillingId) {
+    if (!fullyPaid && result.firstBillingId) {
       const link = await resolvePixPayment({
         companyId: ownerId,
         contractId: result.contractId,
@@ -250,7 +255,7 @@ router.post('/signup', async (req, res) => {
 
     res.status(201).json({
       ok: true,
-      status: 'pending_payment',
+      status: fullyPaid ? 'active' : 'pending_payment',
       companyId: result.companyId,
       subscriptionId: result.subscriptionId,
       plan: plan.name,
@@ -260,7 +265,9 @@ router.post('/signup', async (req, res) => {
       discount: couponInfo ? Number(couponInfo.discount) : 0,
       coupon: couponInfo ? { code: couponInfo.coupon.code } : null,
       pix,
-      message: 'Cadastro criado. Pague o PIX abaixo — assim que o pagamento for confirmado, seu acesso será liberado automaticamente.',
+      message: fullyPaid
+        ? 'Cadastro concluído! Seu cupom cobriu 100% da primeira cobrança — o acesso já está liberado. É só entrar.'
+        : 'Cadastro criado. Pague o PIX abaixo — assim que o pagamento for confirmado, seu acesso será liberado automaticamente.',
     });
   } catch (err) {
     if (err && err.status) {

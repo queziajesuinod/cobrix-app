@@ -629,6 +629,17 @@ router.put('/by-contract/:contractId/month/:year/:month/status', requireAuth, co
       created = ins.rows[0]?.id || null;
     }
 
+    // SaaS: se este contrato é o da 1ª mensalidade de uma assinatura pendente,
+    // marcar o mês como PAGO libera o acesso da empresa-cliente automaticamente.
+    // Idempotente e no-op para contratos que não são de assinatura.
+    if (status === 'paid') {
+      try {
+        await activateSubscriptionForContract(contractId);
+      } catch (activateErr) {
+        console.error('[billing-month-status] falha ao ativar assinatura contract=%s err=%s', contractId, activateErr.message);
+      }
+    }
+
     res.json({ updated: r.rowCount, ids: r.rows.map(x => x.id), created });
   } catch (e) {
     respondError(res, e);

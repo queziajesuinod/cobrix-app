@@ -21,7 +21,9 @@ export default function LoginPage() {
       if (user?.role === 'master') navigate('/companies')
       else navigate('/dashboard')
     } catch (err) {
-      setError(err?.response?.data?.error || 'Falha no login')
+      // authService.login usa fetch e joga a mensagem do backend em err.message
+      // (ex.: conta aguardando pagamento). Axios usaria err.response.data.error.
+      setError(err?.response?.data?.error || err?.message || 'Falha no login')
     }
   }
 

@@ -78,10 +78,23 @@ function EntryDialog({ kind, entry, onClose, onSaved, notify }) {
     date: entry?.[dateField] ? String(entry[dateField]).slice(0, 10) : '',
     is_recurring: Boolean(entry?.is_recurring),
     expense_type: entry?.expense_type || 'variable',
+    category: entry?.category || '',
+    payee: entry?.payee || '',
     client_id: entry?.client_id || '',
     contract_id: entry?.contract_id || '',
   })
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }))
+
+  // Despesa: sugestões dinâmicas de categoria e recebedor (valores já usados pela
+  // empresa) + categorias comuns como atalho. É "lista ou acrescenta" (freeSolo).
+  const expenseOptionsQ = useQuery({
+    queryKey: ['finance-expense-options'],
+    queryFn: () => financeService.expenseOptions(),
+    enabled: isExpense,
+  })
+  const CATEGORY_PRESETS = ['Assinatura', 'Aluguel', 'Impostos / Taxas', 'Salários', 'Energia', 'Internet / Telefone', 'Material de escritório', 'Marketing', 'Serviços de terceiros']
+  const categoryOptions = [...new Set([...(expenseOptionsQ.data?.categories || []), ...CATEGORY_PRESETS])]
+  const payeeOptions = expenseOptionsQ.data?.payees || []
 
   // Vínculo opcional (só receitas): busca de cliente (server-side) + contrato do cliente.
   const [selectedClient, setSelectedClient] = React.useState(
@@ -116,7 +129,12 @@ function EntryDialog({ kind, entry, onClose, onSaved, notify }) {
         [dateField]: form.date,
       }
       if (isExpense && !isEdit) payload.is_recurring = form.is_recurring
-      if (isExpense) { payload.expense_type = form.expense_type; return isEdit ? financeService.updateExpense(entry.id, payload) : financeService.createExpense(payload) }
+      if (isExpense) {
+        payload.expense_type = form.expense_type
+        payload.category = form.category.trim() || null
+        payload.payee = form.payee.trim() || null
+        return isEdit ? financeService.updateExpense(entry.id, payload) : financeService.createExpense(payload)
+      }
       payload.client_id = form.client_id || null
       payload.contract_id = form.contract_id || null
       return isEdit ? financeService.updateRevenue(entry.id, payload) : financeService.createRevenue(payload)
@@ -139,7 +157,47 @@ function EntryDialog({ kind, entry, onClose, onSaved, notify }) {
           <TextField label="Valor (R$)" type="number" inputProps={{ step: '0.01', min: 0 }} value={form.amount} onChange={set('amount')} required fullWidth />
           <TextField label={isExpense ? 'Data de pagamento' : 'Data de recebimento'} type="date" InputLabelProps={{ shrink: true }} value={form.date} onChange={set('date')} required fullWidth />
           {isExpense && (
-            <TextField select label="Tipo de despesa" value={form.expense_type} onChange={set('expense_type')} fullWidth>
+            <Autocomplete
+              freeSolo
+              options={categoryOptions}
+              value={form.category}
+              onChange={(_e, v) => setForm((f) => ({ ...f, category: v || '' }))}
+              onInputChange={(_e, v) => setForm((f) => ({ ...f, category: v || '' }))}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="Categoria"
+                  placeholder="Ex.: Assinatura, Aluguel, Impostos / Taxas"
+                  helperText="Escolha uma existente ou digite uma nova. Agrupa as despesas no gráfico por categoria."
+                />
+              )}
+            />
+          )}
+          {isExpense && (
+            <Autocomplete
+              freeSolo
+              options={payeeOptions}
+              value={form.payee}
+              onChange={(_e, v) => setForm((f) => ({ ...f, payee: v || '' }))}
+              onInputChange={(_e, v) => setForm((f) => ({ ...f, payee: v || '' }))}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="Recebedor"
+                  placeholder="Para quem foi pago (fornecedor, locador, órgão…)"
+                />
+              )}
+            />
+          )}
+          {isExpense && (
+            <TextField
+              select
+              label="Tipo de despesa"
+              value={form.expense_type}
+              onChange={set('expense_type')}
+              fullWidth
+              helperText="Só classifica nos relatórios. Fixa: não muda com o movimento (aluguel, salários, sistema). Variável: acompanha a atividade (comissões, compras avulsas)."
+            >
               <MenuItem value="variable">Variável</MenuItem>
               <MenuItem value="fixed">Fixa</MenuItem>
             </TextField>
@@ -147,7 +205,7 @@ function EntryDialog({ kind, entry, onClose, onSaved, notify }) {
           {isExpense && !isEdit && (
             <FormControlLabel
               control={<Switch checked={form.is_recurring} onChange={(e) => setForm((f) => ({ ...f, is_recurring: e.target.checked }))} />}
-              label="Despesa recorrente (gera automaticamente todo mês)"
+              label="Despesa recorrente (o sistema lança sozinho todo mês)"
             />
           )}
           {!isExpense && (
@@ -631,6 +689,8 @@ function ExpensesTab({ notify, range, canManage }) {
                 </TableCell>
               )}
               <TableCell>Nomenclatura</TableCell>
+              <TableCell>Categoria</TableCell>
+              <TableCell>Recebedor</TableCell>
               <TableCell>Descrição</TableCell>
               <TableCell align="right">Valor</TableCell>
               <TableCell>Data</TableCell>
@@ -650,6 +710,8 @@ function ExpensesTab({ notify, range, canManage }) {
                   </TableCell>
                 )}
                 <TableCell><Typography sx={{ fontWeight: 600 }}>{r.label}</Typography></TableCell>
+                <TableCell>{r.category ? <Chip label={r.category} size="small" variant="outlined" /> : <Typography variant="body2" color="text.secondary">-</Typography>}</TableCell>
+                <TableCell><Typography variant="body2" color="text.secondary">{r.payee || '-'}</Typography></TableCell>
                 <TableCell><Typography variant="body2" color="text.secondary">{r.description || '-'}</Typography></TableCell>
                 <TableCell align="right" sx={{ fontWeight: 700, color: r.status === 'pending' ? 'text.secondary' : 'error.main' }}>{BRL(r.amount)}</TableCell>
                 <TableCell>{fmtDate(r.paid_at)}</TableCell>
@@ -678,7 +740,7 @@ function ExpensesTab({ notify, range, canManage }) {
                 </TableCell>
               </TableRow>
             ))}
-            {!items.length && <TableRow><TableCell colSpan={canManage ? 10 : 9}><Box sx={{ py: 4, textAlign: 'center', color: 'text.secondary' }}>Nenhuma despesa.</Box></TableCell></TableRow>}
+            {!items.length && <TableRow><TableCell colSpan={canManage ? 12 : 11}><Box sx={{ py: 4, textAlign: 'center', color: 'text.secondary' }}>Nenhuma despesa.</Box></TableCell></TableRow>}
           </TableBody>
         </Table>
       </Box>

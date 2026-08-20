@@ -7,6 +7,7 @@ export const financeService = {
   updateRevenue: async (id, p) => (await api.put(`/finance/revenues/${id}`, p)).data,
   deleteRevenue: async (id) => (await api.delete(`/finance/revenues/${id}`)).data,
   expenses: async (params = {}) => (await api.get('/finance/expenses', { params })).data,
+  expenseOptions: async () => (await api.get('/finance/expenses/options')).data,
   createExpense: async (p) => (await api.post('/finance/expenses', p)).data,
   updateExpense: async (id, p) => (await api.put(`/finance/expenses/${id}`, p)).data,
   setExpenseRecurrence: async (id, active) => (await api.patch(`/finance/expenses/${id}/recurrence`, { active })).data,

@@ -133,11 +133,15 @@ export default function SignupPage() {
   if (signup.isSuccess) {
     const data = signup.data
     const pix = data?.pix
+    // Cupom cobriu 100% → acesso já liberado, sem PIX/QR Code.
+    const activated = data?.status === 'active'
     return (
       <Container maxWidth="sm" sx={{ py: { xs: 5, md: 8 } }}>
         <Card sx={{ p: { xs: 3, md: 4 }, textAlign: 'center' }}>
           <CheckCircleOutlineIcon color="success" sx={{ fontSize: 56 }} />
-          <Typography variant="h5" sx={{ fontWeight: 800, mt: 1 }}>Cadastro criado!</Typography>
+          <Typography variant="h5" sx={{ fontWeight: 800, mt: 1 }}>
+            {activated ? 'Tudo pronto!' : 'Cadastro criado!'}
+          </Typography>
           <Typography color="text.secondary" sx={{ mt: 0.5 }}>
             Plano <strong>{data?.plan}</strong> · {data?.period === 'annual' ? 'anual' : 'mensal'} · <strong>{BRL(data?.amount)}</strong>
           </Typography>
@@ -147,7 +151,12 @@ export default function SignupPage() {
             </Typography>
           )}
 
-          {pix && (pix.qrCodeImage || pix.copyPaste) ? (
+          {activated ? (
+            <Alert severity="success" sx={{ mt: 3, textAlign: 'left' }}>
+              Seu cupom cobriu <strong>100%</strong> da primeira cobrança — não há nada a pagar agora.
+              O acesso já está <strong>liberado</strong>: é só entrar com o seu e-mail e senha.
+            </Alert>
+          ) : pix && (pix.qrCodeImage || pix.copyPaste) ? (
             <Box sx={{ mt: 2 }}>
               <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>Pague com PIX para liberar o acesso</Typography>
               {pix.qrCodeImage && (
@@ -183,7 +192,9 @@ export default function SignupPage() {
             </Alert>
           )}
 
-          <Button variant="contained" sx={{ mt: 3 }} onClick={() => navigate('/login')}>Já paguei — entrar</Button>
+          <Button variant="contained" sx={{ mt: 3 }} onClick={() => navigate('/login')}>
+            {activated ? 'Entrar' : 'Já paguei — entrar'}
+          </Button>
         </Card>
       </Container>
     )
