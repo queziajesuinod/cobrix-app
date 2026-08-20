@@ -192,8 +192,28 @@ function AdjustSubscribersDialog({ open, plan, onClose, onDone }) {
   const items = data?.items || []
   const summary = data?.summary
 
+  // Só assinantes que efetivamente mudam podem ser reajustados (os demais ficam
+  // desabilitados). Por padrão, marca todos os que mudam.
+  const changeableIds = useMemo(() => items.filter((i) => i.changed).map((i) => i.subscription_id), [items])
+  const [selected, setSelected] = useState(() => new Set())
+  React.useEffect(() => {
+    // Ao (re)carregar a prévia, começa com todos os que mudam selecionados.
+    setSelected(new Set(changeableIds))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewQuery.dataUpdatedAt])
+
+  const toggleOne = (id) => setSelected((prev) => {
+    const next = new Set(prev)
+    if (next.has(id)) next.delete(id); else next.add(id)
+    return next
+  })
+  const allChangeableSelected = changeableIds.length > 0 && changeableIds.every((id) => selected.has(id))
+  const someSelected = changeableIds.some((id) => selected.has(id))
+  const toggleAll = () => setSelected(allChangeableSelected ? new Set() : new Set(changeableIds))
+  const selectedCount = selected.size
+
   const applyMutation = useMutation({
-    mutationFn: () => plansService.adjustApply(plan.id, {}),
+    mutationFn: () => plansService.adjustApply(plan.id, { subscription_ids: [...selected] }),
     onSuccess: (res) => onDone(res),
   })
 
@@ -214,13 +234,34 @@ function AdjustSubscribersDialog({ open, plan, onClose, onDone }) {
             </Typography>
             <Alert severity={summary?.will_change ? 'warning' : 'success'}>
               {summary?.will_change
-                ? `${summary.will_change} de ${summary.total} assinante(s) serão reajustados.`
+                ? `${summary.will_change} de ${summary.total} assinante(s) podem ser reajustados. Marque quem receberá o reajuste.`
                 : `Nenhum reajuste necessário — os ${summary?.total} assinante(s) já estão no valor vigente.`}
             </Alert>
+            {summary?.will_change ? (
+              <FormControlLabel
+                sx={{ ml: 0 }}
+                control={(
+                  <Checkbox
+                    size="small"
+                    checked={allChangeableSelected}
+                    indeterminate={someSelected && !allChangeableSelected}
+                    onChange={toggleAll}
+                  />
+                )}
+                label={<Typography variant="body2">Selecionar todos ({changeableIds.length})</Typography>}
+              />
+            ) : null}
             <Stack spacing={0} divider={<Divider flexItem />}>
               {items.map((it) => (
-                <Stack key={it.subscription_id} direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ py: 0.75, opacity: it.changed ? 1 : 0.55 }}>
-                  <Box sx={{ minWidth: 0 }}>
+                <Stack key={it.subscription_id} direction="row" alignItems="center" spacing={1} sx={{ py: 0.75, opacity: it.changed ? 1 : 0.55 }}>
+                  <Checkbox
+                    size="small"
+                    sx={{ p: 0.5 }}
+                    disabled={!it.changed}
+                    checked={it.changed && selected.has(it.subscription_id)}
+                    onChange={() => toggleOne(it.subscription_id)}
+                  />
+                  <Box sx={{ minWidth: 0, flex: 1 }}>
                     <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap>{it.company_name}</Typography>
                     <Typography variant="caption" color="text.secondary">{it.period === 'annual' ? 'Anual' : 'Mensal'}</Typography>
                   </Box>
@@ -250,10 +291,10 @@ function AdjustSubscribersDialog({ open, plan, onClose, onDone }) {
         <Button onClick={onClose} color="inherit">Fechar</Button>
         <Button
           variant="contained"
-          disabled={applyMutation.isPending || !summary?.will_change}
+          disabled={applyMutation.isPending || selectedCount === 0}
           onClick={() => applyMutation.mutate()}
         >
-          {applyMutation.isPending ? 'Aplicando…' : `Reajustar${summary?.will_change ? ` ${summary.will_change}` : ''}`}
+          {applyMutation.isPending ? 'Aplicando…' : `Reajustar${selectedCount ? ` ${selectedCount}` : ''}`}
         </Button>
       </DialogActions>
     </Dialog>
