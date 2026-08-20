@@ -1,10 +1,15 @@
 // server/src/jobs/subscription-lifecycle.js
-// Efetiva os cancelamentos com carência: assinaturas em 'canceling' cujo
-// access_until já passou são inativadas (empresa canceled + usuários inativos).
-const { finalizeCancelingSubscriptions } = require('../services/subscription-service');
+// Efetiva os cancelamentos com carência (assinaturas 'canceling' vencidas → empresa
+// canceled + usuários inativos) e suspende as inadimplentes de revenda (>= 2
+// mensalidades vencidas → empresa suspended até quitar).
+const { finalizeCancelingSubscriptions, suspendDelinquentSubscriptions } = require('../services/subscription-service');
+const { runPlanFloorCron } = require('../services/plan-floor');
 
 async function runSubscriptionLifecycle() {
-  return finalizeCancelingSubscriptions();
+  const finalized = await finalizeCancelingSubscriptions();
+  const suspended = await suspendDelinquentSubscriptions();
+  const floor = await runPlanFloorCron();
+  return { ...finalized, ...suspended, ...floor };
 }
 
 module.exports = { runSubscriptionLifecycle };

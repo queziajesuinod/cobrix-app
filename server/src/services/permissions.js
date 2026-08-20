@@ -149,6 +149,10 @@ async function getCompanyCeiling(companyId) {
 // Permissões efetivas de um usuário: master = tudo; demais = (perfil ∪ grants −
 // revokes) ∩ teto-do-plano-da-empresa. `companyId` define qual empresa (e, logo,
 // qual teto) aplicar; se omitido, usa a empresa principal do token.
+// Permissões transversais que NÃO são cortadas pelo teto do plano (capacidades
+// liberadas por outra dimensão — ex.: revenda pela flag is_partner da empresa).
+const CEILING_EXEMPT = new Set(['partner.portal.view']);
+
 async function getEffectivePermissions(user, companyId) {
   if (!user) return [];
   if (user.role === 'master') return [...ALL_KEYS];
@@ -173,10 +177,12 @@ async function getEffectivePermissions(user, companyId) {
   // Filtra por chaves válidas do catálogo (limpa chaves obsoletas).
   let effective = [...set].filter(isValidPermission);
 
-  // Camada 1: aplica o teto do plano da empresa (interseção).
+  // Camada 1: aplica o teto do plano da empresa (interseção). Algumas permissões
+  // são TRANSVERSAIS (não são módulos de plano) e não devem ser cortadas pelo teto —
+  // ex.: o portal de revenda, liberado pela flag is_partner da empresa, não por plano.
   const cid = companyId ?? (Array.isArray(user.company_ids) ? user.company_ids[0] : null);
   const ceiling = await getCompanyCeiling(cid);
-  if (ceiling) effective = effective.filter((k) => ceiling.has(k));
+  if (ceiling) effective = effective.filter((k) => ceiling.has(k) || CEILING_EXEMPT.has(k));
   return effective;
 }
 

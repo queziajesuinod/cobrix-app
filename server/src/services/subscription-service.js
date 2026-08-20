@@ -183,6 +183,54 @@ async function finalizeCancelingSubscriptions() {
   return { finalized: count };
 }
 
+// Revenda: nº de mensalidades vencidas e não pagas que dispara a suspensão da
+// empresa-cliente (corta acesso até quitar). Padrão 2 (decisão do modelo).
+const SUSPEND_AFTER_UNPAID = Number(process.env.SUSPEND_AFTER_UNPAID_MONTHS || 2);
+
+// Cron: suspende empresas de assinaturas VENDIDAS POR PARCEIRO que acumularam
+// >= SUSPEND_AFTER_UNPAID cobranças vencidas e não pagas — corta o acesso (status
+// 'suspended' + usuários inativos) até quitarem. É REVERSÍVEL: o pagamento retoma
+// o acesso (activateSubscriptionForContract). Assim, se a X não paga, ela some do
+// sistema e a comissão do parceiro deixa de ser gerada (segue o pagamento real).
+async function suspendDelinquentSubscriptions() {
+  const today = formatISODate(new Date());
+  const due = await query(
+    `SELECT cs.id, cs.company_id, cs.contract_id,
+            (SELECT COUNT(*) FROM ${SCHEMA}.billings b
+              WHERE b.contract_id = cs.contract_id
+                AND b.status = 'pending' AND b.billing_date < $1)::int AS overdue
+       FROM ${SCHEMA}.company_subscriptions cs
+       JOIN ${SCHEMA}.companies co ON co.id = cs.company_id
+      WHERE cs.partner_id IS NOT NULL
+        AND cs.status = 'active'
+        AND co.status = 'active'`,
+    [today]
+  );
+  let count = 0;
+  for (const row of due.rows) {
+    if (Number(row.overdue) < SUSPEND_AFTER_UNPAID) continue;
+    try {
+      await withClient(async (client) => {
+        await client.query('BEGIN');
+        try {
+          await client.query(`UPDATE ${SCHEMA}.companies SET status='suspended' WHERE id=$1 AND status='active'`, [row.company_id]);
+          await setCompanyUsersActive(row.company_id, false, client);
+          await client.query('COMMIT');
+        } catch (e) {
+          await client.query('ROLLBACK');
+          throw e;
+        }
+      });
+      count += 1;
+      logger.info({ companyId: row.company_id, subscriptionId: row.id, overdue: row.overdue }, '[saas] empresa suspensa por inadimplência');
+    } catch (err) {
+      logger.error({ err, subscriptionId: row.id }, '[saas] falha ao suspender inadimplente');
+    }
+  }
+  if (count) logger.info({ count }, '[saas] suspensões por inadimplência aplicadas');
+  return { suspended: count };
+}
+
 // Reativação pelo dono: reativa usuários + empresa, aplica o plano escolhido,
 // reabre o contrato e gera nova 1ª cobrança (PIX best-effort).
 async function reactivateSubscription({ subscriptionId, planId, period = 'monthly' }) {
@@ -602,6 +650,7 @@ module.exports = {
   cancelSubscriptionImmediate,
   selfCancelAtPeriodEnd,
   finalizeCancelingSubscriptions,
+  suspendDelinquentSubscriptions,
   reactivateSubscription,
   changePlan,
   previewPlanAdjustment,

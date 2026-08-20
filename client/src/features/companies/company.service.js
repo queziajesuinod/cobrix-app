@@ -5,4 +5,6 @@ export const companyService = {
   create: async (payload) => (await api.post('/companies', payload)).data,
   update: async (id, payload) => (await api.put(`/companies/${id}`, payload)).data,
   remove: async (id) => (await api.delete(`/companies/${id}`)).data,
+  partnerPrices: async (id) => (await api.get(`/companies/${id}/partner-prices`)).data,
+  savePartnerPrice: async (id, planId, payload) => (await api.put(`/companies/${id}/partner-prices/${planId}`, payload)).data,
 }

@@ -27,6 +27,8 @@ const SubscriptionsAdminPage = lazy(() => import('@/features/admin/Subscriptions
 const MySubscriptionPage = lazy(() => import('@/features/account/MySubscriptionPage'))
 const UsersPage = lazy(() => import('@/features/admin/UsersPage'))
 const FinancePage = lazy(() => import('@/features/finance/FinancePage'))
+const CommissionsPage = lazy(() => import('@/features/commissions/CommissionsPage'))
+const PartnerPortalPage = lazy(() => import('@/features/companies/PartnerPortalPage'))
 const TasksPage = lazy(() => import('@/features/tasks/TasksPage'))
 const ProductivityPage = lazy(() => import('@/features/tasks/ProductivityPage'))
 const FinanceDashboardPage = lazy(() => import('@/features/finance/FinanceDashboardPage'))
@@ -67,6 +69,8 @@ export default function AppRouter() {
         <Route path="/minha-assinatura" element={<ProtectedRoute><AppShell><MySubscriptionPage /></AppShell></ProtectedRoute>} />
         <Route path="/admin/users" element={<ProtectedRoute><AppShell><UsersPage /></AppShell></ProtectedRoute>} />
         <Route path="/finance" element={<ProtectedRoute><AppShell><FinancePage /></AppShell></ProtectedRoute>} />
+        <Route path="/commissions" element={<ProtectedRoute><AppShell><CommissionsPage /></AppShell></ProtectedRoute>} />
+        <Route path="/partner" element={<ProtectedRoute><AppShell><PartnerPortalPage /></AppShell></ProtectedRoute>} />
         <Route path="/finance/dashboard" element={<ProtectedRoute><AppShell><FinanceDashboardPage /></AppShell></ProtectedRoute>} />
         <Route path="/tasks" element={<ProtectedRoute><AppShell><TasksPage /></AppShell></ProtectedRoute>} />
         <Route path="/tasks/productivity" element={<ProtectedRoute><AppShell><ProductivityPage /></AppShell></ProtectedRoute>} />

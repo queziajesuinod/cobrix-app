@@ -1,7 +1,8 @@
 const { query } = require('../db');
 const { getChargeStatus } = require('../services/payment-gateway');
 const { notifyBillingPaid } = require('../services/payment-notifications');
-const { ensureDateOnly } = require('../utils/date-only');
+const { accrueForPaidBilling } = require('../services/partner-commission');
+const { ensureDateOnly, formatISODate } = require('../utils/date-only');
 const logger = require('../utils/logger');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
@@ -124,14 +125,43 @@ async function activateSubscriptionForContract(contractId) {
       [contractId]
     );
     const row = sub.rows[0];
-    if (!row) return;
-    await query(
-      `UPDATE ${SCHEMA}.companies SET status='active' WHERE id=$1 AND status='pending_payment'`,
-      [row.company_id]
+    if (row) {
+      await query(
+        `UPDATE ${SCHEMA}.companies SET status='active' WHERE id=$1 AND status='pending_payment'`,
+        [row.company_id]
+      );
+      logger.info({ companyId: row.company_id, contractId }, '[saas] assinatura ativada pelo pagamento');
+    }
+
+    // Revenda: retoma a empresa SUSPENSA por inadimplência quando ela quita os
+    // atrasados (não sobra nenhuma cobrança vencida em aberto). Reativa usuários.
+    const susp = await query(
+      `SELECT co.id AS company_id
+         FROM ${SCHEMA}.company_subscriptions cs
+         JOIN ${SCHEMA}.companies co ON co.id = cs.company_id
+        WHERE cs.contract_id = $1 AND co.status = 'suspended' LIMIT 1`,
+      [contractId]
     );
-    logger.info({ companyId: row.company_id, contractId }, '[saas] assinatura ativada pelo pagamento');
+    const scomp = susp.rows[0];
+    if (scomp) {
+      const todayIso = formatISODate(new Date());
+      const overdue = await query(
+        `SELECT COUNT(*)::int AS n FROM ${SCHEMA}.billings
+          WHERE contract_id=$1 AND status='pending' AND billing_date < $2`,
+        [contractId, todayIso]
+      );
+      if (Number(overdue.rows[0].n) === 0) {
+        await query(`UPDATE ${SCHEMA}.companies SET status='active' WHERE id=$1 AND status='suspended'`, [scomp.company_id]);
+        await query(
+          `UPDATE ${SCHEMA}.users SET active=true
+            WHERE role <> 'master' AND id IN (SELECT user_id FROM ${SCHEMA}.user_companies WHERE company_id=$1)`,
+          [scomp.company_id]
+        );
+        logger.info({ companyId: scomp.company_id, contractId }, '[saas] empresa reativada após quitar atraso');
+      }
+    }
   } catch (err) {
-    logger.error({ err, contractId }, '[saas] falha ao ativar assinatura');
+    logger.error({ err, contractId }, '[saas] falha ao ativar/retomar assinatura');
   }
 }
 
@@ -145,7 +175,10 @@ async function handleConfirmedPayment(link, detail) {
     companyId: result.link?.company_id || link.company_id,
     detail,
   });
-  await activateSubscriptionForContract(result.link?.contract_id || link.contract_id);
+  const paidContractId = result.link?.contract_id || link.contract_id;
+  await activateSubscriptionForContract(paidContractId);
+  // Revenda: acumula a comissão (base da Padrão + overrides) deste pagamento.
+  await accrueForPaidBilling({ billingId, contractId: paidContractId });
   logger.info(
     { billingId, companyId: result.link?.company_id, notified: Boolean(notification?.sent), source: detail?._source || 'polling' },
     '[gateway] pagamento confirmado'

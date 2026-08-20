@@ -1,5 +1,6 @@
 ﻿import React from 'react'
-import { Stack, TextField, Button, Typography, MenuItem, FormControlLabel, Switch } from '@mui/material'
+import { Divider, Stack, TextField, Button, Typography, MenuItem, FormControlLabel, Switch } from '@mui/material'
+import PartnerPlanPrices from './PartnerPlanPrices'
 
 export default function CompanyDataForm({ defaultValues, onSubmit, submitting, plans }){
   const formatLimit = (value) => (value === undefined || value === null ? '' : String(value))
@@ -10,6 +11,12 @@ export default function CompanyDataForm({ defaultValues, onSubmit, submitting, p
   React.useEffect(()=>{ setPlanId(defaultValues?.plan_id == null ? '' : String(defaultValues.plan_id)) }, [defaultValues?.plan_id])
   const [isOwner, setIsOwner] = React.useState(Boolean(defaultValues?.is_saas_owner))
   React.useEffect(()=>{ setIsOwner(Boolean(defaultValues?.is_saas_owner)) }, [defaultValues?.is_saas_owner])
+  const [isPartner, setIsPartner] = React.useState(Boolean(defaultValues?.is_partner))
+  React.useEffect(()=>{ setIsPartner(Boolean(defaultValues?.is_partner)) }, [defaultValues?.is_partner])
+  const [overrideType, setOverrideType] = React.useState(defaultValues?.partner_override_type || 'percent')
+  React.useEffect(()=>{ setOverrideType(defaultValues?.partner_override_type || 'percent') }, [defaultValues?.partner_override_type])
+  const [overrideValue, setOverrideValue] = React.useState(defaultValues?.partner_override_value == null ? '' : String(defaultValues.partner_override_value))
+  React.useEffect(()=>{ setOverrideValue(defaultValues?.partner_override_value == null ? '' : String(defaultValues.partner_override_value)) }, [defaultValues?.partner_override_value])
   const [gatewayClientId, setGatewayClientId] = React.useState(defaultValues?.gateway_client_id || '')
   const [gatewayClientSecret, setGatewayClientSecret] = React.useState('')
   const [gatewayCert, setGatewayCert] = React.useState({ value: null, name: '' })
@@ -68,6 +75,11 @@ export default function CompanyDataForm({ defaultValues, onSubmit, submitting, p
     if (showPlan) {
       payload.plan_id = planId === '' ? null : Number(planId)
       payload.is_saas_owner = isOwner
+      payload.is_partner = isPartner
+      if (isPartner) {
+        payload.partner_override_type = overrideType
+        payload.partner_override_value = overrideValue === '' ? 0 : Number(String(overrideValue).replace(',', '.'))
+      }
     }
     onSubmit?.(payload)
   }
@@ -102,6 +114,45 @@ export default function CompanyDataForm({ defaultValues, onSubmit, submitting, p
               </span>
             }
           />
+        )}
+        {showPlan && (
+          <FormControlLabel
+            control={<Switch checked={isPartner} onChange={(e)=>setIsPartner(e.target.checked)} />}
+            label={
+              <span>
+                É um <strong>parceiro</strong> (revende o sistema — recebe as assinaturas que vendeu e paga comissão)
+              </span>
+            }
+          />
+        )}
+        {showPlan && isPartner && (
+          <Stack direction="row" spacing={1} sx={{ pl: 4 }}>
+            <TextField
+              select
+              label="Tipo do override"
+              value={overrideType}
+              onChange={(e)=>setOverrideType(e.target.value)}
+              sx={{ minWidth: 140 }}
+            >
+              <MenuItem value="percent">Percentual (%)</MenuItem>
+              <MenuItem value="fixed">Valor fixo (R$)</MenuItem>
+            </TextField>
+            <TextField
+              label="Override deste parceiro"
+              type="number"
+              inputProps={{ min: 0, step: '0.01' }}
+              value={overrideValue}
+              onChange={(e)=>setOverrideValue(e.target.value)}
+              fullWidth
+              helperText="Comissão EXTRA que este parceiro ganha das vendas da rede dele (quem ele cadastrar). Sobre o piso do plano. É adicional à comissão-base da plataforma."
+            />
+          </Stack>
+        )}
+        {showPlan && isPartner && defaultValues?.id && (
+          <>
+            <Divider sx={{ my: 1 }} />
+            <PartnerPlanPrices companyId={defaultValues.id} plans={plans} />
+          </>
         )}
         <TextField label="Chave PIX" value={pix} onChange={(e)=>setPix(e.target.value)} fullWidth placeholder="Informe a chave PIX usada nas cobranças" />
         <Stack spacing={1}>

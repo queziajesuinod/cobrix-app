@@ -88,6 +88,9 @@ const CATALOG = [
     { key: 'finance.dashboard.view', label: 'Dashboard: acessar (visão consolidada)', type: 'view' },
     { key: 'finance.metas.manage', label: 'Metas: definir orçado anual', type: 'action' },
   ] },
+  { module: 'partner', label: 'Revenda (portal do parceiro)', permissions: [
+    { key: 'partner.portal.view', label: 'Portal do parceiro: acessar (link, preços de revenda e comissões)', type: 'view' },
+  ] },
 ];
 
 const ALL_KEYS = CATALOG.flatMap((m) => m.permissions.map((p) => p.key));

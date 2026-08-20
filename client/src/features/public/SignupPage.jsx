@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import {
   Alert, Box, Button, Card, Chip, CircularProgress, Container, Divider, Grid,
@@ -67,12 +67,18 @@ function PlanCard({ plan, period, selected, onSelect }) {
 
 export default function SignupPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  // Link de revenda: /signup?parceiro=<id> → preços e recebimento vão para o parceiro.
+  const partnerId = searchParams.get('parceiro') || null
   const [period, setPeriod] = useState('monthly')
   const [planId, setPlanId] = useState(null)
   const [form, setForm] = useState(EMPTY)
   const [error, setError] = useState(null)
 
-  const plansQuery = useQuery({ queryKey: ['public-plans'], queryFn: publicService.plans })
+  const plansQuery = useQuery({
+    queryKey: ['public-plans', partnerId],
+    queryFn: () => publicService.plans(partnerId ? { partner_id: partnerId } : {}),
+  })
   const plans = plansQuery.data?.plans || []
 
   const selectedPlan = useMemo(() => plans.find((p) => p.id === planId) || null, [plans, planId])
@@ -99,7 +105,7 @@ export default function SignupPage() {
     const code = form.code.trim()
     if (!code) { setCouponResult({ valid: false, message: 'Digite um código de cupom.' }); return }
     if (!selectedPlan) { setCouponResult({ valid: false, message: 'Selecione um plano primeiro.' }); return }
-    validateCoupon.mutate({ code, plan_id: selectedPlan.id, period })
+    validateCoupon.mutate({ code, plan_id: selectedPlan.id, period, partner_id: partnerId || null })
   }
 
   // Valor efetivo a cobrar agora (com desconto do cupom, se válido).
@@ -126,6 +132,7 @@ export default function SignupPage() {
       document: form.document.trim() || null,
       phone: form.phone.trim() || null,
       code: form.code.trim() || null,
+      partner_id: partnerId || null,
     })
   }
 

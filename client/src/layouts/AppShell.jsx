@@ -12,6 +12,8 @@ import { usePermissions } from '@/features/permissions/PermissionsContext'
 import { useColorMode } from '@/theme/ColorModeProvider'
 import CompanySelector from '@/components/CompanySelector'
 import { notificationsService } from '@/features/notifications/notifications.service'
+import { companyService } from '@/features/companies/company.service'
+import HandshakeIcon from '@mui/icons-material/Handshake'
 import { tasksService } from '@/features/tasks/tasks.service'
 import AssignmentTurnedInIcon from '@mui/icons-material/AssignmentTurnedIn'
 import AlternateEmailIcon from '@mui/icons-material/AlternateEmail'
@@ -68,7 +70,7 @@ function isNewItem(since) {
 // Estrutura de navegação em seções (padrão Dandelion). `perm` = permissão de
 // acesso à tela (usada para filtrar o menu e barrar acesso). Itens sem `perm`
 // (área master) não passam pelo filtro de permissão.
-const buildSections = (role) => [
+const buildSections = (role, isPartner) => [
   {
     label: 'Principal',
     items: [
@@ -120,6 +122,15 @@ const buildSections = (role) => [
       { to: '/finance', label: 'Gerenciador Financeiro', icon: <AccountBalanceIcon />, perms: ['finance.revenues.view', 'finance.expenses.view', 'finance.resumo.view'], since: '2026-07-30' },
     ],
   },
+  ...(isPartner
+    ? [{
+        label: 'Revenda',
+        items: [
+          { to: '/partner', label: 'Meu portal', icon: <HandshakeIcon />, perm: 'partner.portal.view', since: '2026-08-19' },
+          { to: '/commissions', label: 'Comissões', icon: <ReceiptLongIcon />, perm: 'partner.portal.view', since: '2026-08-19' },
+        ],
+      }]
+    : []),
   ...(role === 'master'
     ? [{
         label: 'Admin',
@@ -128,6 +139,7 @@ const buildSections = (role) => [
           { to: '/admin/plans', label: 'Planos', icon: <LayersIcon /> },
           { to: '/admin/coupons', label: 'Cupons', icon: <LocalOfferIcon />, since: '2026-08-19' },
           { to: '/admin/subscriptions', label: 'Assinaturas', icon: <ReceiptLongIcon />, since: '2026-08-04' },
+          { to: '/commissions', label: 'Comissões', icon: <ReceiptLongIcon />, since: '2026-08-19' },
           { to: '/admin/permissions', label: 'Perfis e permissões', icon: <AdminPanelSettingsIcon /> },
           { to: '/system/health', label: 'Saúde do sistema', icon: <MonitorHeartIcon /> },
         ],
@@ -232,7 +244,16 @@ export default function AppShell({ children }) {
     qc.invalidateQueries({ queryKey: ['app-notifications'] })
   }
 
-  const sections = React.useMemo(() => buildSections(user?.role), [user?.role])
+  // Empresa selecionada é parceira? Libera a seção "Revenda" (portal + comissões).
+  const companyQ = useQuery({
+    queryKey: ['appshell-company', selectedCompanyId],
+    queryFn: () => companyService.get(selectedCompanyId),
+    enabled: Boolean(selectedCompanyId),
+    staleTime: 60000,
+  })
+  const isPartner = Boolean(companyQ.data?.is_partner)
+
+  const sections = React.useMemo(() => buildSections(user?.role, isPartner), [user?.role, isPartner])
   // Um item aparece se o usuário tem sua permissão (ou QUALQUER uma de `perms`).
   const canNav = React.useCallback((it) => (it?.perms ? it.perms.some((p) => can(p)) : can(it?.perm)), [can])
   const visibleSections = React.useMemo(

@@ -1,15 +1,31 @@
 // server/src/routes/coupons.js
-// CRUD de CUPONS de desconto da assinatura SaaS. Somente master.
-// O desconto é aplicado na 1ª cobrança do signup (ver services/coupons.js).
+// CRUD de CUPONS de desconto da assinatura SaaS. Master gerencia os cupons da
+// PLATAFORMA (partner_id NULL); um PARCEIRO gerencia os próprios (partner_id = a
+// empresa dele) via o portal de revenda. O desconto é aplicado na 1ª cobrança do
+// signup (ver services/coupons.js).
 const express = require('express');
 const { query } = require('../db');
 const { requireAuth } = require('./auth');
-const { masterOnly } = require('../services/permissions');
+const { getEffectivePermissions } = require('../services/permissions');
 const { respondError } = require('../utils/http-error');
 const { normalizeCode } = require('../services/coupons');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 const router = express.Router();
+
+// Escopo do ator sobre cupons: master mexe em todos (partner_id NULL nos que cria);
+// parceiro (empresa is_partner + permissão do portal) mexe só nos próprios. Retorna
+// null quando não autorizado.
+async function couponScope(req) {
+  if (req.user?.role === 'master') return { isMaster: true, partnerId: null };
+  const cid = req.companyId;
+  if (!cid) return null;
+  const perms = await getEffectivePermissions(req.user, cid);
+  if (!perms.includes('partner.portal.view')) return null;
+  const c = await query(`SELECT is_partner FROM ${SCHEMA}.companies WHERE id=$1`, [cid]);
+  if (!c.rows[0]?.is_partner) return null;
+  return { isMaster: false, partnerId: cid };
+}
 
 function parseMoney(v) {
   if (v == null || v === '') return null;
@@ -68,30 +84,38 @@ function parseCouponBody(body = {}) {
 
 const RETURN_COLS = `id, code, description, discount_type, discount_value, applies_to_period,
   plan_ids, min_amount, max_redemptions, redeemed_count, starts_at, expires_at, active,
-  created_at, updated_at`;
+  partner_id, created_at, updated_at`;
 
-// ---- Listar ----
-router.get('/', requireAuth, masterOnly, async (_req, res) => {
+// ---- Listar ---- (master: todos; parceiro: só os dele)
+router.get('/', requireAuth, async (req, res) => {
   try {
-    const r = await query(
-      `SELECT ${RETURN_COLS} FROM ${SCHEMA}.coupons ORDER BY active DESC, created_at DESC`
-    );
+    const scope = await couponScope(req);
+    if (!scope) return res.status(403).json({ error: 'Sem permissão' });
+    const r = scope.isMaster
+      ? await query(`SELECT ${RETURN_COLS} FROM ${SCHEMA}.coupons ORDER BY active DESC, created_at DESC`)
+      : await query(`SELECT ${RETURN_COLS} FROM ${SCHEMA}.coupons WHERE partner_id=$1 ORDER BY active DESC, created_at DESC`, [scope.partnerId]);
     res.json({ coupons: r.rows });
   } catch (e) { respondError(res, e); }
 });
 
-// ---- Criar ----
-router.post('/', requireAuth, masterOnly, async (req, res) => {
+// ---- Criar ---- (parceiro: partner_id forçado = empresa dele)
+router.post('/', requireAuth, async (req, res) => {
   try {
+    const scope = await couponScope(req);
+    if (!scope) return res.status(403).json({ error: 'Sem permissão' });
     const c = parseCouponBody(req.body);
+    // Parceiro só cria cupom próprio; suas restrições de plano ficam de fora
+    // (o cupom vale para o que ele vender). Master cria cupom da plataforma.
+    const partnerId = scope.isMaster ? null : scope.partnerId;
+    const planIds = scope.isMaster ? c.plan_ids : null;
     const r = await query(
       `INSERT INTO ${SCHEMA}.coupons
          (code, description, discount_type, discount_value, applies_to_period, plan_ids,
-          min_amount, max_redemptions, starts_at, expires_at, active, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6::int[],$7,$8,$9,$10,$11,$12)
+          min_amount, max_redemptions, starts_at, expires_at, active, partner_id, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6::int[],$7,$8,$9,$10,$11,$12,$13)
        RETURNING ${RETURN_COLS}`,
-      [c.code, c.description, c.discount_type, c.discount_value, c.applies_to_period, c.plan_ids,
-       c.min_amount, c.max_redemptions, c.starts_at, c.expires_at, c.active, req.user.id]
+      [c.code, c.description, c.discount_type, c.discount_value, c.applies_to_period, planIds,
+       c.min_amount, c.max_redemptions, c.starts_at, c.expires_at, c.active, partnerId, req.user.id]
     );
     res.status(201).json(r.rows[0]);
   } catch (e) {
@@ -101,12 +125,27 @@ router.post('/', requireAuth, masterOnly, async (req, res) => {
   }
 });
 
+// Confere que o cupom é do escopo do ator (master: qualquer; parceiro: só o dele).
+async function ownedCoupon(scope, id) {
+  const r = await query(`SELECT id, partner_id, redeemed_count FROM ${SCHEMA}.coupons WHERE id=$1`, [id]);
+  const row = r.rows[0];
+  if (!row) return { notFound: true };
+  if (!scope.isMaster && Number(row.partner_id) !== Number(scope.partnerId)) return { forbidden: true };
+  return { row };
+}
+
 // ---- Atualizar ----
-router.put('/:id', requireAuth, masterOnly, async (req, res) => {
+router.put('/:id', requireAuth, async (req, res) => {
   try {
+    const scope = await couponScope(req);
+    if (!scope) return res.status(403).json({ error: 'Sem permissão' });
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) return res.status(400).json({ error: 'id inválido' });
+    const own = await ownedCoupon(scope, id);
+    if (own.notFound) return res.status(404).json({ error: 'Cupom não encontrado' });
+    if (own.forbidden) return res.status(403).json({ error: 'Sem permissão' });
     const c = parseCouponBody(req.body);
+    const planIds = scope.isMaster ? c.plan_ids : null;
     const r = await query(
       `UPDATE ${SCHEMA}.coupons
           SET code=$1, description=$2, discount_type=$3, discount_value=$4, applies_to_period=$5,
@@ -114,10 +153,9 @@ router.put('/:id', requireAuth, masterOnly, async (req, res) => {
               active=$11, updated_at=now()
         WHERE id=$12
         RETURNING ${RETURN_COLS}`,
-      [c.code, c.description, c.discount_type, c.discount_value, c.applies_to_period, c.plan_ids,
+      [c.code, c.description, c.discount_type, c.discount_value, c.applies_to_period, planIds,
        c.min_amount, c.max_redemptions, c.starts_at, c.expires_at, c.active, id]
     );
-    if (!r.rows[0]) return res.status(404).json({ error: 'Cupom não encontrado' });
     res.json(r.rows[0]);
   } catch (e) {
     if (String(e.message).includes('duplicate key')) return res.status(409).json({ error: 'Já existe um cupom com esse código' });
@@ -127,28 +165,35 @@ router.put('/:id', requireAuth, masterOnly, async (req, res) => {
 });
 
 // ---- Ativar/desativar ----
-router.patch('/:id/active', requireAuth, masterOnly, async (req, res) => {
+router.patch('/:id/active', requireAuth, async (req, res) => {
   try {
+    const scope = await couponScope(req);
+    if (!scope) return res.status(403).json({ error: 'Sem permissão' });
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) return res.status(400).json({ error: 'id inválido' });
+    const own = await ownedCoupon(scope, id);
+    if (own.notFound) return res.status(404).json({ error: 'Cupom não encontrado' });
+    if (own.forbidden) return res.status(403).json({ error: 'Sem permissão' });
     const active = Boolean(req.body?.active);
     const r = await query(
       `UPDATE ${SCHEMA}.coupons SET active=$1, updated_at=now() WHERE id=$2 RETURNING ${RETURN_COLS}`,
       [active, id]
     );
-    if (!r.rows[0]) return res.status(404).json({ error: 'Cupom não encontrado' });
     res.json(r.rows[0]);
   } catch (e) { respondError(res, e); }
 });
 
 // ---- Excluir (soft se já teve uso, para preservar a auditoria) ----
-router.delete('/:id', requireAuth, masterOnly, async (req, res) => {
+router.delete('/:id', requireAuth, async (req, res) => {
   try {
+    const scope = await couponScope(req);
+    if (!scope) return res.status(403).json({ error: 'Sem permissão' });
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) return res.status(400).json({ error: 'id inválido' });
-    const cur = await query(`SELECT redeemed_count FROM ${SCHEMA}.coupons WHERE id=$1`, [id]);
-    if (!cur.rows[0]) return res.status(404).json({ error: 'Cupom não encontrado' });
-    if (Number(cur.rows[0].redeemed_count) > 0) {
+    const own = await ownedCoupon(scope, id);
+    if (own.notFound) return res.status(404).json({ error: 'Cupom não encontrado' });
+    if (own.forbidden) return res.status(403).json({ error: 'Sem permissão' });
+    if (Number(own.row.redeemed_count) > 0) {
       await query(`UPDATE ${SCHEMA}.coupons SET active=false, updated_at=now() WHERE id=$1`, [id]);
       return res.json({ ok: true, softDeleted: true, message: 'Cupom já utilizado — foi desativado (mantido para auditoria).' });
     }

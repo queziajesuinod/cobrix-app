@@ -88,7 +88,7 @@ router.get("/", requireAuth, async (req, res) => {
     return res.json([]);
   }
   const r = await query(
-    `SELECT id, name, pix_key, evo_api_url, evo_api_key, evo_instance, clients_limit, contracts_limit, plan_id, status, is_saas_owner, created_at, updated_at,
+    `SELECT id, name, pix_key, evo_api_url, evo_api_key, evo_instance, clients_limit, contracts_limit, plan_id, status, is_saas_owner, is_partner, parent_partner_id, partner_override_type, partner_override_value, created_at, updated_at,
             (SELECT COALESCE(NULLIF(cu.name,''), cu.email) FROM users cu WHERE cu.id = companies.created_by) AS created_by_name,
             (SELECT COALESCE(NULLIF(eu.name,''), eu.email) FROM users eu WHERE eu.id = companies.updated_by) AS updated_by_name,
             efi_client_id_enc, efi_client_secret_enc, efi_cert_base64_enc FROM companies WHERE id = ANY($1::int[]) ORDER BY id DESC`,
@@ -102,7 +102,7 @@ router.get("/", requireAuth, async (req, res) => {
 router.get("/:id", requireAuth, async (req, res) => {
   const id = Number(req.params.id);
   if (!canReadCompany(req.user, req.companyId, id)) return res.status(403).json({ error: "Sem permissão" });
-  const r = await query(`SELECT id, name, pix_key, evo_api_url, evo_api_key, evo_instance, clients_limit, contracts_limit, plan_id, status, is_saas_owner, created_at, updated_at,
+  const r = await query(`SELECT id, name, pix_key, evo_api_url, evo_api_key, evo_instance, clients_limit, contracts_limit, plan_id, status, is_saas_owner, is_partner, parent_partner_id, partner_override_type, partner_override_value, created_at, updated_at,
     (SELECT COALESCE(NULLIF(cu.name,''), cu.email) FROM users cu WHERE cu.id = companies.created_by) AS created_by_name,
     (SELECT COALESCE(NULLIF(eu.name,''), eu.email) FROM users eu WHERE eu.id = companies.updated_by) AS updated_by_name,
     efi_client_id_enc, efi_client_secret_enc, efi_cert_base64_enc FROM companies WHERE id=$1`, [id]);
@@ -264,6 +264,22 @@ router.put("/:id", requireAuth, async (req, res) => {
       }
     }
 
+    // Parceiro (revenda): só master define. Diferente da dona, vários podem ser
+    // parceiros ao mesmo tempo (cada um revende e tem seu próprio PIX/gateway).
+    if (isMaster(req.user) && Object.prototype.hasOwnProperty.call(payload, 'is_partner')) {
+      await query("UPDATE companies SET is_partner=$1 WHERE id=$2", [Boolean(payload.is_partner), id]);
+    }
+
+    // Override do parceiro: comissão EXTRA (sobre o piso) que ele ganha da própria
+    // rede (aditiva à comissão-base da Padrão). Só master define.
+    if (isMaster(req.user) && (Object.prototype.hasOwnProperty.call(payload, 'partner_override_type') || Object.prototype.hasOwnProperty.call(payload, 'partner_override_value'))) {
+      const type = payload.partner_override_type === 'fixed' ? 'fixed' : 'percent';
+      const rawVal = Number(String(payload.partner_override_value ?? '').replace(',', '.'));
+      const value = Number.isFinite(rawVal) && rawVal >= 0 ? rawVal : 0;
+      if (type === 'percent' && value > 100) return res.status(400).json({ error: 'Override em % não pode passar de 100' });
+      await query("UPDATE companies SET partner_override_type=$1, partner_override_value=$2 WHERE id=$3", [type, value, id]);
+    }
+
     let instanceName = currentRow.evo_instance;
     let integration = null;
 
@@ -289,7 +305,7 @@ router.put("/:id", requireAuth, async (req, res) => {
     await ensureEnvMasterUser(id);
 
     clearCompanyCache(id);
-    const updatedRow = await query("SELECT id, name, pix_key, clients_limit, contracts_limit, plan_id, status, is_saas_owner, evo_instance, efi_client_id_enc, efi_client_secret_enc, efi_cert_base64_enc FROM companies WHERE id=$1", [id]);
+    const updatedRow = await query("SELECT id, name, pix_key, clients_limit, contracts_limit, plan_id, status, is_saas_owner, is_partner, parent_partner_id, partner_override_type, partner_override_value, evo_instance, efi_client_id_enc, efi_client_secret_enc, efi_cert_base64_enc FROM companies WHERE id=$1", [id]);
     const formatted = mapGatewayResponse(updatedRow.rows[0]);
     res.json({ ...formatted, integration });
   } catch (err) {
@@ -323,6 +339,83 @@ router.delete("/:id", requireAuth, async (req, res) => {
     });
   }
   res.json({ ok: true });
+});
+
+// ===================== PREÇOS DE REVENDA DO PARCEIRO =====================
+// O parceiro define o preço de venda (mensal/anual) por plano; os ACESSOS e a
+// estrutura do plano são da empresa padrão (não editáveis aqui). O preço deve ser
+// >= piso (price_monthly/price_annual do plano). Master ou admin da própria empresa.
+function parsePartnerMoney(v) {
+  if (v == null || v === '') return null;
+  const n = Number(String(v).replace(',', '.'));
+  return Number.isFinite(n) && n >= 0 ? Number(n.toFixed(2)) : NaN;
+}
+
+router.get('/:id/partner-prices', requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'id inválido' });
+  if (!canReadCompany(req.user, req.companyId, id)) return res.status(403).json({ error: 'Sem permissão' });
+  try {
+    // Autossuficiente: planos ativos com o PISO (price_*), a contagem de acessos
+    // (fixos) e o preço de revenda deste parceiro (my_price_*). Assim o parceiro
+    // precifica sem depender da rota de planos (que é só master).
+    const r = await query(
+      `SELECT p.id AS plan_id, p.name, p.active,
+              p.price_monthly, p.price_annual,
+              COALESCE(array_length(p.permission_keys, 1), 0) AS permission_count,
+              pp.price_monthly AS my_price_monthly, pp.price_annual AS my_price_annual
+         FROM plans p
+         LEFT JOIN partner_plan_prices pp ON pp.plan_id = p.id AND pp.partner_id = $1
+        WHERE p.active = true
+        ORDER BY p.price_monthly ASC NULLS LAST, p.name ASC`,
+      [id]
+    );
+    res.json({ plans: r.rows });
+  } catch (err) {
+    console.error('[partner-prices] GET', err);
+    res.status(500).json({ error: 'Falha ao carregar preços de revenda' });
+  }
+});
+
+router.put('/:id/partner-prices/:planId', requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const planId = Number(req.params.planId);
+  if (!Number.isInteger(id) || !Number.isInteger(planId)) return res.status(400).json({ error: 'Parâmetros inválidos' });
+  if (!canWriteCompany(req.user, req.companyId, id)) return res.status(403).json({ error: 'Sem permissão' });
+  try {
+    const comp = await query('SELECT is_partner FROM companies WHERE id=$1', [id]);
+    if (!comp.rows[0]) return res.status(404).json({ error: 'Empresa não encontrada' });
+    if (!comp.rows[0].is_partner) return res.status(400).json({ error: 'Empresa não é parceira' });
+
+    const pl = await query('SELECT price_monthly, price_annual FROM plans WHERE id=$1', [planId]);
+    if (!pl.rows[0]) return res.status(404).json({ error: 'Plano não encontrado' });
+    const floorM = pl.rows[0].price_monthly == null ? null : Number(pl.rows[0].price_monthly);
+    const floorA = pl.rows[0].price_annual == null ? null : Number(pl.rows[0].price_annual);
+
+    const pm = parsePartnerMoney(req.body?.price_monthly);
+    const pa = parsePartnerMoney(req.body?.price_annual);
+    if (Number.isNaN(pm) || Number.isNaN(pa)) return res.status(400).json({ error: 'Valor inválido' });
+    if (pm != null) {
+      if (floorM == null) return res.status(400).json({ error: 'Este plano não oferece período mensal' });
+      if (pm < floorM) return res.status(400).json({ error: `Preço mensal não pode ficar abaixo do piso (${floorM.toFixed(2)})` });
+    }
+    if (pa != null) {
+      if (floorA == null) return res.status(400).json({ error: 'Este plano não oferece período anual' });
+      if (pa < floorA) return res.status(400).json({ error: `Preço anual não pode ficar abaixo do piso (${floorA.toFixed(2)})` });
+    }
+
+    await query(
+      `INSERT INTO partner_plan_prices (partner_id, plan_id, price_monthly, price_annual, created_by, updated_by, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$5,now())
+       ON CONFLICT (partner_id, plan_id)
+       DO UPDATE SET price_monthly=EXCLUDED.price_monthly, price_annual=EXCLUDED.price_annual, updated_by=EXCLUDED.updated_by, updated_at=now()`,
+      [id, planId, pm, pa, req.user.id]
+    );
+    res.json({ ok: true, plan_id: planId, price_monthly: pm, price_annual: pa });
+  } catch (err) {
+    console.error('[partner-prices] PUT', err);
+    res.status(500).json({ error: 'Falha ao salvar preço de revenda' });
+  }
 });
 
 module.exports = router;

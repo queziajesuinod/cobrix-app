@@ -25,6 +25,7 @@ const REASONS = {
   'periodo-nao-elegivel': 'Este cupom não vale para o período escolhido.',
   'valor-minimo': 'O valor não atinge o mínimo deste cupom.',
   'limite-atingido': 'Este cupom esgotou o limite de usos.',
+  'parceiro-nao-elegivel': 'Este cupom não vale para este cadastro.',
 };
 
 function fail(reason) {
@@ -49,7 +50,7 @@ function computeDiscount(coupon, amount) {
 // Valida o cupom para um plano/período/valor. Não altera nada no banco.
 // Retorna { valid, reason, message } quando inválido, ou
 // { valid:true, coupon, discount, finalAmount, originalAmount } quando ok.
-async function validateCoupon(rawCode, { planId, period = 'monthly', amount } = {}) {
+async function validateCoupon(rawCode, { planId, period = 'monthly', amount, partnerId = null } = {}) {
   const code = normalizeCode(rawCode);
   if (!code) return fail('sem-codigo');
 
@@ -60,6 +61,13 @@ async function validateCoupon(rawCode, { planId, period = 'monthly', amount } = 
   const coupon = r.rows[0];
   if (!coupon) return fail('nao-encontrado');
   if (!coupon.active) return fail('inativo');
+
+  // Escopo por dono: cupom de PARCEIRO só vale no signup pelo link dele; cupom da
+  // PLATAFORMA (partner_id NULL) só vale em signup DIRETO (sem parceiro). Assim a
+  // Padrão não força desconto que o parceiro absorveria, e vice-versa.
+  const couponPartner = coupon.partner_id == null ? null : Number(coupon.partner_id);
+  const signupPartner = partnerId == null ? null : Number(partnerId);
+  if (couponPartner !== signupPartner) return fail('parceiro-nao-elegivel');
 
   const today = ensureDateOnly(new Date());
   const starts = ensureDateOnly(coupon.starts_at);

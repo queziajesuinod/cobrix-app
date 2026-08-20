@@ -9,6 +9,7 @@ const { query, withClient } = require('../db');
 const { ensureDateOnly, formatISODate } = require('../utils/date-only');
 const { resolvePixPayment } = require('../services/pix-resolver');
 const { validateCoupon, redeemCoupon } = require('../services/coupons');
+const { accrueForPaidBilling } = require('../services/partner-commission');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 const router = express.Router();
@@ -27,16 +28,33 @@ function splitDocument(value) {
   throw err;
 }
 
-// Vitrine: planos ativos, sem dados sensíveis.
-router.get('/plans', async (_req, res) => {
+// Vitrine: planos ativos, sem dados sensíveis. Com ?partner_id=<id> (link de
+// revenda), os preços exibidos são os DO PARCEIRO (>= piso); onde ele não definiu,
+// cai no piso do plano. Só vale para parceiro ativo — senão mostra o piso.
+router.get('/plans', async (req, res) => {
   try {
+    const partnerIdRaw = req.query.partner_id != null && req.query.partner_id !== '' ? Number(req.query.partner_id) : null;
+    let partnerId = null;
+    if (partnerIdRaw && Number.isInteger(partnerIdRaw)) {
+      const pr = await query(
+        `SELECT id FROM ${SCHEMA}.companies WHERE id=$1 AND is_partner=true AND status <> 'canceled'`,
+        [partnerIdRaw]
+      );
+      if (pr.rows[0]) partnerId = pr.rows[0].id;
+    }
     const r = await query(
-      `SELECT id, name, description, price_monthly, price_annual, clients_limit, contracts_limit, permission_keys
-         FROM ${SCHEMA}.plans
-        WHERE active = true
-        ORDER BY price_monthly ASC NULLS LAST, name ASC`
+      `SELECT p.id, p.name, p.description,
+              COALESCE(pp.price_monthly, p.price_monthly) AS price_monthly,
+              COALESCE(pp.price_annual, p.price_annual) AS price_annual,
+              p.clients_limit, p.contracts_limit, p.permission_keys
+         FROM ${SCHEMA}.plans p
+         LEFT JOIN ${SCHEMA}.partner_plan_prices pp
+                ON pp.plan_id = p.id AND pp.partner_id = $1
+        WHERE p.active = true
+        ORDER BY COALESCE(pp.price_monthly, p.price_monthly) ASC NULLS LAST, p.name ASC`,
+      [partnerId]
     );
-    res.json({ plans: r.rows });
+    res.json({ plans: r.rows, partner_id: partnerId });
   } catch (e) {
     res.status(500).json({ error: 'Falha ao carregar planos' });
   }
@@ -53,6 +71,8 @@ router.post('/signup', async (req, res) => {
   const password = String(b.admin_password || '');
   const phone = normPhone(b.phone);
   const code = b.code ? String(b.code).trim() : null;
+  // Revenda: id do parceiro que indicou (vem do link /signup?parceiro=<id>).
+  const partnerIdRaw = b.partner_id != null && b.partner_id !== '' ? Number(b.partner_id) : null;
 
   // Validação de entrada.
   if (!Number.isInteger(planId)) return res.status(400).json({ error: 'Selecione um plano' });
@@ -79,16 +99,45 @@ router.post('/signup', async (req, res) => {
     // e equivale a 12x esse valor (paga-se uma vez ao ano); a mensal é o valor cheio.
     const monthlyRate = period === 'annual' ? plan.price_annual : plan.price_monthly;
     if (monthlyRate == null) return res.status(400).json({ error: 'Este plano não oferece o período selecionado' });
-    const price = period === 'annual' ? Number(monthlyRate) * 12 : Number(monthlyRate);
+    let price = period === 'annual' ? Number(monthlyRate) * 12 : Number(monthlyRate);
 
     // E-mail único (users.email é UNIQUE).
     const emailTaken = await query(`SELECT 1 FROM ${SCHEMA}.users WHERE LOWER(email) = $1`, [email]);
     if (emailTaken.rowCount) return res.status(409).json({ error: 'Este e-mail já está cadastrado' });
 
-    // Empresa dona do SaaS (recebe a assinatura).
+    // Empresa dona do SaaS (a plataforma). Referência do topo da rede (comissão etc.).
     const ownerRes = await query(`SELECT id FROM ${SCHEMA}.companies WHERE is_saas_owner = true LIMIT 1`);
-    const ownerId = ownerRes.rows[0]?.id;
-    if (!ownerId) return res.status(503).json({ error: 'Inscrição indisponível no momento. Tente novamente mais tarde.' });
+    const saasOwnerId = ownerRes.rows[0]?.id;
+    if (!saasOwnerId) return res.status(503).json({ error: 'Inscrição indisponível no momento. Tente novamente mais tarde.' });
+
+    // Revenda: se o cadastro veio pelo link de um parceiro, é ELE quem RECEBE a
+    // assinatura (tenant/cliente/contrato/cobrança/PIX) e o preço é o de revenda dele.
+    // Só vale para parceiro ATIVO e com forma de recebimento (PIX ou gateway próprio);
+    // senão cai no fluxo normal (Padrão) — nunca travar a venda.
+    let partner = null;
+    if (partnerIdRaw && Number.isInteger(partnerIdRaw)) {
+      const pr = await query(
+        `SELECT id, pix_key, efi_client_id_enc FROM ${SCHEMA}.companies
+          WHERE id=$1 AND is_partner=true AND status <> 'canceled'`,
+        [partnerIdRaw]
+      );
+      const p = pr.rows[0];
+      if (p && (Boolean(p.pix_key) || Boolean(p.efi_client_id_enc))) partner = p;
+    }
+    // "owner" = o recebedor da assinatura: o parceiro quando válido, senão a Padrão.
+    const ownerId = partner ? partner.id : saasOwnerId;
+
+    // Preço: por parceiro usa o preço de revenda dele para o plano (já validado >= piso
+    // no cadastro); sem preço definido cai no piso do plano.
+    if (partner) {
+      const ppr = await query(
+        `SELECT price_monthly, price_annual FROM ${SCHEMA}.partner_plan_prices WHERE partner_id=$1 AND plan_id=$2`,
+        [partner.id, plan.id]
+      );
+      const pp = ppr.rows[0];
+      const partnerRate = pp ? (period === 'annual' ? pp.price_annual : pp.price_monthly) : null;
+      if (partnerRate != null) price = period === 'annual' ? Number(partnerRate) * 12 : Number(partnerRate);
+    }
 
     // Perfil Administrador (o teto do plano é quem limita o acesso efetivo).
     const profRes = await query(`SELECT id FROM ${SCHEMA}.profiles WHERE name = 'Administrador' LIMIT 1`);
@@ -100,7 +149,7 @@ router.post('/signup', async (req, res) => {
     let couponInfo = null;
     let firstAmount = price;
     if (code) {
-      const v = await validateCoupon(code, { planId: plan.id, period, amount: price });
+      const v = await validateCoupon(code, { planId: plan.id, period, amount: price, partnerId: partner ? partner.id : null });
       if (!v.valid) return res.status(400).json({ error: v.message, field: 'code', reason: v.reason });
       couponInfo = v;
       firstAmount = v.finalAmount;
@@ -134,11 +183,12 @@ router.post('/signup', async (req, res) => {
           contractTypeId = ct.rows[0].id;
         }
 
-        // 1) Empresa-cliente provisionada (aguardando pagamento).
+        // 1) Empresa-cliente provisionada (aguardando pagamento). parent_partner_id
+        // registra o parceiro que a trouxe (base da hierarquia de revenda).
         const compRes = await client.query(
-          `INSERT INTO ${SCHEMA}.companies (name, status, plan_id, clients_limit, contracts_limit)
-           VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-          [companyName, fullyPaid ? 'active' : 'pending_payment', plan.id, plan.clients_limit, plan.contracts_limit]
+          `INSERT INTO ${SCHEMA}.companies (name, status, plan_id, clients_limit, contracts_limit, parent_partner_id)
+           VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+          [companyName, fullyPaid ? 'active' : 'pending_payment', plan.id, plan.clients_limit, plan.contracts_limit, partner ? partner.id : null]
         );
         const newCompanyId = compRes.rows[0].id;
 
@@ -154,6 +204,30 @@ router.post('/signup', async (req, res) => {
           `INSERT INTO ${SCHEMA}.user_companies (user_id, company_id) VALUES ($1, $2)`,
           [newUserId, newCompanyId]
         );
+
+        // 2b) Vincula o(s) usuário(s) master à nova empresa. A lista de empresas do
+        // master mostra apenas as vinculadas (companies.js), então sem isso a
+        // empresa recém-assinada ficaria invisível para ele — impedindo o master de
+        // ajustar acessos/plano quando necessário.
+        await client.query(
+          `INSERT INTO ${SCHEMA}.user_companies (user_id, company_id)
+             SELECT id, $1 FROM ${SCHEMA}.users WHERE role = 'master'
+           ON CONFLICT (user_id, company_id) DO NOTHING`,
+          [newCompanyId]
+        );
+
+        // 2c) Revenda: os usuários do PARCEIRO viram ADMIN da X (não master) — para
+        // dar suporte/gerir o que venderam com permissão de administrador da X.
+        if (partner) {
+          await client.query(
+            `INSERT INTO ${SCHEMA}.user_companies (user_id, company_id)
+               SELECT uc.user_id, $1 FROM ${SCHEMA}.user_companies uc
+               JOIN ${SCHEMA}.users u ON u.id = uc.user_id
+               WHERE uc.company_id = $2 AND u.role <> 'master'
+             ON CONFLICT (user_id, company_id) DO NOTHING`,
+            [newCompanyId, partner.id]
+          );
+        }
 
         // 3) Cliente no tenant do owner (a empresa vira meu cliente).
         const cliRes = await client.query(
@@ -195,9 +269,9 @@ router.post('/signup', async (req, res) => {
         // 5) Assinatura (a "cola") — status pending_payment até o pagamento confirmar.
         const subRes = await client.query(
           `INSERT INTO ${SCHEMA}.company_subscriptions
-             (company_id, plan_id, period, owner_company_id, client_id, contract_id, promo_code, status, activated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, ${fullyPaid ? 'now()' : 'NULL'}) RETURNING id`,
-          [newCompanyId, plan.id, period, ownerId, ownerClientId, ownerContractId, code, fullyPaid ? 'active' : 'pending_payment']
+             (company_id, plan_id, period, owner_company_id, client_id, contract_id, promo_code, status, activated_at, partner_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, ${fullyPaid ? 'now()' : 'NULL'}, $9) RETURNING id`,
+          [newCompanyId, plan.id, period, ownerId, ownerClientId, ownerContractId, code, fullyPaid ? 'active' : 'pending_payment', partner ? partner.id : null]
         );
         const newSubscriptionId = subRes.rows[0].id;
 
@@ -253,6 +327,14 @@ router.post('/signup', async (req, res) => {
       }
     }
 
+    // Revenda + cupom 100%: a 1ª cobrança já nasceu paga (sem PIX), então o fluxo
+    // de confirmação de pagamento não roda. Acumulamos a comissão aqui para a Padrão
+    // receber a BASE do mês grátis (incide sobre o piso — o parceiro absorve o cupom).
+    // No-op quando não é venda por parceiro.
+    if (fullyPaid && result.firstBillingId) {
+      await accrueForPaidBilling({ billingId: result.firstBillingId, contractId: result.contractId });
+    }
+
     res.status(201).json({
       ok: true,
       status: fullyPaid ? 'active' : 'pending_payment',
@@ -288,6 +370,7 @@ router.post('/coupon/validate', async (req, res) => {
   const code = b.code ? String(b.code).trim() : '';
   const planId = Number(b.plan_id);
   const period = String(b.period || 'monthly').toLowerCase();
+  const partnerIdRaw = b.partner_id != null && b.partner_id !== '' ? Number(b.partner_id) : null;
   if (!code) return res.status(400).json({ valid: false, message: 'Informe um cupom.' });
   try {
     const planRes = await query(
@@ -298,9 +381,22 @@ router.post('/coupon/validate', async (req, res) => {
     if (!plan) return res.status(400).json({ valid: false, message: 'Plano indisponível' });
     const monthlyRate = period === 'annual' ? plan.price_annual : plan.price_monthly;
     if (monthlyRate == null) return res.status(400).json({ valid: false, message: 'Plano não oferece este período' });
-    const price = period === 'annual' ? Number(monthlyRate) * 12 : Number(monthlyRate);
+    let price = period === 'annual' ? Number(monthlyRate) * 12 : Number(monthlyRate);
 
-    const v = await validateCoupon(code, { planId: plan.id, period, amount: price });
+    // Parceiro do link (se houver e for válido): usa o preço de revenda dele.
+    let partnerId = null;
+    if (partnerIdRaw && Number.isInteger(partnerIdRaw)) {
+      const pr = await query(`SELECT id FROM ${SCHEMA}.companies WHERE id=$1 AND is_partner=true AND status <> 'canceled'`, [partnerIdRaw]);
+      if (pr.rows[0]) {
+        partnerId = pr.rows[0].id;
+        const ppr = await query(`SELECT price_monthly, price_annual FROM ${SCHEMA}.partner_plan_prices WHERE partner_id=$1 AND plan_id=$2`, [partnerId, plan.id]);
+        const pp = ppr.rows[0];
+        const rate = pp ? (period === 'annual' ? pp.price_annual : pp.price_monthly) : null;
+        if (rate != null) price = period === 'annual' ? Number(rate) * 12 : Number(rate);
+      }
+    }
+
+    const v = await validateCoupon(code, { planId: plan.id, period, amount: price, partnerId });
     if (!v.valid) return res.json({ valid: false, reason: v.reason, message: v.message });
     return res.json({
       valid: true,

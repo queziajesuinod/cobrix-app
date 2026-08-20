@@ -14,6 +14,7 @@ const { resolvePixPayment } = require('../services/pix-resolver');
 const { sendBillingEmail } = require('../services/mailer');
 const { notifyBillingPaid } = require('../services/payment-notifications');
 const { activateSubscriptionForContract } = require('../jobs/gateway-reconcile');
+const { accrueForPaidBilling } = require('../services/partner-commission');
 const { isGatewayConfigured } = require('../services/company-gateway');
 const { ensureDateOnly, formatISODate } = require('../utils/date-only');
 const { normalizeBillingIntervalMonths, isBillingMonthFor } = require('../jobs/billing-cron');
@@ -541,6 +542,8 @@ router.put('/:id/status', requireAuth, companyScope(true), requirePermission('bi
       } catch (activateErr) {
         console.error('[billing-status] falha ao ativar assinatura billing=%s err=%s', billingId, activateErr.message);
       }
+      // Revenda: acumula a comissão deste pagamento (no-op fora de assinatura de parceiro).
+      await accrueForPaidBilling({ billingId, contractId: row.contract_id });
     }
 
     res.json(updated.rows[0]);
@@ -638,6 +641,9 @@ router.put('/by-contract/:contractId/month/:year/:month/status', requireAuth, co
       } catch (activateErr) {
         console.error('[billing-month-status] falha ao ativar assinatura contract=%s err=%s', contractId, activateErr.message);
       }
+      // Revenda: acumula a comissão deste pagamento (usa a cobrança afetada/criada).
+      const paidBillingId = r.rows[0]?.id || created || null;
+      await accrueForPaidBilling({ billingId: paidBillingId, contractId });
     }
 
     res.json({ updated: r.rowCount, ids: r.rows.map(x => x.id), created });

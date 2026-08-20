@@ -2,13 +2,14 @@ import React, { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Alert, Box, Button, Checkbox, Chip, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle,
-  Divider, FormControlLabel, Grid, IconButton, Skeleton, Snackbar, Stack, Switch,
+  Divider, FormControlLabel, Grid, IconButton, MenuItem, Skeleton, Snackbar, Stack, Switch,
   TextField, Tooltip, Typography,
 } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
 import EditIcon from '@mui/icons-material/Edit'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
 import PriceChangeIcon from '@mui/icons-material/PriceChange'
+import EventIcon from '@mui/icons-material/Event'
 import LayersIcon from '@mui/icons-material/Layers'
 import PageHeader from '@/components/PageHeader'
 import PapperBlock from '@/components/PapperBlock'
@@ -25,6 +26,7 @@ const BRL = (v) => v == null
 const EMPTY = {
   id: null, name: '', description: '', price_monthly: '', price_annual: '',
   clients_limit: '', contracts_limit: '', active: true, permission_keys: [],
+  partner_commission_type: 'percent', partner_commission_value: '',
 }
 
 // Editor de plano (dialog). O checklist de módulos é o "teto de acesso".
@@ -44,6 +46,8 @@ function PlanDialog({ open, initial, catalog, onClose, onSave, saving }) {
         contracts_limit: initial.contracts_limit ?? '',
         active: initial.active ?? true,
         permission_keys: Array.isArray(initial.permission_keys) ? [...initial.permission_keys] : [],
+        partner_commission_type: initial.partner_commission_type || 'percent',
+        partner_commission_value: initial.partner_commission_value ?? '',
       } : { ...EMPTY })
       setError(null)
     }
@@ -110,6 +114,23 @@ function PlanDialog({ open, initial, catalog, onClose, onSave, saving }) {
           </Grid>
           <Grid item xs={6} sm={3}>
             <TextField fullWidth type="number" label="Limite de contratos" value={form.contracts_limit} onChange={setField('contracts_limit')} inputProps={{ min: 0, step: 1 }} helperText="Vazio = ilimitado" />
+          </Grid>
+          <Grid item xs={6} sm={3}>
+            <TextField
+              select fullWidth label="Comissão de revenda"
+              value={form.partner_commission_type} onChange={setField('partner_commission_type')}
+            >
+              <MenuItem value="percent">Percentual (%)</MenuItem>
+              <MenuItem value="fixed">Valor fixo (R$)</MenuItem>
+            </TextField>
+          </Grid>
+          <Grid item xs={6} sm={3}>
+            <TextField
+              fullWidth type="number" label="Comissão da plataforma"
+              value={form.partner_commission_value} onChange={setField('partner_commission_value')}
+              inputProps={{ min: 0, step: '0.01' }}
+              helperText="Quanto a plataforma recebe por assinatura deste plano na revenda. Incide sobre o piso (este preço). Sempre garantida."
+            />
           </Grid>
         </Grid>
 
@@ -239,6 +260,115 @@ function AdjustSubscribersDialog({ open, plan, onClose, onDone }) {
   )
 }
 
+// Dialog: agendar reajuste de PISO (revenda) + ver/cancelar agendamentos.
+function FloorScheduleDialog({ open, plan, onClose, notify }) {
+  const qc = useQueryClient()
+  const brDate = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '-')
+  const [form, setForm] = useState({ new_price_monthly: '', new_price_annual: '', effective_date: '', note: '' })
+  React.useEffect(() => {
+    if (open) setForm({ new_price_monthly: '', new_price_annual: '', effective_date: '', note: '' })
+  }, [open, plan?.id])
+
+  const listQ = useQuery({
+    queryKey: ['floor-schedule', plan?.id],
+    queryFn: () => plansService.floorSchedule(plan.id),
+    enabled: open && Boolean(plan?.id),
+  })
+  const items = listQ.data?.items || []
+
+  const createM = useMutation({
+    mutationFn: () => plansService.floorScheduleCreate(plan.id, {
+      new_price_monthly: form.new_price_monthly === '' ? null : Number(form.new_price_monthly),
+      new_price_annual: form.new_price_annual === '' ? null : Number(form.new_price_annual),
+      effective_date: form.effective_date,
+      note: form.note || null,
+    }),
+    onSuccess: () => {
+      notify('Reajuste agendado. Parceiros avisados.')
+      qc.invalidateQueries({ queryKey: ['floor-schedule', plan.id] })
+      setForm({ new_price_monthly: '', new_price_annual: '', effective_date: '', note: '' })
+    },
+    onError: (e) => notify(e?.response?.data?.error || 'Falha ao agendar.', 'error'),
+  })
+  const cancelM = useMutation({
+    mutationFn: (adjId) => plansService.floorScheduleCancel(plan.id, adjId),
+    onSuccess: () => { notify('Agendamento cancelado.'); qc.invalidateQueries({ queryKey: ['floor-schedule', plan.id] }) },
+    onError: (e) => notify(e?.response?.data?.error || 'Falha ao cancelar.', 'error'),
+  })
+
+  if (!open || !plan) return null
+  const valid = (form.new_price_monthly !== '' || form.new_price_annual !== '') && /^\d{4}-\d{2}-\d{2}$/.test(form.effective_date)
+
+  return (
+    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle sx={{ fontWeight: 700 }}>Piso agendado — {plan.name}</DialogTitle>
+      <DialogContent dividers>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Agende um novo piso com data futura. Os parceiros são avisados na hora e em lembretes (30/15/7/1 dias antes).
+          Na data, o piso troca e os preços de parceiro abaixo dele sobem automaticamente.
+        </Typography>
+        <Grid container spacing={2}>
+          <Grid item xs={6}>
+            <TextField fullWidth type="number" label="Novo piso mensal" value={form.new_price_monthly}
+              onChange={(e) => setForm((f) => ({ ...f, new_price_monthly: e.target.value }))}
+              inputProps={{ min: 0, step: '0.01' }} helperText={`Atual: ${BRL(plan.price_monthly)}`} />
+          </Grid>
+          <Grid item xs={6}>
+            <TextField fullWidth type="number" label="Novo piso anual (por mês)" value={form.new_price_annual}
+              onChange={(e) => setForm((f) => ({ ...f, new_price_annual: e.target.value }))}
+              inputProps={{ min: 0, step: '0.01' }} helperText={`Atual: ${BRL(plan.price_annual)}`} />
+          </Grid>
+          <Grid item xs={6}>
+            <TextField fullWidth type="date" label="Vigência" InputLabelProps={{ shrink: true }} value={form.effective_date}
+              onChange={(e) => setForm((f) => ({ ...f, effective_date: e.target.value }))} />
+          </Grid>
+          <Grid item xs={6}>
+            <TextField fullWidth label="Observação (opcional)" value={form.note}
+              onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))} />
+          </Grid>
+        </Grid>
+        <Stack direction="row" justifyContent="flex-end" sx={{ mt: 2 }}>
+          <Button variant="contained" disableElevation disabled={!valid || createM.isPending} onClick={() => createM.mutate()}>
+            Agendar e avisar
+          </Button>
+        </Stack>
+        <Divider sx={{ my: 2 }} />
+        <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>Agendamentos</Typography>
+        {listQ.isLoading ? (
+          <Stack alignItems="center" sx={{ py: 2 }}><CircularProgress size={20} /></Stack>
+        ) : items.length === 0 ? (
+          <Typography variant="body2" color="text.secondary">Nenhum agendamento.</Typography>
+        ) : (
+          <Stack spacing={1}>
+            {items.map((it) => (
+              <Stack key={it.id} direction="row" alignItems="center" justifyContent="space-between"
+                sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, p: 1 }}>
+                <Box>
+                  <Typography variant="body2" sx={{ fontWeight: 600 }}>Vigência {brDate(it.effective_date)}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Mensal {BRL(it.new_price_monthly)} · Anual {BRL(it.new_price_annual)}
+                  </Typography>
+                </Box>
+                <Stack direction="row" spacing={1} alignItems="center">
+                  {it.applied_at
+                    ? <Chip size="small" color="success" label="Aplicado" />
+                    : <Chip size="small" color="warning" variant="outlined" label="Agendado" />}
+                  {!it.applied_at && (
+                    <Button size="small" color="error" disabled={cancelM.isPending} onClick={() => cancelM.mutate(it.id)}>
+                      Cancelar
+                    </Button>
+                  )}
+                </Stack>
+              </Stack>
+            ))}
+          </Stack>
+        )}
+      </DialogContent>
+      <DialogActions><Button onClick={onClose} color="inherit">Fechar</Button></DialogActions>
+    </Dialog>
+  )
+}
+
 export default function PlansAdminPage() {
   const queryClient = useQueryClient()
   const confirm = useConfirm()
@@ -246,6 +376,7 @@ export default function PlansAdminPage() {
   const isMaster = user?.role === 'master'
   const [dialog, setDialog] = useState({ open: false, plan: null })
   const [adjust, setAdjust] = useState({ open: false, plan: null })
+  const [floor, setFloor] = useState({ open: false, plan: null })
   const [snack, setSnack] = useState(null)
 
   const plansQuery = useQuery({ queryKey: ['plans'], queryFn: plansService.list, enabled: isMaster })
@@ -265,6 +396,8 @@ export default function PlansAdminPage() {
         contracts_limit: form.contracts_limit === '' ? null : form.contracts_limit,
         active: form.active,
         permission_keys: form.permission_keys,
+        partner_commission_type: form.partner_commission_type || 'percent',
+        partner_commission_value: form.partner_commission_value === '' ? 0 : form.partner_commission_value,
       }
       return form.id ? plansService.update(form.id, payload) : plansService.create(payload)
     },
@@ -374,6 +507,9 @@ export default function PlansAdminPage() {
                             </IconButton>
                           </span>
                         </Tooltip>
+                        <Tooltip title="Piso agendado (revenda)">
+                          <IconButton size="small" onClick={() => setFloor({ open: true, plan })}><EventIcon fontSize="small" /></IconButton>
+                        </Tooltip>
                         <Tooltip title="Editar">
                           <IconButton size="small" onClick={() => setDialog({ open: true, plan })}><EditIcon fontSize="small" /></IconButton>
                         </Tooltip>
@@ -413,6 +549,13 @@ export default function PlansAdminPage() {
           setAdjust({ open: false, plan: null })
           setSnack({ severity: 'success', msg: res?.adjusted ? `${res.adjusted} assinante(s) reajustado(s).` : 'Nenhum reajuste aplicado.' })
         }}
+      />
+
+      <FloorScheduleDialog
+        open={floor.open}
+        plan={floor.plan}
+        onClose={() => setFloor({ open: false, plan: null })}
+        notify={(msg, severity) => setSnack({ severity: severity || 'success', msg })}
       />
 
       <Snackbar open={Boolean(snack)} autoHideDuration={4000} onClose={() => setSnack(null)} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>

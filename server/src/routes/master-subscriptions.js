@@ -12,6 +12,7 @@ const { requireAuth } = require('./auth');
 const { masterOnly } = require('../services/permissions');
 const { resolvePixPayment } = require('../services/pix-resolver');
 const { notifyBillingPaid } = require('../services/payment-notifications');
+const { accrueForPaidBilling } = require('../services/partner-commission');
 const {
   handleConfirmedPayment,
   markBillingPaid,
@@ -162,6 +163,8 @@ router.post('/subscriptions/:id/confirm', requireAuth, masterOnly, async (req, r
       } catch (_e) { /* notificação é best-effort */ }
     }
     await activateSubscriptionForContract(s.contract_id);
+    // Revenda: acumula a comissão deste pagamento (no-op fora de assinatura de parceiro).
+    if (bill) await accrueForPaidBilling({ billingId: bill.id, contractId: s.contract_id });
     return res.json({ ok: true, status: 'active', via: bill ? 'billing' : 'activate-only' });
   } catch (e) {
     respondError(res, e);

@@ -6,6 +6,7 @@ const { sendWhatsapp } = require('../services/messenger');
 const { computeRiskScore } = require('../services/risk');
 const { requirePermission, getEffectivePermissions } = require('../services/permissions');
 const { activateSubscriptionForContract } = require('../jobs/gateway-reconcile');
+const { accrueForPaidBilling } = require('../services/partner-commission');
 
 // Redige (mascara) campos sensíveis conforme as permissões do usuário.
 async function sensitiveFlags(user) {
@@ -412,6 +413,8 @@ async function markBillingsPaid(companyId, billings) {
     } catch (activateErr) {
       console.error('[overdue-mark-paid] falha ao ativar assinatura contract=%s err=%s', row.contract_id, activateErr.message);
     }
+    // Revenda: acumula a comissão deste pagamento.
+    await accrueForPaidBilling({ billingId: row.id, contractId: row.contract_id });
   }
 
   const totalPaidAmount = updated.rows.reduce((sum, row) => sum + Number(row.amount || 0), 0);

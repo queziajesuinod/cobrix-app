@@ -104,11 +104,30 @@ async function initDb() {
         created_by INTEGER REFERENCES ${schema}.users(id)
       );
     `);
+    // Comissão que a plataforma cobra do PARCEIRO por assinatura deste plano.
+    // Modelo A: incide sobre o PISO (price_monthly/price_annual do plano são o piso;
+    // o parceiro vende por >= piso e fica com 100% do que cobrar acima).
+    // partner_commission_type: 'percent' (% do piso) ou 'fixed' (R$ por assinatura).
+    await c.query(`ALTER TABLE ${schema}.plans ADD COLUMN IF NOT EXISTS partner_commission_type TEXT NOT NULL DEFAULT 'percent';`);
+    await c.query(`ALTER TABLE ${schema}.plans ADD COLUMN IF NOT EXISTS partner_commission_value NUMERIC(14,2) NOT NULL DEFAULT 0;`);
     await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS plan_id INTEGER REFERENCES ${schema}.plans(id);`);
     await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';`);
     // Empresa "dona" do SaaS: onde vivem os clientes/contratos das assinaturas e
     // para onde vão os pagamentos. Só uma empresa deve ter is_saas_owner = true.
     await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS is_saas_owner BOOLEAN NOT NULL DEFAULT false;`);
+    // Revenda/parceria (ver memória partner-reseller-commission-model): empresa
+    // marcada como parceira revende o SaaS — recebe a assinatura cheia dos clientes
+    // que vendeu (owner_company_id da assinatura = parceiro) e paga comissão à
+    // plataforma. Precisa do próprio PIX/gateway (colunas efi_*/pix_key já existem).
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS is_partner BOOLEAN NOT NULL DEFAULT false;`);
+    // Revenda MULTINÍVEL: parent_partner_id = o parceiro que cadastrou esta empresa
+    // (a "linha de cima"). NULL = direto sob a Padrão (raiz da rede).
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS parent_partner_id INTEGER REFERENCES ${schema}.companies(id) ON DELETE SET NULL;`);
+    // Override do parceiro: comissão EXTRA (sobre o piso) que ELE ganha das vendas da
+    // própria rede (de quem ele cadastrou). É ADITIVA à comissão-base da Padrão — que
+    // é sempre garantida (a Padrão mantém o sistema). 'percent' (% do piso) ou 'fixed'.
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS partner_override_type TEXT NOT NULL DEFAULT 'percent';`);
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS partner_override_value NUMERIC(14,2) NOT NULL DEFAULT 0;`);
     // Assinatura: liga a empresa-cliente provisionada ao seu plano e ao
     // contrato/cliente criados no tenant do owner. É por aqui que a ativação
     // (Fase 3) sabe qual empresa liberar quando o pagamento confirma.
@@ -150,6 +169,79 @@ async function initDb() {
       );
     `);
     await c.query(`CREATE INDEX IF NOT EXISTS idx_plan_price_adjustments_plan ON ${schema}.plan_price_adjustments(plan_id, created_at DESC);`);
+    // Preço de venda do PARCEIRO por plano. Deve ser >= piso do plano (validado na
+    // aplicação). Um registro por (parceiro, plano); NULL cai no piso do plano.
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.partner_plan_prices (
+        id SERIAL PRIMARY KEY,
+        partner_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
+        plan_id INTEGER NOT NULL REFERENCES ${schema}.plans(id) ON DELETE CASCADE,
+        price_monthly NUMERIC(14,2),
+        price_annual NUMERIC(14,2),
+        created_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        updated_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ,
+        UNIQUE (partner_id, plan_id)
+      );
+    `);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_partner_plan_prices_partner ON ${schema}.partner_plan_prices(partner_id);`);
+    // Reajuste de PISO agendado por plano: aplica na effective_date (cron) e avisa os
+    // parceiros antes. applied_at fica NULL enquanto pendente; ao aplicar, o piso do
+    // plano é trocado e os preços de parceiro abaixo dele sobem para o piso.
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.plan_floor_adjustments (
+        id SERIAL PRIMARY KEY,
+        plan_id INTEGER NOT NULL REFERENCES ${schema}.plans(id) ON DELETE CASCADE,
+        new_price_monthly NUMERIC(14,2),
+        new_price_annual NUMERIC(14,2),
+        effective_date DATE NOT NULL,
+        note TEXT,
+        created_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        applied_at TIMESTAMPTZ
+      );
+    `);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_plan_floor_adj_pending ON ${schema}.plan_floor_adjustments(effective_date) WHERE applied_at IS NULL;`);
+    // Livro-razão de COMISSÕES de revenda: uma linha por comissão acumulada a cada
+    // pagamento confirmado de uma assinatura vendida por parceiro. 'base' = comissão
+    // da Padrão (sempre); 'override' = extra de um ancestral na cadeia. payer = o
+    // parceiro recebedor; payee = Padrão (base) ou ancestral (override). O acerto
+    // (cobrança/PIX ao parceiro) consome este razão depois. Idempotente por
+    // (billing_id, payee) — reprocessar o mesmo pagamento não duplica.
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS ${schema}.partner_commissions (
+        id SERIAL PRIMARY KEY,
+        subscription_id INTEGER,
+        billing_id INTEGER,
+        contract_id INTEGER,
+        payer_company_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
+        payee_company_id INTEGER NOT NULL REFERENCES ${schema}.companies(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        period TEXT,
+        floor_amount NUMERIC(14,2),
+        rate_type TEXT,
+        rate_value NUMERIC(14,2),
+        amount NUMERIC(14,2) NOT NULL,
+        status TEXT NOT NULL DEFAULT 'accrued',
+        settled_at TIMESTAMPTZ,
+        finance_revenue_id INTEGER,
+        finance_expense_id INTEGER,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    // Rastreio dos lançamentos gerados no Gerenciador Financeiro (receita no payee,
+    // despesa no payer) — só existem quando a empresa tem o módulo financeiro.
+    await c.query(`ALTER TABLE ${schema}.partner_commissions ADD COLUMN IF NOT EXISTS settled_at TIMESTAMPTZ;`);
+    await c.query(`ALTER TABLE ${schema}.partner_commissions ADD COLUMN IF NOT EXISTS finance_revenue_id INTEGER;`);
+    await c.query(`ALTER TABLE ${schema}.partner_commissions ADD COLUMN IF NOT EXISTS finance_expense_id INTEGER;`);
+    // Cobrança (billing no tenant do credor) que agrupa comissões cobradas do parceiro
+    // via PIX/WhatsApp. status vai de 'accrued' → 'charged' (cobrada) → 'settled' (paga).
+    await c.query(`ALTER TABLE ${schema}.partner_commissions ADD COLUMN IF NOT EXISTS charge_billing_id INTEGER;`);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_partner_comm_charge ON ${schema}.partner_commissions(charge_billing_id) WHERE charge_billing_id IS NOT NULL;`);
+    await c.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_partner_comm_billing_payee ON ${schema}.partner_commissions(billing_id, payee_company_id) WHERE billing_id IS NOT NULL;`);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_partner_comm_payee ON ${schema}.partner_commissions(payee_company_id, status);`);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_partner_comm_payer ON ${schema}.partner_commissions(payer_company_id, status);`);
     // Cupons de desconto para a assinatura SaaS (aplicados na 1ª cobrança do
     // signup). discount_type='percent' usa discount_value como %, 'fixed' como
     // valor em R$. plan_ids NULL = vale para todos os planos. max_redemptions
@@ -175,6 +267,12 @@ async function initDb() {
       );
     `);
     await c.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_coupons_code_upper ON ${schema}.coupons(UPPER(code));`);
+    // Dono do cupom (revenda): NULL = cupom da plataforma (vale só nos signups
+    // diretos); preenchido = cupom do PARCEIRO (vale só nos signups pelo link dele).
+    // O desconto sai do bolso do parceiro; a comissão-base da Padrão não muda (incide
+    // sobre o piso). É ferramenta de engajamento do parceiro.
+    await c.query(`ALTER TABLE ${schema}.coupons ADD COLUMN IF NOT EXISTS partner_id INTEGER REFERENCES ${schema}.companies(id) ON DELETE CASCADE;`);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_coupons_partner ON ${schema}.coupons(partner_id);`);
     // Auditoria: um registro por uso de cupom (qual assinatura/empresa e quanto
     // foi descontado). Serve de trilha e para relatórios de campanha.
     await c.query(`
