@@ -1722,6 +1722,50 @@ function CalendarView({ nodes, realNodes, templates, onOpenNode, canReschedule, 
   )
 }
 
+// Concluídas: histórico de tarefas finalizadas — inclusive as ocorrências recorrentes
+// que somem do quadro ao concluir. Permite ABRIR o detalhe e REABRIR (regredir).
+function CompletedDialog({ onOpen, onClose, notify, onChanged }) {
+  const q = useQuery({ queryKey: ['tasks-completed'], queryFn: () => tasksService.completed() })
+  const items = q.data?.items || []
+  const reopen = useMutation({
+    mutationFn: (id) => tasksService.toggleNode(id, false),
+    onSuccess: () => { notify('Tarefa reaberta — voltou ao quadro.'); q.refetch(); onChanged() },
+    onError: (e) => notify(e?.response?.data?.error || 'Falha ao reabrir.', 'error'),
+  })
+  return (
+    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle sx={{ fontWeight: 700 }}>Tarefas concluídas</DialogTitle>
+      <DialogContent dividers>
+        {q.isLoading ? (
+          <Typography color="text.secondary">Carregando…</Typography>
+        ) : items.length === 0 ? (
+          <Typography variant="body2" color="text.secondary">Nenhuma tarefa concluída ainda.</Typography>
+        ) : (
+          <Stack divider={<Divider flexItem />} spacing={0}>
+            {items.map((t) => (
+              <Stack key={t.id} direction="row" alignItems="center" spacing={1} sx={{ py: 1 }}>
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography variant="body2" sx={{ fontWeight: 600, cursor: 'pointer', '&:hover': { textDecoration: 'underline' } }} noWrap onClick={() => { onOpen(t.id); onClose() }}>
+                    {t.source_node_id && <RepeatIcon sx={{ fontSize: 14, verticalAlign: 'text-bottom', mr: 0.25, color: 'info.main' }} />}{t.title}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block' }}>
+                    Concluída{t.done_by_name ? ` por ${t.done_by_name}` : ''}{t.done_at ? ` · ${fmtDateTime(t.done_at)}` : ''}{t.stage_name ? ` · ${t.stage_name}` : ''}
+                    {(t.client_name || t.contract_description) ? ` · 🔗 ${[t.client_name, t.contract_description].filter(Boolean).join(' · ')}` : ''}
+                  </Typography>
+                </Box>
+                <Button size="small" startIcon={<ReplayIcon fontSize="small" />} onClick={() => reopen.mutate(t.id)} disabled={reopen.isPending}>Reabrir</Button>
+              </Stack>
+            ))}
+          </Stack>
+        )}
+      </DialogContent>
+      <DialogActions sx={{ px: 3, py: 2 }}>
+        <Button onClick={onClose}>Fechar</Button>
+      </DialogActions>
+    </Dialog>
+  )
+}
+
 // Lixeira (Gestor): tarefas e rotinas inativadas (soft delete). Mostra quem/quando
 // excluiu e permite restaurar (traz o nó e a subárvore de volta ao quadro).
 function TrashDialog({ onClose, notify, onChanged }) {
@@ -2001,6 +2045,7 @@ export default function TasksPage() {
   const actions = (
     <Stack direction="row" spacing={1}>
       <Button variant="text" startIcon={<AutorenewIcon />} onClick={() => setDialog('recurrences')}>Recorrências</Button>
+      <Button variant="text" startIcon={<CheckCircleIcon />} onClick={() => setDialog('completed')}>Concluídas</Button>
       {perms.gestor && <Button variant="text" color="error" startIcon={<DeleteOutlineIcon />} onClick={() => setDialog('trash')}>Lixeira</Button>}
       {perms.manageChecklist && <Button variant="text" startIcon={<ChecklistIcon />} onClick={() => setDialog('checklists')}>Checklists</Button>}
       {perms.manageLabels && <Button variant="text" startIcon={<LabelOutlinedIcon />} onClick={() => setDialog('labels')}>Etiquetas</Button>}
@@ -2110,6 +2155,7 @@ export default function TasksPage() {
       {dialog === 'task' && <TaskDialog stages={stages} users={usersQ.data?.items || []} labels={labels} canAssign={perms.assign} canCreateRoutine={perms.createRoutine} onClose={() => setDialog(null)} onSaved={refresh} notify={notify} />}
       {dialog === 'labels' && <LabelsDialog onClose={() => setDialog(null)} notify={notify} onChanged={() => { qc.invalidateQueries({ queryKey: ['tasks-labels'] }); refresh() }} />}
       {dialog === 'checklists' && <ChecklistsDialog onClose={() => setDialog(null)} notify={notify} onChanged={() => qc.invalidateQueries({ queryKey: ['tasks-checklists'] })} />}
+      {dialog === 'completed' && <CompletedDialog onOpen={setOpenNodeId} onClose={() => setDialog(null)} notify={notify} onChanged={refresh} />}
       {dialog === 'trash' && <TrashDialog onClose={() => setDialog(null)} notify={notify} onChanged={refresh} />}
       {dialog === 'recurrences' && <RecurrencesDialog perms={perms} onOpen={setOpenNodeId} onClose={() => setDialog(null)} notify={notify} onChanged={refresh} />}
       {openNodeId && <TaskDetailDialog nodeId={openNodeId} users={usersQ.data?.items || []} stages={stages} perms={perms} currentUserId={user?.id} labels={labels} focusCommentId={focusCommentId} onClose={() => { setOpenNodeId(null); setFocusCommentId(null) }} onChanged={refresh} onRolled={(id) => setOpenNodeId(id)} notify={notify} />}

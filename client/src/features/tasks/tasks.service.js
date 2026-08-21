@@ -24,6 +24,7 @@ export const tasksService = {
   expand: async (id, payload) => (await api.post(`/tasks/nodes/${id}/expand`, payload)).data,
   reorderNodes: async (stageId, order) => (await api.put('/tasks/nodes/reorder', { stage_id: stageId, order })).data,
   // Lixeira (Gestor): listar inativadas e restaurar
+  completed: async () => (await api.get('/tasks/completed')).data,
   trash: async () => (await api.get('/tasks/trash')).data,
   restoreNode: async (id) => (await api.post(`/tasks/nodes/${id}/restore`)).data,
   // Comentários (discussão)

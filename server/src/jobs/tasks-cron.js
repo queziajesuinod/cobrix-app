@@ -56,6 +56,17 @@ function nextOccurrenceISO(t, afterISO) {
   return occurrenceISO(ny, nm, t.recurrence_day || 1);
 }
 
+// A próxima ocorrência já pode nascer AUTOMATICAMENTE? Só quando o PERÍODO dela já
+// começou: mensal/anual usam o 1º dia do mês/ano (nasce ao "virar o mês/ano"),
+// semanal/quinzenal usam o próprio dia. Assim não cria o mês seguinte adiantado.
+function periodStarted(t, nextISO, now) {
+  const today = formatISODate(now);
+  const [y, m] = String(nextISO).split('-').map(Number);
+  if (t.recurrence === 'weekly' || t.recurrence === 'biweekly') return String(nextISO) <= today;
+  if (t.recurrence === 'yearly') return occurrenceISO(y, 1, 1) <= today;
+  return occurrenceISO(y, m, 1) <= today; // mensal: início do mês da próxima
+}
+
 async function firstStageId(companyId) {
   const r = await query(`SELECT id FROM ${SCHEMA}.task_stages WHERE company_id=$1 ORDER BY position, id LIMIT 1`, [companyId]);
   return r.rows[0]?.id || null;
@@ -126,15 +137,16 @@ async function ensureOccurrence(t, dueISO, src = null) {
   return occId;
 }
 
-// Modelo "roll-forward": mantém 1 ocorrência ativa por rotina. Cria a 1ª quando não
-// há nenhuma; e avança para a PRÓXIMA quando a última já foi concluída OU venceu o
-// prazo (não pré-gera várias). Idempotente por (source_node_id, due_date).
+// Modelo "roll-forward": cria a 1ª ocorrência quando não há nenhuma; e avança para a
+// PRÓXIMA quando (a) a última foi CONCLUÍDA (mesmo ainda no mês atual) OU (b) o
+// PERÍODO da próxima já começou ("virou o mês"), mesmo com a atual em aberto. NÃO
+// avança só por estar vencida (não cria o mês seguinte adiantado). Idempotente por
+// (source_node_id, due_date). A conclusão também dispara na hora via rollNextOccurrence.
 async function generateOccurrences(companyId, now = new Date()) {
   const tps = await query(
     `SELECT * FROM ${SCHEMA}.task_nodes WHERE company_id=$1 AND is_template=true AND recurrence<>'none' AND recurrence_paused=false AND deleted_at IS NULL`,
     [companyId]
   );
-  const today = formatISODate(now);
   let count = 0;
   for (const t of tps.rows) {
     const last = await query(
@@ -145,10 +157,15 @@ async function generateOccurrences(companyId, now = new Date()) {
     const latest = last.rows[0];
     if (!latest) { if (await ensureOccurrence(t, currentPeriodISO(t, now))) count += 1; continue; }
     const latestISO = formatISODate(latest.due_date);
-    if (latestISO && (latest.status === 'done' || latestISO < today)) {
+    if (!latestISO) continue;
+    const nextISO = nextOccurrenceISO(t, latestISO);
+    // Cria a PRÓXIMA quando: (a) a atual foi CONCLUÍDA (ainda no mês atual, pode já
+    // criar a do próximo); OU (b) o período da próxima já COMEÇOU ("virou o mês"),
+    // mesmo com a atual ainda em aberto. NÃO cria adiantado só por estar vencida.
+    if (latest.status === 'done' || periodStarted(t, nextISO, now)) {
       // Clona a próxima a partir da ocorrência ANTERIOR (estrutura completa), não do template.
       const full = await query(`SELECT * FROM ${SCHEMA}.task_nodes WHERE id=$1`, [latest.id]);
-      if (await ensureOccurrence(t, nextOccurrenceISO(t, latestISO), full.rows[0] || null)) count += 1;
+      if (await ensureOccurrence(t, nextISO, full.rows[0] || null)) count += 1;
     }
   }
   return count;

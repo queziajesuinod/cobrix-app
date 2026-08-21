@@ -762,6 +762,35 @@ router.get('/trash', ...gestor, async (req, res) => {
   } catch (e) { respondError(res, e); }
 });
 
+// Concluídas: tarefas de TOPO já finalizadas (status='done') — inclusive as
+// ocorrências recorrentes que SOMEM do quadro ao concluir. Serve para consultar o
+// histórico e REABRIR (regredir) uma tarefa. Respeita a visibilidade: gestor vê tudo;
+// os demais veem as próprias (atribuídas/criadas).
+router.get('/completed', ...view, async (req, res) => {
+  try {
+    const gestor = await isGestorReq(req);
+    const uid = req.user.id;
+    const r = await query(
+      `SELECT n.id, n.title, n.due_date, n.done_at, n.source_node_id, n.stage_id, n.is_heading,
+              COALESCE(NULLIF(du.name,''), du.email) AS done_by_name,
+              st.name AS stage_name,
+              cl.name AS client_name, co.description AS contract_description
+         FROM ${SCHEMA}.task_nodes n
+         LEFT JOIN ${SCHEMA}.users du ON du.id = n.done_by
+         LEFT JOIN ${SCHEMA}.task_stages st ON st.id = n.stage_id
+         LEFT JOIN ${SCHEMA}.clients cl ON cl.id = n.client_id
+         LEFT JOIN ${SCHEMA}.contracts co ON co.id = n.contract_id
+        WHERE n.company_id=$1 AND n.parent_id IS NULL AND n.is_template=false
+          AND n.deleted_at IS NULL AND n.status='done'
+          AND ($2::boolean OR n.assignee_id=$3 OR n.created_by=$3)
+        ORDER BY n.done_at DESC NULLS LAST, n.id DESC
+        LIMIT 300`,
+      [req.companyId, gestor, uid]
+    );
+    res.json({ items: r.rows });
+  } catch (e) { respondError(res, e); }
+});
+
 // Restaurar (Gestor): reativa o nó e toda a subárvore inativada. Registra no histórico.
 router.post('/nodes/:id/restore', ...gestor, async (req, res) => {
   try {
