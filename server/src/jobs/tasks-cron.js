@@ -110,8 +110,11 @@ async function cloneChildren(srcParentId, newParentId, companyId, stageId) {
 // o novo prazo. source_node_id continua sendo o template (âncora da rotina).
 async function ensureOccurrence(t, dueISO, src = null) {
   const source = src || t;
+  // Só bloqueia se já existe uma ocorrência ATIVA para o prazo. Ocorrência EXCLUÍDA
+  // (deleted_at) não conta — assim, se o usuário apagou a do mês, concluir/virar o mês
+  // recria uma nova (não fica "presa" por causa da apagada).
   const exists = await query(
-    `SELECT 1 FROM ${SCHEMA}.task_nodes WHERE source_node_id=$1 AND due_date=$2 LIMIT 1`,
+    `SELECT 1 FROM ${SCHEMA}.task_nodes WHERE source_node_id=$1 AND due_date=$2 AND deleted_at IS NULL LIMIT 1`,
     [t.id, dueISO]
   );
   if (exists.rows[0]) return 0;
