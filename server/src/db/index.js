@@ -573,6 +573,10 @@ async function initDb() {
     // FIXO (soma R$). O número fica em adjustment_percent (reaproveitado): é % quando
     // adjustment_type='percent' e R$ quando 'fixed'. Renovação anual aplica conforme o tipo.
     await c.query(`ALTER TABLE ${schema}.contract_types ADD COLUMN IF NOT EXISTS adjustment_type TEXT NOT NULL DEFAULT 'percent';`);
+    // A coluna era dimensionada só p/ % (ex.: NUMERIC(5,2) = máx 999,99). Como agora
+    // guarda também VALOR FIXO em R$ (pode ser grande), amplia p/ NUMERIC(14,2) —
+    // senão um reajuste fixo alto estoura ("numeric field overflow"). Idempotente.
+    await c.query(`ALTER TABLE ${schema}.contract_types ALTER COLUMN adjustment_percent TYPE NUMERIC(14,2);`);
 
     // Auditoria nos cadastros principais: quem criou/editou e quando.
     for (const t of ['clients', 'contracts', 'contract_types']) {
