@@ -923,7 +923,7 @@ function SubtreeItem({ node, childrenMap, users, depth, perms, parentLinked = fa
   const confirm = useConfirm()
   const [adding, setAdding] = React.useState(false)
   const [editing, setEditing] = React.useState(false)
-  const [open, setOpen] = React.useState(false) // subitens recolhidos por padrão; abrem ao clicar
+  const [open, setOpen] = React.useState(true) // subitens EXPANDIDOS por padrão; o usuário pode recolher
   const kids = childrenMap.get(node.id) || []
   const hasKids = kids.length > 0
   const done = node.status === 'done'
