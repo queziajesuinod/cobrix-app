@@ -1238,8 +1238,10 @@ function TaskDetailDialog({ nodeId, users, stages, perms, currentUserId, labels 
   const [modelsMenuEl, setModelsMenuEl] = React.useState(null)
   const [highlightId, setHighlightId] = React.useState(null)
   const promptedRef = React.useRef(false)
-  // Ao trocar de nó (ex.: concluiu e o detalhe rolou p/ a próxima ocorrência), rearma o auto-concluir.
-  React.useEffect(() => { promptedRef.current = false }, [nodeId])
+  const lastAllDoneRef = React.useRef(null) // p/ auto-concluir só na TRANSIÇÃO (false→true)
+  // Ao trocar de nó (ex.: rolou p/ a próxima, ou abriu outra tarefa), rearma o auto-concluir
+  // e re-inicializa a leitura (não conclui só por abrir uma já toda feita).
+  React.useEffect(() => { promptedRef.current = false; lastAllDoneRef.current = null }, [nodeId])
   const node = q.data?.node
   const children = q.data?.children || []
   const activity = q.data?.activity || []
@@ -1273,8 +1275,14 @@ function TaskDetailDialog({ nodeId, users, stages, perms, currentUserId, labels 
     // Heading normal ("só título") não conclui; a ocorrência de rotina "só título" SIM
     // (ao terminar todos os passos, ela rola a próxima e some do quadro).
     if (node.is_heading && !isOccurrence) return
-    if (!allSubDone) { promptedRef.current = false; return }
-    if (promptedRef.current || node.status === 'done') return
+    if (node.status === 'done') { lastAllDoneRef.current = allSubDone; return }
+    const prevAllDone = lastAllDoneRef.current
+    lastAllDoneRef.current = allSubDone
+    // Só auto-conclui quando as subtarefas ACABARAM de ficar todas prontas nesta sessão
+    // (transição false→true). NÃO conclui só por ABRIR uma tarefa reaberta que já estava
+    // toda feita — assim dá pra "regredir": reabrir e desmarcar um passo sem reconcluir.
+    if (prevAllDone !== false || !allSubDone) return
+    if (promptedRef.current) return
     promptedRef.current = true
     ;(async () => {
       // Ocorrência de rotina recorrente: conclui AUTOMÁTICO (sem perguntar). O backend

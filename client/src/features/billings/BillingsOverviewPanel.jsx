@@ -1,5 +1,7 @@
 import React, { useMemo, useState } from 'react'
 import { Box, Chip, Grid, Stack, Typography, Table, TableHead, TableRow, TableCell, TableBody, Button, Tooltip, Snackbar, Accordion, AccordionSummary, AccordionDetails } from '@mui/material'
+import { alpha } from '@mui/material/styles'
+import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import ReceiptLongIcon from '@mui/icons-material/ReceiptLong'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
@@ -216,6 +218,10 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
           const forceType = forceCandidate?.type ?? fallbackForceType
           const forceDate = forceCandidate?.dueDate ?? fallbackDueIso
           const statusKey = String(it.month_status || 'pending').toLowerCase()
+          // "Vai ter notificação HOJE": hoje bate um marco (D-4/D0/D+3) para uma
+          // cobrança pendente que ainda NÃO recebeu esse aviso e o mês não está pago.
+          const notifiedToday = forceType && Number(it.notifications?.[forceType]?.count) > 0
+          const willNotifyToday = Boolean(forceType) && !allPaid && !isCanceled && !notifiedToday
           return (
             <Accordion
               key={it.contract_id}
@@ -232,7 +238,14 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
                 '&:before': { display: 'none' },
               }}
             >
-              <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ '& .MuiAccordionSummary-content': { my: 1, alignItems: 'center' } }}>
+              <AccordionSummary
+                expandIcon={<ExpandMoreIcon />}
+                sx={{
+                  '& .MuiAccordionSummary-content': { my: 1, alignItems: 'center' },
+                  // Fundo azul meio opaco quando HOJE vai sair notificação deste contrato.
+                  ...(willNotifyToday && { bgcolor: (t) => alpha(t.palette.info.main, t.palette.mode === 'dark' ? 0.24 : 0.12) }),
+                }}
+              >
                 <Grid container alignItems="center" spacing={1} sx={{ pr: 1 }}>
                   <Grid item xs={12} md={7}>
                     <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
@@ -251,6 +264,11 @@ export default function BillingsOverviewPanel({ ym, clientId, contractId, dueDay
                   </Grid>
                   <Grid item xs={12} md={5}>
                     <Stack direction="row" spacing={0.75} justifyContent={{ xs: 'flex-start', md: 'flex-end' }} sx={{ flexWrap: 'wrap', gap: 0.5 }}>
+                      {willNotifyToday && (
+                        <Tooltip title={`Hoje é dia de ${label(forceType)} para este contrato`}>
+                          <Chip size="small" color="info" icon={<NotificationsActiveIcon />} label={`Hoje: será notificado (${typeDescription[forceType]})`} sx={{ fontWeight: 700 }} />
+                        </Tooltip>
+                      )}
                       <Chip size="small" color={allPaid ? 'success' : isCanceled ? 'default' : 'warning'} label={STATUS_LABELS[statusKey]} />
                       {Number.isInteger(it.billing_day) && (
                         <Chip size="small" variant="outlined" color="info" label={`Dia ${String(it.billing_day).padStart(2, '0')}`} />
