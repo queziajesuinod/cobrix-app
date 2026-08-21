@@ -356,16 +356,18 @@ export default function FinanceDashboardPage() {
 
   const [ym, setYm] = React.useState(currentYm())
   const [base, setBase] = React.useState('REALIZADO')
+  const [periodo, setPeriodo] = React.useState('mes') // 'mes' | 'tri' (últimos 3 meses) | 'ano'
   const [ano, mes] = ym.split('-').map(Number)
+  const periodoLabel = periodo === 'mes' ? `Competência ${ano}-${pad(mes)}` : periodo === 'ano' ? `Ano ${ano}` : `Últimos 3 meses (até ${ano}-${pad(mes)})`
 
   const on = enabled && canView
-  const kpisQ = useQuery({ queryKey: ['fin-dash-kpis', ano, mes, base], queryFn: () => financeService.dashboardKpis({ ano, mes, base }), enabled: on, placeholderData: (p) => p })
-  const catQ = useQuery({ queryKey: ['fin-dash-cat', ano, mes], queryFn: () => financeService.dashboardDespesasCategoria({ ano, mes }), enabled: on, placeholderData: (p) => p })
+  const kpisQ = useQuery({ queryKey: ['fin-dash-kpis', ano, mes, base, periodo], queryFn: () => financeService.dashboardKpis({ ano, mes, base, periodo }), enabled: on, placeholderData: (p) => p })
+  const catQ = useQuery({ queryKey: ['fin-dash-cat', ano, mes, periodo, base], queryFn: () => financeService.dashboardDespesasCategoria({ ano, mes, periodo, base }), enabled: on, placeholderData: (p) => p })
   const evoQ = useQuery({ queryKey: ['fin-dash-evo', ano, base], queryFn: () => financeService.dashboardEvolucao({ ano, base }), enabled: on, placeholderData: (p) => p })
   const projQ = useQuery({ queryKey: ['fin-dash-proj', ano], queryFn: () => financeService.dashboardProjecao({ ano }), enabled: on, placeholderData: (p) => p })
   const inadQ = useQuery({ queryKey: ['fin-dash-inad', ano], queryFn: () => financeService.dashboardInadimplencia({ ano }), enabled: on, placeholderData: (p) => p })
   const insQ = useQuery({ queryKey: ['fin-dash-ins', ano, mes], queryFn: () => financeService.dashboardInsights({ ano, mes }), enabled: on, placeholderData: (p) => p })
-  const tipoQ = useQuery({ queryKey: ['fin-dash-tipo', ano, mes], queryFn: () => financeService.dashboardReceitaTipoContrato({ ano, mes }), enabled: on, placeholderData: (p) => p })
+  const tipoQ = useQuery({ queryKey: ['fin-dash-tipo', ano, mes, periodo, base], queryFn: () => financeService.dashboardReceitaTipoContrato({ ano, mes, periodo, base }), enabled: on, placeholderData: (p) => p })
   const metasQ = useQuery({ queryKey: ['fin-dash-metas', ano], queryFn: () => financeService.dashboardMetas({ ano }), enabled: on, placeholderData: (p) => p })
   const metaEditQ = useQuery({ queryKey: ['fin-metas-edit', ano], queryFn: () => financeService.getMetas(ano), enabled: on })
   const saudeQ = useQuery({ queryKey: ['fin-dash-saude', ano], queryFn: () => financeService.dashboardSaude({ ano }), enabled: on, placeholderData: (p) => p })
@@ -408,7 +410,12 @@ export default function FinanceDashboardPage() {
 
   const controls = (
     <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1 }}>
-      <TextField type="month" size="small" label="Mês" value={ym} onChange={(e) => setYm(e.target.value || currentYm())} InputLabelProps={{ shrink: true }} />
+      <TextField select size="small" label="Período" value={periodo} onChange={(e) => setPeriodo(e.target.value)} sx={{ minWidth: 170 }}>
+        <MenuItem value="mes">Mês</MenuItem>
+        <MenuItem value="tri">Últimos 3 meses</MenuItem>
+        <MenuItem value="ano">Ano (acumulado)</MenuItem>
+      </TextField>
+      <TextField type="month" size="small" label={periodo === 'ano' ? 'Ano (ref.)' : 'Mês'} value={ym} onChange={(e) => setYm(e.target.value || currentYm())} InputLabelProps={{ shrink: true }} />
       <TextField select size="small" label="Base de cálculo" value={base} onChange={(e) => setBase(e.target.value)} sx={{ minWidth: 210 }}>
         <MenuItem value="REALIZADO">Somente realizado</MenuItem>
         <MenuItem value="REALIZADO_E_PREVISTO">Realizado + previsto</MenuItem>
@@ -417,7 +424,7 @@ export default function FinanceDashboardPage() {
   )
 
   const KPIS = k && [
-    { label: 'Honorários do mês', value: fmtMoney(k.honorarios), icon: <TrendingUpIcon />, color: 'success', delta: fmtDeltaPct(v?.honorarios), deltaRaw: v?.honorarios, deltaGoodWhenUp: true },
+    { label: periodo === 'mes' ? 'Honorários do mês' : periodo === 'ano' ? 'Honorários do ano' : 'Honorários (3 meses)', value: fmtMoney(k.honorarios), icon: <TrendingUpIcon />, color: 'success', delta: fmtDeltaPct(v?.honorarios), deltaRaw: v?.honorarios, deltaGoodWhenUp: true },
     { label: 'Contratos ativos', value: fmtInt(k.contratos_ativos), icon: <GroupsIcon />, color: 'info' },
     { label: 'Honorário médio', value: fmtMoney(k.honorario_medio), icon: <PriceCheckIcon />, color: 'info' },
     { label: 'Total de despesas', value: fmtMoney(k.total_despesas), icon: <TrendingDownIcon />, color: 'error', delta: fmtDeltaPct(v?.total_despesas), deltaRaw: v?.total_despesas, deltaGoodWhenUp: false },
@@ -432,8 +439,13 @@ export default function FinanceDashboardPage() {
       <PageHeader title="Dashboard Financeiro" subtitle="Indicadores do mês, evolução anual e projeção — derivados de receitas, despesas e contratos." actions={controls} />
 
       <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap: 'wrap', gap: 1 }}>
-        <Chip icon={fechado ? <LockIcon /> : <LockOpenIcon />} color={fechado ? 'default' : 'success'} variant="outlined"
-          label={`Competência ${ano}-${pad(mes)} · ${fechado ? 'FECHADA' : 'ABERTA'}`} />
+        {periodo === 'mes' ? (
+          <Chip icon={fechado ? <LockIcon /> : <LockOpenIcon />} color={fechado ? 'default' : 'success'} variant="outlined"
+            label={`Competência ${ano}-${pad(mes)} · ${fechado ? 'FECHADA' : 'ABERTA'}`} />
+        ) : (
+          <Chip icon={<QueryStatsIcon />} color="primary" variant="outlined"
+            label={periodo === 'ano' ? `Ano ${ano} · acumulado` : `Últimos 3 meses · até ${ano}-${pad(mes)}`} />
+        )}
         <Chip size="small" variant="outlined" label={base === 'REALIZADO' ? 'Base: realizado' : 'Base: realizado + previsto'} />
       </Stack>
 
@@ -457,7 +469,7 @@ export default function FinanceDashboardPage() {
       {kpisQ.isError && <Alert severity="error">Não foi possível carregar os indicadores.</Alert>}
 
       {k && !k.tem_lancamento ? (
-        <Alert severity="info">Nenhum lançamento nesta competência{base === 'REALIZADO' ? ' (base realizado)' : ''}. Selecione outro mês ou inclua lançamentos no Gerenciador Financeiro.</Alert>
+        <Alert severity="info">Nenhum lançamento {periodo === 'mes' ? 'nesta competência' : 'neste período'}{base === 'REALIZADO' ? ' (base realizado)' : ''}. Selecione outro período ou inclua lançamentos no Gerenciador Financeiro.</Alert>
       ) : (
         <Grid container spacing={2}>
           {(KPIS || Array.from({ length: 8 })).map((c, i) => (
@@ -470,7 +482,7 @@ export default function FinanceDashboardPage() {
 
       <Grid container spacing={2.5}>
         <Grid item xs={12} md={5}>
-          <PapperBlock title="Despesas por categoria" subtitle={`Competência ${ano}-${pad(mes)}`} icon={<ReceiptLongIcon />} iconColor="linear-gradient(135deg,#ef4444,#f87171)" noPadding>
+          <PapperBlock title="Despesas por categoria" subtitle={periodoLabel} icon={<ReceiptLongIcon />} iconColor="linear-gradient(135deg,#ef4444,#f87171)" noPadding>
             {catQ.data && catQ.data.itens.length > 0 && (
               <Box sx={{ display: 'grid', placeItems: 'center', pt: 1 }}>
                 <PieChart
@@ -593,7 +605,7 @@ export default function FinanceDashboardPage() {
         {tipoQ.data ? (
           <Grid container spacing={2}>
             <Grid item xs={12} md={5}>
-              <Typography variant="subtitle2" color="text.secondary" gutterBottom>Mês {ano}-{pad(mes)}</Typography>
+              <Typography variant="subtitle2" color="text.secondary" gutterBottom>{periodoLabel}</Typography>
               {tipoQ.data.mes.itens.length > 0 ? (
                 <>
                   <Box sx={{ display: 'grid', placeItems: 'center' }}>

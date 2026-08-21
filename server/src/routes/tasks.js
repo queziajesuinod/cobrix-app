@@ -219,6 +219,56 @@ async function getAccessibleNode(req, id, { allowDeleted = false } = {}) {
   return node;
 }
 
+// Clona a subárvore de um nó (srcParentId) DENTRO do template (destParentId), como
+// nós de MODELO (is_template=true, sem source_node_id/prazo/status). Usado para
+// espelhar a estrutura de uma ocorrência de volta na definição da rotina.
+async function cloneSubtreeAsTemplate(srcParentId, destParentId, companyId) {
+  const kids = await query(`SELECT * FROM ${SCHEMA}.task_nodes WHERE parent_id=$1 AND deleted_at IS NULL ORDER BY position, id`, [srcParentId]);
+  for (const k of kids.rows) {
+    const r = await query(
+      `INSERT INTO ${SCHEMA}.task_nodes
+         (company_id, group_id, parent_id, stage_id, kind, title, description, assignee_id, priority,
+          recurrence, is_template, client_id, contract_id, position, created_by, is_heading)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'none',true,$10,$11,$12,$13,$14) RETURNING id`,
+      [companyId, k.group_id, destParentId, k.stage_id, k.kind, k.title, k.description, k.assignee_id, k.priority, k.client_id, k.contract_id, k.position, k.created_by, k.is_heading]
+    );
+    await cloneSubtreeAsTemplate(k.id, r.rows[0].id, companyId);
+  }
+}
+
+// Ao editar as subtarefas (ou o topo) de uma OCORRÊNCIA recorrente, espelha a
+// estrutura de volta no TEMPLATE (definição da rotina), para que os PRÓXIMOS meses
+// nasçam com as mudanças. Só age quando a raiz é uma ocorrência viva de uma rotina.
+// Best-effort: nunca quebra a operação que a disparou.
+async function syncTemplateFromOccurrence(companyId, nodeId) {
+  try {
+    let node = (await query(`SELECT * FROM ${SCHEMA}.task_nodes WHERE id=$1 AND company_id=$2`, [nodeId, companyId])).rows[0];
+    let guard = 0;
+    while (node && node.parent_id && guard++ < 100) {
+      node = (await query(`SELECT * FROM ${SCHEMA}.task_nodes WHERE id=$1`, [node.parent_id])).rows[0];
+    }
+    const root = node;
+    if (!root || root.is_template || root.parent_id != null || !root.source_node_id || root.deleted_at) return;
+    const tpl = (await query(`SELECT id FROM ${SCHEMA}.task_nodes WHERE id=$1 AND company_id=$2 AND is_template=true`, [root.source_node_id, companyId])).rows[0];
+    if (!tpl) return;
+    const templateId = tpl.id;
+    await query(
+      `UPDATE ${SCHEMA}.task_nodes SET title=$1, description=$2, priority=$3, is_heading=$4, assignee_id=$5, client_id=$6, contract_id=$7, updated_at=now() WHERE id=$8`,
+      [root.title, root.description, root.priority, root.is_heading, root.assignee_id, root.client_id, root.contract_id, templateId]
+    );
+    await query(
+      `WITH RECURSIVE d AS (
+         SELECT id FROM ${SCHEMA}.task_nodes WHERE parent_id=$1
+         UNION ALL SELECT c.id FROM ${SCHEMA}.task_nodes c JOIN d ON c.parent_id=d.id
+       ) DELETE FROM ${SCHEMA}.task_nodes WHERE id IN (SELECT id FROM d)`,
+      [templateId]
+    );
+    await cloneSubtreeAsTemplate(root.id, templateId, companyId);
+  } catch (e) {
+    console.error('[tasks] sync template<-ocorrência:', e.message);
+  }
+}
+
 // ===================== ETAPAS (colunas) =====================
 router.get('/stages', ...view, async (req, res) => {
   try {
@@ -417,6 +467,9 @@ router.get('/board', ...view, async (req, res) => {
          JOIN agg a ON a.root_id=n.id
         WHERE n.company_id=$1 AND n.parent_id IS NULL AND n.is_template=false AND n.deleted_at IS NULL
           AND ($3::boolean OR a.mine OR a.mentioned)
+          -- Ocorrência recorrente CONCLUÍDA some do quadro: ela não vai para "Concluído",
+          -- fica só no histórico/produtividade; o que aparece é a PRÓXIMA ocorrência.
+          AND NOT (n.status = 'done' AND n.source_node_id IS NOT NULL)
         ORDER BY n.position, n.id`,
       [req.companyId, uid, gestor]
     );
@@ -554,6 +607,8 @@ router.post('/nodes', ...base, async (req, res) => {
     } else {
       await notifyAssignment(req.companyId, node, title);
     }
+    // Subitem criado numa OCORRÊNCIA recorrente → atualiza o modelo (próximos meses).
+    if (parentId) await syncTemplateFromOccurrence(req.companyId, node.id);
     res.status(201).json(node);
   } catch (e) { respondError(res, e); }
 });
@@ -648,6 +703,8 @@ router.put('/nodes/:id', ...base, async (req, res) => {
     if (isTemplate && recurrence !== 'none' && !recPaused) {
       try { await generateOccurrences(req.companyId, new Date()); } catch (e) { console.error('[tasks] geração (put):', e.message); }
     }
+    // Editou uma OCORRÊNCIA recorrente (topo ou subtarefa) → espelha no modelo.
+    await syncTemplateFromOccurrence(req.companyId, node.id);
     res.json(r.rows[0]);
   } catch (e) { respondError(res, e); }
 });
@@ -678,6 +735,9 @@ router.delete('/nodes/:id', ...base, async (req, res) => {
       await query('COMMIT');
     } catch (e) { await query('ROLLBACK').catch(() => {}); throw e; }
     await logActivity(node.id, req.user.id, 'deleted', node.is_template ? 'rotina inativada' : 'tarefa inativada');
+    // Excluiu subtarefa de uma OCORRÊNCIA recorrente → espelha a remoção no modelo
+    // (sobe pelo pai, já que o próprio nó foi inativado).
+    if (node.parent_id) await syncTemplateFromOccurrence(req.companyId, node.parent_id);
     res.json({ ok: true });
   } catch (e) { respondError(res, e); }
 });
@@ -736,17 +796,24 @@ router.post('/nodes/:id/move', ...view, async (req, res) => {
     const st = await query(`SELECT id, is_done FROM ${SCHEMA}.task_stages WHERE id=$1 AND company_id=$2`, [toStageId, req.companyId]);
     if (!st.rows[0]) err('Etapa de destino inválida');
     const enteringDone = Boolean(st.rows[0].is_done);
-    if (enteringDone && node.is_heading) err('Este item é apenas um título e não tem marcação de conclusão.');
+    const isOccurrence = node.parent_id == null && node.source_node_id;
+    // Heading normal não vai p/ Concluído; ocorrência de rotina "só título" pode (rola).
+    if (enteringDone && node.is_heading && !isOccurrence) err('Este item é apenas um título e não tem marcação de conclusão.');
+    // Ao arrastar uma tarefa NORMAL para "Concluído", guarda a coluna de origem em
+    // prev_stage_id (reabrir volta para ela). Ocorrência recorrente não usa isso.
+    // Sair de "Concluído" (mover para coluna aberta) limpa o prev_stage_id.
+    const prevStageId = (enteringDone && !isOccurrence) ? node.stage_id : null;
     const r = await query(
       `UPDATE ${SCHEMA}.task_nodes
           SET stage_id=$1,
               status = CASE WHEN $2 THEN 'done' ELSE 'open' END,
+              prev_stage_id = $5,
               started_at = COALESCE(started_at, now()),
               done_at = CASE WHEN $2 THEN now() ELSE NULL END,
               done_by = CASE WHEN $2 THEN $3::int ELSE NULL END,
               updated_at = now()
         WHERE id=$4 RETURNING *`,
-      [toStageId, enteringDone, req.user.id, node.id]
+      [toStageId, enteringDone, req.user.id, node.id, prevStageId]
     );
     await logActivity(node.id, req.user.id, 'moved', enteringDone ? 'concluída' : 'movida');
     // Ocorrência recorrente arrastada para uma coluna ABERTA (não "Concluído"): o
@@ -761,10 +828,11 @@ router.post('/nodes/:id/move', ...view, async (req, res) => {
       } catch (e) { console.error('[tasks] fixar coluna do template (move):', e.message); }
     }
     // Ocorrência recorrente concluída → materializa a próxima (mês/ano seguinte).
+    let rolledId = null;
     if (enteringDone && node.parent_id == null && node.source_node_id) {
-      try { await rollNextOccurrence(req.companyId, node); } catch (e) { console.error('[tasks] roll (move):', e.message); }
+      try { rolledId = (await rollNextOccurrence(req.companyId, node)) || null; } catch (e) { console.error('[tasks] roll (move):', e.message); }
     }
-    res.json(r.rows[0]);
+    res.json({ ...r.rows[0], rolled_node_id: rolledId });
   } catch (e) { respondError(res, e); }
 });
 
@@ -773,30 +841,53 @@ router.patch('/nodes/:id/done', ...view, async (req, res) => {
   try {
     const node = await getAccessibleNode(req, Number(req.params.id));
     const done = Boolean(req.body?.done);
-    if (node.is_heading) err('Este item é apenas um título e não tem marcação de conclusão.');
-    // Tarefa de topo: concluir move p/ "Concluído"; reabrir volta p/ a 1ª coluna aberta.
+    const isOccurrence = node.parent_id == null && node.source_node_id;
+    // Heading normal ("só título") não conclui; MAS a ocorrência de uma rotina
+    // recorrente "só título" PODE — marcá-la como feita rola a próxima e some do quadro.
+    if (node.is_heading && !isOccurrence) err('Este item é apenas um título e não tem marcação de conclusão.');
+    // Destino da coluna ao concluir/reabrir uma tarefa de TOPO:
+    //  - Ocorrência recorrente (coluna dinâmica): NÃO vai para "Concluído" — fica onde
+    //    está (o board a esconde) e o roll cria a próxima. Não mexe em prev_stage_id.
+    //  - Tarefa normal: concluir guarda a coluna atual em prev_stage_id e move p/
+    //    "Concluído"; reabrir VOLTA para prev_stage_id (se ainda existir e for aberta),
+    //    senão para a 1ª coluna aberta, e limpa prev_stage_id.
     let stageId = node.stage_id;
-    if (node.parent_id == null) {
-      const target = done ? await doneStageId(req.companyId) : await firstOpenStageId(req.companyId);
-      if (target) stageId = target;
+    let prevStageId = node.prev_stage_id ?? null;
+    if (node.parent_id == null && !isOccurrence) {
+      if (done) {
+        const doneS = await doneStageId(req.companyId);
+        if (doneS && node.stage_id !== doneS) { prevStageId = node.stage_id; stageId = doneS; }
+      } else {
+        let target = null;
+        if (node.prev_stage_id) {
+          const ps = await query(`SELECT id FROM ${SCHEMA}.task_stages WHERE id=$1 AND company_id=$2 AND is_done=false`, [node.prev_stage_id, req.companyId]);
+          target = ps.rows[0]?.id || null;
+        }
+        if (!target) target = await firstOpenStageId(req.companyId);
+        if (target) stageId = target;
+        prevStageId = null;
+      }
     }
     const r = await query(
       `UPDATE ${SCHEMA}.task_nodes
           SET status = CASE WHEN $1 THEN 'done' ELSE 'open' END,
               stage_id = $4,
+              prev_stage_id = $5,
               started_at = COALESCE(started_at, now()),
               done_at = CASE WHEN $1 THEN now() ELSE NULL END,
               done_by = CASE WHEN $1 THEN $2::int ELSE NULL END,
               updated_at = now()
         WHERE id=$3 RETURNING *`,
-      [done, req.user.id, node.id, stageId]
+      [done, req.user.id, node.id, stageId, prevStageId]
     );
     await logActivity(node.id, req.user.id, done ? 'done' : 'reopened', null);
-    // Ocorrência recorrente concluída → materializa a próxima (mês/ano seguinte).
+    // Ocorrência recorrente concluída → materializa a próxima (mês/ano seguinte) e
+    // devolve o id dela para o detalhe TROCAR automaticamente p/ a nova (sem refresh).
+    let rolledId = null;
     if (done && node.parent_id == null && node.source_node_id) {
-      try { await rollNextOccurrence(req.companyId, node); } catch (e) { console.error('[tasks] roll (done):', e.message); }
+      try { rolledId = (await rollNextOccurrence(req.companyId, node)) || null; } catch (e) { console.error('[tasks] roll (done):', e.message); }
     }
-    res.json(r.rows[0]);
+    res.json({ ...r.rows[0], rolled_node_id: rolledId });
   } catch (e) { respondError(res, e); }
 });
 
@@ -860,6 +951,8 @@ router.post('/nodes/:id/expand', ...base, async (req, res) => {
       }
       await query('COMMIT');
     } catch (e) { await query('ROLLBACK').catch(() => {}); throw e; }
+    // Gerou por cliente/contrato numa OCORRÊNCIA recorrente → espelha no modelo.
+    await syncTemplateFromOccurrence(req.companyId, parent.id);
     res.json({ ok: true, createdTargets, createdSteps });
   } catch (e) { respondError(res, e); }
 });
@@ -934,6 +1027,8 @@ router.post('/nodes/:id/apply-checklist', ...base, async (req, res) => {
       }
       await query('COMMIT');
     } catch (e) { await query('ROLLBACK').catch(() => {}); throw e; }
+    // Aplicou checklist numa OCORRÊNCIA recorrente → espelha no modelo.
+    await syncTemplateFromOccurrence(req.companyId, parent.id);
     res.json({ ok: true, created });
   } catch (e) { respondError(res, e); }
 });

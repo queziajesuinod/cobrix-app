@@ -159,7 +159,7 @@ async function renewRecurringContracts(now = new Date(), companyId = null) {
     companyFilter = ` AND c.company_id = $${params.length}`;
   }
   const rows = await query(`
-    SELECT c.*, ct.adjustment_percent, ct.is_recurring
+    SELECT c.*, ct.adjustment_percent, ct.adjustment_type, ct.is_recurring
     FROM ${SCHEMA}.contracts c
     JOIN ${SCHEMA}.contract_types ct ON ct.id = c.contract_type_id
     WHERE ct.is_recurring = true
@@ -177,8 +177,11 @@ async function renewRecurringContracts(now = new Date(), companyId = null) {
     const baseEnd = ensureDateOnly(c.end_date || todayStr) || ensureDateOnly(todayStr);
     const newStart = addDays(baseEnd, 1);
     const newEnd = addDays(newStart, 365);
-    const factor = 1 + Number(c.adjustment_percent || 0) / 100;
-    const newValue = Number(c.value || 0) * factor;
+    // Reajuste na renovação: por VALOR fixo (soma R$) ou por PORCENTAGEM (% sobre o valor).
+    const adj = Number(c.adjustment_percent || 0);
+    const newValue = c.adjustment_type === 'fixed'
+      ? Number(c.value || 0) + adj
+      : Number(c.value || 0) * (1 + adj / 100);
     await query(`
       INSERT INTO ${SCHEMA}.contracts
         (company_id, client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, recurrence_of, cancellation_date)

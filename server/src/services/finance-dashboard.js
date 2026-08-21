@@ -87,6 +87,38 @@ function buildKpis(curRow, prevRow, includePrevisto) {
   };
 }
 
+// KPIs AGREGADOS de um PERÍODO (vários meses: trimestre/ano). Valores são SOMADOS;
+// contratos_ativos usa o snapshot do ÚLTIMO mês (contagem não se soma entre meses);
+// razões (margem, AV%) são calculadas sobre as somas. Sem variação (não se aplica).
+function buildKpisRange(rows, includePrevisto = false) {
+  const withData = rows.filter((m) => num(m.nRealizado) > 0 || (includePrevisto && num(m.conPrevisto) > 0));
+  const sum = (fn) => rows.reduce((a, m) => a + fn(m), 0);
+  const honorarios = r2(sum((m) => num(m.revManual) + num(m.conPaid) + (includePrevisto ? num(m.conPrevisto) : 0)));
+  const despesas_fixas = r2(sum((m) => num(m.despesasFixas)));
+  const despesas_variaveis = r2(sum((m) => num(m.despesasVariaveis)));
+  const total_despesas = r2(despesas_fixas + despesas_variaveis);
+  const lucro_operacional = r2(honorarios - total_despesas);
+  const last = rows[rows.length - 1];
+  const contratos_ativos = last ? num(last.contratosAtivos) : 0;
+  const ratio = (a, den) => (den ? r4(a / den) : null);
+  return {
+    status_competencia: null,
+    base_calculo: includePrevisto ? 'REALIZADO_E_PREVISTO' : 'REALIZADO',
+    tem_lancamento: withData.length > 0,
+    honorarios,
+    contratos_ativos,
+    honorario_medio: contratos_ativos ? r2(honorarios / contratos_ativos) : null,
+    despesas_fixas,
+    despesas_variaveis,
+    total_despesas,
+    lucro_operacional,
+    margem_operacional: ratio(lucro_operacional, honorarios),
+    av_despesas_fixas: ratio(despesas_fixas, honorarios),
+    av_despesas_variaveis: ratio(despesas_variaveis, honorarios),
+    variacao_mes_anterior: null,
+  };
+}
+
 // Um ponto da série de evolução anual.
 function evolucaoPonto(row, includePrevisto) {
   const d = deriveMonth(row, includePrevisto);
@@ -232,4 +264,4 @@ function computeHealthScore(m = {}) {
   return { score, band, fatores };
 }
 
-module.exports = { r2, r4, deriveMonth, computeVariacao, buildKpis, evolucaoPonto, computeProjecao, computeInsights, computeHealthScore };
+module.exports = { r2, r4, deriveMonth, computeVariacao, buildKpis, buildKpisRange, evolucaoPonto, computeProjecao, computeInsights, computeHealthScore };

@@ -569,6 +569,11 @@ async function initDb() {
     // apenas dos usuários que ele mesmo criou.
     await c.query(`ALTER TABLE ${schema}.users ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL;`);
 
+    // Reajuste do tipo de contrato: por PORCENTAGEM (% sobre o valor) ou por VALOR
+    // FIXO (soma R$). O número fica em adjustment_percent (reaproveitado): é % quando
+    // adjustment_type='percent' e R$ quando 'fixed'. Renovação anual aplica conforme o tipo.
+    await c.query(`ALTER TABLE ${schema}.contract_types ADD COLUMN IF NOT EXISTS adjustment_type TEXT NOT NULL DEFAULT 'percent';`);
+
     // Auditoria nos cadastros principais: quem criou/editou e quando.
     for (const t of ['clients', 'contracts', 'contract_types']) {
       await c.query(`ALTER TABLE ${schema}.${t} ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();`);
@@ -828,6 +833,10 @@ async function initDb() {
     // is_heading = nó "só título" (agrupador, ex.: 1 por cliente): sem marcação de
     // conclusão. Os subitens dele é que têm o check de realizado.
     await c.query(`ALTER TABLE ${schema}.task_nodes ADD COLUMN IF NOT EXISTS is_heading BOOLEAN NOT NULL DEFAULT false;`);
+    // prev_stage_id = a coluna em que o card estava ANTES de ir para "Concluído".
+    // Ao reabrir (desmarcar), a tarefa VOLTA para essa coluna em vez de cair na 1ª
+    // ("A fazer"). Preenchido ao concluir uma tarefa NÃO recorrente; limpo ao reabrir.
+    await c.query(`ALTER TABLE ${schema}.task_nodes ADD COLUMN IF NOT EXISTS prev_stage_id INTEGER;`);
     // Exclusão lógica (soft delete) da tarefa/subtarefa: fica INATIVA (some do quadro,
     // minhas tarefas, calendário e produtividade) mas guarda quem/quando "excluiu"
     // para auditoria. O Gestor pode restaurar pela "Lixeira".

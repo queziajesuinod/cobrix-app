@@ -22,11 +22,13 @@ import { usePermissions } from '@/features/permissions/PermissionsContext'
 import AuditInfo from '@/components/AuditInfo'
 
 function TypeDialog({ open, onClose, onSubmit, defaultValues }) {
-  const base = { name: '', is_recurring: false, adjustment_percent: 0 }
-  const { register, handleSubmit, reset, watch } = useForm({ defaultValues: defaultValues || base })
+  const base = { name: '', is_recurring: false, adjustment_percent: 0, adjustment_type: 'percent' }
+  const { register, handleSubmit, reset, watch, setValue } = useForm({ defaultValues: defaultValues || base })
   React.useEffect(() => {
     reset(defaultValues ? { ...base, ...defaultValues } : base)
   }, [defaultValues, reset])
+  const recurring = watch('is_recurring')
+  const adjType = watch('adjustment_type') || 'percent'
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
@@ -38,13 +40,26 @@ function TypeDialog({ open, onClose, onSubmit, defaultValues }) {
             control={<Switch {...register('is_recurring')} checked={watch('is_recurring')} />}
             label="Recorrente (renovar automaticamente)"
           />
-          <TextField
-            label="Reajuste anual (%)"
-            type="number"
-            inputProps={{ step: '0.01', min: 0 }}
-            {...register('adjustment_percent', { valueAsNumber: true })}
-            disabled={!watch('is_recurring')}
-          />
+          {/* Reajuste anual na renovação: por PORCENTAGEM (%) ou por VALOR FIXO (R$). */}
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+            <TextField
+              select label="Tipo de reajuste" value={adjType}
+              onChange={(e) => setValue('adjustment_type', e.target.value)}
+              disabled={!recurring} sx={{ minWidth: 180 }}
+              SelectProps={{ native: true }} InputLabelProps={{ shrink: true }}
+            >
+              <option value="percent">Porcentagem (%)</option>
+              <option value="fixed">Valor fixo (R$)</option>
+            </TextField>
+            <TextField
+              label={adjType === 'fixed' ? 'Reajuste anual (R$)' : 'Reajuste anual (%)'}
+              type="number"
+              inputProps={{ step: '0.01', min: 0 }}
+              {...register('adjustment_percent', { valueAsNumber: true })}
+              disabled={!recurring}
+              fullWidth
+            />
+          </Stack>
         </Stack>
       </DialogContent>
       <DialogActions>
@@ -93,6 +108,7 @@ export default function ContractTypesPage() {
       name: form.name?.trim(),
       is_recurring: !!form.is_recurring,
       adjustment_percent: Number(form.adjustment_percent || 0),
+      adjustment_type: form.adjustment_type === 'fixed' ? 'fixed' : 'percent',
     }
     if (editing?.id) {
       await update.mutateAsync({ id: editing.id, payload })
@@ -134,7 +150,7 @@ export default function ContractTypesPage() {
               <TableRow>
                 <TableCell>Nome</TableCell>
                 <TableCell>Recorrente?</TableCell>
-                <TableCell>Reajuste (%)</TableCell>
+                <TableCell>Reajuste</TableCell>
                 <TableCell>Auditoria</TableCell>
                 <TableCell align="right">Ações</TableCell>
               </TableRow>
@@ -158,7 +174,13 @@ export default function ContractTypesPage() {
                   <TableRow key={row.id}>
                     <TableCell>{row.name}</TableCell>
                     <TableCell>{row.is_recurring ? 'Sim' : 'Não'}</TableCell>
-                    <TableCell>{Number(row.adjustment_percent || 0).toFixed(2)}</TableCell>
+                    <TableCell>
+                      {row.is_recurring
+                        ? (row.adjustment_type === 'fixed'
+                          ? `R$ ${Number(row.adjustment_percent || 0).toFixed(2)}`
+                          : `${Number(row.adjustment_percent || 0).toFixed(2)}%`)
+                        : '—'}
+                    </TableCell>
                     <TableCell>
                       <AuditInfo createdByName={row.created_by_name} createdAt={row.created_at} updatedByName={row.updated_by_name} updatedAt={row.updated_at} />
                     </TableCell>

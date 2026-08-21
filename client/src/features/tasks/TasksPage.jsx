@@ -39,6 +39,12 @@ import AlternateEmailIcon from '@mui/icons-material/AlternateEmail'
 import PlaylistAddIcon from '@mui/icons-material/PlaylistAdd'
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown'
 import ChecklistIcon from '@mui/icons-material/Checklist'
+import FormatBoldIcon from '@mui/icons-material/FormatBold'
+import FormatItalicIcon from '@mui/icons-material/FormatItalic'
+import FormatUnderlinedIcon from '@mui/icons-material/FormatUnderlined'
+import FormatListBulletedIcon from '@mui/icons-material/FormatListBulleted'
+import FormatListNumberedIcon from '@mui/icons-material/FormatListNumbered'
+import LinkIcon from '@mui/icons-material/Link'
 import {
   DndContext, DragOverlay, PointerSensor, useSensor, useSensors, useDraggable, useDroppable, closestCorners,
 } from '@dnd-kit/core'
@@ -116,6 +122,180 @@ function LinkedText({ text }) {
   }
   if (last < text.length) parts.push(text.slice(last))
   return <>{parts}</>
+}
+
+// ── Texto rico (descrição da tarefa) ─────────────────────────────────────────
+// A descrição virou um editor com formatação (negrito/itálico/sublinhado/listas) e
+// link personalizado. É salva como HTML no mesmo campo `description`. Descrições
+// ANTIGAS (texto puro) continuam funcionando: são detectadas e mostradas com o
+// autolink (LinkedText). Segurança: o HTML é SEMPRE sanitizado por whitelist antes
+// de renderizar (rebuild da árvore só com tags/atributos permitidos).
+const looksHtml = (v) => typeof v === 'string' && /<[a-z][\s\S]*>/i.test(v)
+const ALLOWED_TAGS = new Set(['B', 'STRONG', 'I', 'EM', 'U', 'S', 'STRIKE', 'A', 'UL', 'OL', 'LI', 'P', 'BR', 'DIV', 'SPAN'])
+function sanitizeHtml(html) {
+  if (!html) return ''
+  const doc = new DOMParser().parseFromString(String(html), 'text/html')
+  const out = document.createElement('div')
+  const append = (parent, src) => {
+    src.childNodes.forEach((n) => {
+      if (n.nodeType === Node.TEXT_NODE) {
+        parent.appendChild(document.createTextNode(n.textContent))
+      } else if (n.nodeType === Node.ELEMENT_NODE && ALLOWED_TAGS.has(n.tagName)) {
+        const el = document.createElement(n.tagName.toLowerCase())
+        if (n.tagName === 'A') {
+          const href = n.getAttribute('href') || ''
+          if (/^(https?:|mailto:)/i.test(href)) {
+            el.setAttribute('href', href)
+            el.setAttribute('target', '_blank')
+            el.setAttribute('rel', 'noopener noreferrer nofollow')
+          }
+        }
+        append(el, n)
+        parent.appendChild(el)
+      } else if (n.nodeType === Node.ELEMENT_NODE) {
+        append(parent, n) // tag não permitida: mantém só o conteúdo (desembrulha)
+      }
+    })
+  }
+  append(out, doc.body)
+  return out.innerHTML
+}
+// Texto puro (legado) → HTML para o editor: escapa e converte quebras em <br>.
+function toEditorHtml(v) {
+  if (!v) return ''
+  if (looksHtml(v)) return v
+  const esc = String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return esc.replace(/\r?\n/g, '<br>')
+}
+// HTML "vazio" (só tags/espaços, sem texto nem link) → null para não salvar lixo.
+function htmlToStored(html) {
+  if (!html) return null
+  const tmp = document.createElement('div')
+  tmp.innerHTML = String(html)
+  const text = (tmp.textContent || '').replace(/ /g, ' ').trim()
+  if (!text && !tmp.querySelector('a')) return null
+  return String(html)
+}
+// Renderiza a descrição: HTML sanitizado, ou autolink p/ descrições antigas em texto.
+function RichText({ html, sx }) {
+  if (!html) return null
+  if (!looksHtml(html)) {
+    return <Box component="span" sx={{ whiteSpace: 'pre-wrap', ...sx }}><LinkedText text={html} /></Box>
+  }
+  return (
+    <Box
+      onClick={(e) => { if (e.target.closest?.('a')) e.stopPropagation() }}
+      dangerouslySetInnerHTML={{ __html: sanitizeHtml(html) }}
+      sx={{
+        wordBreak: 'break-word',
+        '& a': { color: 'primary.main' },
+        '& ul, & ol': { pl: 3, my: 0.5 },
+        '& p': { m: 0 },
+        ...sx,
+      }}
+    />
+  )
+}
+// Editor de texto rico simples (sem dependência): barra de formatação sobre um
+// contentEditable. Não-controlado (innerHTML inicial só uma vez → sem pulo de cursor);
+// emite o HTML atual no input/blur. Link personalizado: seleciona o texto e informa a URL.
+function RichTextEditor({ value, onChange, minHeight = 90, placeholder = '' }) {
+  const ref = React.useRef(null)
+  const savedRange = React.useRef(null)
+  const [linkOpen, setLinkOpen] = React.useState(false)
+  const [linkUrl, setLinkUrl] = React.useState('')
+  React.useEffect(() => {
+    if (ref.current) ref.current.innerHTML = toEditorHtml(value)
+    try { document.execCommand('styleWithCSS', false, false) } catch { /* noop */ }
+    // Init só na montagem (não re-sincroniza p/ não mexer no cursor enquanto digita).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  const emit = () => onChange?.(ref.current?.innerHTML || '')
+  const exec = (cmd, arg) => {
+    ref.current?.focus()
+    try { document.execCommand('styleWithCSS', false, false) } catch { /* noop */ }
+    document.execCommand(cmd, false, arg)
+    emit()
+  }
+  const openLink = () => {
+    const sel = window.getSelection()
+    savedRange.current = sel && sel.rangeCount ? sel.getRangeAt(0) : null
+    setLinkUrl('')
+    setLinkOpen(true)
+  }
+  const applyLink = () => {
+    let url = linkUrl.trim()
+    if (url && !/^(https?:|mailto:)/i.test(url)) url = `https://${url}`
+    ref.current?.focus()
+    if (savedRange.current) {
+      const sel = window.getSelection()
+      sel.removeAllRanges()
+      sel.addRange(savedRange.current)
+    }
+    if (url) {
+      if (savedRange.current && !savedRange.current.collapsed) {
+        document.execCommand('createLink', false, url)
+      } else {
+        const esc = url.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+        document.execCommand('insertHTML', false, `<a href="${esc}">${esc}</a>`)
+      }
+    }
+    setLinkOpen(false)
+    emit()
+  }
+  const Btn = ({ title, icon, cmd, arg, onClick }) => (
+    <Tooltip title={title}>
+      <IconButton size="small" onMouseDown={(e) => e.preventDefault()} onClick={onClick || (() => exec(cmd, arg))} sx={{ p: 0.5 }}>
+        {icon}
+      </IconButton>
+    </Tooltip>
+  )
+  return (
+    <Box>
+      <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1 }}>
+        <Stack direction="row" sx={{ borderBottom: 1, borderColor: 'divider', px: 0.5, py: 0.25, flexWrap: 'wrap' }}>
+          <Btn title="Negrito" cmd="bold" icon={<FormatBoldIcon fontSize="small" />} />
+          <Btn title="Itálico" cmd="italic" icon={<FormatItalicIcon fontSize="small" />} />
+          <Btn title="Sublinhado" cmd="underline" icon={<FormatUnderlinedIcon fontSize="small" />} />
+          <Divider orientation="vertical" flexItem sx={{ mx: 0.25, my: 0.5 }} />
+          <Btn title="Lista com marcadores" cmd="insertUnorderedList" icon={<FormatListBulletedIcon fontSize="small" />} />
+          <Btn title="Lista numerada" cmd="insertOrderedList" icon={<FormatListNumberedIcon fontSize="small" />} />
+          <Divider orientation="vertical" flexItem sx={{ mx: 0.25, my: 0.5 }} />
+          <Btn title="Inserir link (selecione o texto antes)" icon={<LinkIcon fontSize="small" />} onClick={openLink} />
+        </Stack>
+        <Box
+          ref={ref}
+          contentEditable
+          suppressContentEditableWarning
+          onInput={emit}
+          onBlur={emit}
+          data-placeholder={placeholder}
+          sx={{
+            minHeight, p: 1, fontSize: '0.875rem', outline: 'none', overflowWrap: 'anywhere',
+            '& a': { color: 'primary.main' }, '& ul, & ol': { pl: 3, my: 0.5 }, '& p': { m: 0 },
+            '&:empty::before': { content: 'attr(data-placeholder)', color: 'text.disabled' },
+          }}
+        />
+      </Box>
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+        Formate o texto e selecione um trecho para transformar em link personalizado.
+      </Typography>
+      <Dialog open={linkOpen} onClose={() => setLinkOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle sx={{ fontWeight: 700 }}>Inserir link</DialogTitle>
+        <DialogContent dividers>
+          <TextField
+            label="Endereço (URL)" value={linkUrl} onChange={(e) => setLinkUrl(e.target.value)}
+            placeholder="https://exemplo.com" fullWidth autoFocus
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); applyLink() } }}
+          />
+        </DialogContent>
+        <DialogActions sx={{ px: 3, py: 2 }}>
+          <Button onClick={() => setLinkOpen(false)} color="inherit">Cancelar</Button>
+          <Button variant="contained" disableElevation disabled={!linkUrl.trim()} onClick={applyLink}>Inserir</Button>
+        </DialogActions>
+      </Dialog>
+    </Box>
+  )
 }
 
 // Traduz o histórico (ação de sistema → frase amigável com ícone/cor).
@@ -343,7 +523,7 @@ function TaskDialog({ stages, users, labels = [], canAssign = false, canCreateRo
   const mut = useMutation({
     mutationFn: () => tasksService.createNode({
       title: form.title.trim(),
-      description: form.description.trim() || null,
+      description: htmlToStored(form.description),
       assignee_id: form.assignee_id ? Number(form.assignee_id) : null,
       priority: form.priority,
       due_date: recurring ? null : (form.due_date || null),
@@ -363,7 +543,10 @@ function TaskDialog({ stages, users, labels = [], canAssign = false, canCreateRo
       <DialogContent dividers>
         <Stack spacing={2} sx={{ mt: 0.5 }}>
           <TextField label="Descrição da tarefa" value={form.title} onChange={set('title')} fullWidth autoFocus />
-          <TextField label="Detalhes" value={form.description} onChange={set('description')} fullWidth multiline minRows={2} helperText="Cole links (ex.: https://...) — eles ficam clicáveis ao visualizar." />
+          <Box>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>Detalhes</Typography>
+            <RichTextEditor value={form.description} onChange={(html) => setForm((f) => ({ ...f, description: html }))} />
+          </Box>
           {canAssign && (
             <TextField select label="Responsável" value={form.assignee_id} onChange={set('assignee_id')} fullWidth>
               <MenuItem value=""><em>Sem responsável (fica comigo)</em></MenuItem>
@@ -462,11 +645,13 @@ function TaskCard({ node, perms, showProgress = false, onOpen, onChanged, notify
               onClick={() => onOpen?.(node.id)}
               sx={{ fontWeight: 600, textDecoration: done ? 'line-through' : 'none', cursor: 'pointer', '&:hover': { textDecoration: 'underline' } }}
             >{node.source_node_id && <RepeatIcon sx={{ fontSize: 14, verticalAlign: 'text-bottom', mr: 0.25, color: 'info.main' }} />}{node.title}</Typography>
-            <Stack direction="row" spacing={0.5} sx={{ mt: 0.5, flexWrap: 'wrap', gap: 0.5, alignItems: 'center' }}>
-              <Chip size="small" label={p.label} color={p.color} sx={{ height: 20, fontWeight: 600 }} />
-              {di && <Chip size="small" label={di.label} color={di.color} variant={di.variant} sx={{ height: 20, fontWeight: di.alert ? 700 : 400 }} />}
-              {node.sub_total > 0 && <Chip size="small" label={`${node.sub_done}/${node.sub_total}`} variant="outlined" sx={{ height: 20 }} />}
-              {node.assignee_name && <Typography variant="caption" color="text.secondary" noWrap>{node.assignee_name}</Typography>}
+            {/* Linha compacta (fonte menor): prioridade, prazo e contagem de subtarefas
+                lado a lado — data + quantidade cabem numa linha só (estilo Trello). */}
+            <Stack direction="row" sx={{ mt: 0.5, flexWrap: 'wrap', gap: 0.5, alignItems: 'center' }}>
+              <Chip size="small" label={p.label} color={p.color} sx={{ height: 18, fontWeight: 600, fontSize: 10, '& .MuiChip-label': { px: 0.75 } }} />
+              {di && <Chip size="small" icon={<CalendarMonthIcon sx={{ fontSize: 12 }} />} label={di.label} color={di.color} variant={di.variant} sx={{ height: 18, fontSize: 10, fontWeight: di.alert ? 700 : 500, '& .MuiChip-label': { px: 0.5 }, '& .MuiChip-icon': { ml: 0.5, mr: -0.25, fontSize: 12 } }} />}
+              {node.sub_total > 0 && <Chip size="small" icon={<ChecklistIcon sx={{ fontSize: 12 }} />} label={`${node.sub_done}/${node.sub_total}`} variant="outlined" sx={{ height: 18, fontSize: 10, '& .MuiChip-label': { px: 0.5 }, '& .MuiChip-icon': { ml: 0.5, mr: -0.25, fontSize: 12 } }} />}
+              {node.assignee_name && <Typography variant="caption" color="text.secondary" noWrap sx={{ fontSize: 10 }}>{node.assignee_name}</Typography>}
             </Stack>
             {/* Barra de progresso (% dos subitens) — só nas colunas de trabalho
                 (Em andamento / dinâmicas), quando a tarefa tem subitens checáveis. */}
@@ -619,7 +804,10 @@ function NodeForm({ heading, initial, users, submitting, isMain, parentLinked = 
       <DialogContent dividers>
         <Stack spacing={2} sx={{ mt: 0.5 }}>
           <TextField label={isTitleOnly ? 'Título' : 'Descrição da tarefa'} value={form.title} onChange={set('title')} fullWidth autoFocus />
-          <TextField label="Detalhes" value={form.description} onChange={set('description')} fullWidth multiline minRows={2} helperText="Cole links (ex.: https://...) — eles ficam clicáveis ao visualizar." />
+          <Box>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>Detalhes</Typography>
+            <RichTextEditor value={form.description} onChange={(html) => setForm((f) => ({ ...f, description: html }))} />
+          </Box>
           {/* Tipo do nó: item com check de conclusão vs. apenas um título (agrupador). */}
           <Box>
             <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>Tipo</Typography>
@@ -640,9 +828,13 @@ function NodeForm({ heading, initial, users, submitting, isMain, parentLinked = 
           )}
           {!isTitleOnly && (
             <Stack direction="row" spacing={2}>
-              <TextField select label="Prioridade" value={form.priority} onChange={set('priority')} fullWidth>
-                {Object.entries(PRIORITY).map(([k, v]) => <MenuItem key={k} value={k}>{v.label}</MenuItem>)}
-              </TextField>
+              {/* Prioridade só na tarefa PRINCIPAL — a subtarefa segue a prioridade da
+                  tarefa principal, então não pede nem mostra prioridade própria. */}
+              {isMain && (
+                <TextField select label="Prioridade" value={form.priority} onChange={set('priority')} fullWidth>
+                  {Object.entries(PRIORITY).map(([k, v]) => <MenuItem key={k} value={k}>{v.label}</MenuItem>)}
+                </TextField>
+              )}
               <TextField label="Prazo" type="date" value={form.due_date} onChange={set('due_date')} InputLabelProps={{ shrink: true }} fullWidth />
             </Stack>
           )}
@@ -687,8 +879,9 @@ function NodeForm({ heading, initial, users, submitting, isMain, parentLinked = 
           variant="contained" disableElevation disabled={form.title.trim().length < 2 || submitting}
           onClick={() => onSubmit({
             title: form.title.trim(),
-            description: form.description.trim() || null,
-            priority: form.priority,
+            description: htmlToStored(form.description),
+            // Prioridade só é enviada pela tarefa principal; subtarefa herda o default.
+            ...(isMain ? { priority: form.priority } : {}),
             is_heading: form.is_heading,
             // "Só título" não tem prazo próprio; rotina recorrente também (o prazo vive na
             // ocorrência). A OCORRÊNCIA mantém o prazo do período.
@@ -730,10 +923,11 @@ function SubtreeItem({ node, childrenMap, users, depth, perms, parentLinked = fa
   const confirm = useConfirm()
   const [adding, setAdding] = React.useState(false)
   const [editing, setEditing] = React.useState(false)
+  const [open, setOpen] = React.useState(false) // subitens recolhidos por padrão; abrem ao clicar
   const kids = childrenMap.get(node.id) || []
+  const hasKids = kids.length > 0
   const done = node.status === 'done'
   const heading = Boolean(node.is_heading) // "só título": sem check de conclusão
-  const p = PRIORITY[node.priority] || PRIORITY.media
   const toggle = useMutation({ mutationFn: () => tasksService.toggleNode(node.id, !done), onSuccess: onChanged, onError: (e) => notify(e?.response?.data?.error || 'Falha ao atualizar.', 'error') })
   const del = useMutation({ mutationFn: () => tasksService.deleteNode(node.id), onSuccess: onChanged, onError: (e) => notify(e?.response?.data?.error || 'Falha ao excluir.', 'error') })
   const add = useMutation({ mutationFn: (payload) => tasksService.createNode({ ...payload, parent_id: node.id }), onSuccess: () => { setAdding(false); onChanged() }, onError: (e) => notify(e?.response?.data?.error || 'Falha ao adicionar.', 'error') })
@@ -745,6 +939,14 @@ function SubtreeItem({ node, childrenMap, users, depth, perms, parentLinked = fa
   return (
     <Box sx={{ ml: depth ? 2.5 : 0, borderLeft: depth ? 1 : 0, borderColor: 'divider', pl: depth ? 1 : 0 }}>
       <Stack direction="row" alignItems="center" spacing={0.5} sx={{ py: 0.5 }}>
+        {/* Ancoragem: subitens ficam recolhidos; a seta (ou o título) expande/recolhe. */}
+        {hasKids ? (
+          <IconButton size="small" onClick={() => setOpen((o) => !o)} sx={{ p: 0.25 }}>
+            <ChevronRightIcon fontSize="small" sx={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .15s' }} />
+          </IconButton>
+        ) : (
+          <Box sx={{ width: 22, flexShrink: 0 }} />
+        )}
         {heading ? (
           <SubjectIcon fontSize="small" sx={{ p: 0.25, color: 'text.disabled' }} />
         ) : (
@@ -752,12 +954,18 @@ function SubtreeItem({ node, childrenMap, users, depth, perms, parentLinked = fa
             {done ? <CheckCircleIcon fontSize="small" /> : <RadioButtonUncheckedIcon fontSize="small" />}
           </IconButton>
         )}
-        <Typography variant="body2" sx={{ flex: 1, minWidth: 0, fontWeight: heading ? 700 : 400, textDecoration: done ? 'line-through' : 'none' }} noWrap>{node.title}</Typography>
-        {!heading && <Chip size="small" label={p.label} color={p.color} variant="outlined" sx={{ height: 20 }} />}
-        {!heading && node.due_date && <Chip size="small" label={fmtDate(node.due_date)} variant="outlined" sx={{ height: 20 }} />}
+        <Typography
+          variant="body2"
+          onClick={hasKids ? () => setOpen((o) => !o) : undefined}
+          sx={{ flex: 1, minWidth: 0, fontWeight: heading ? 700 : 400, textDecoration: done ? 'line-through' : 'none', cursor: hasKids ? 'pointer' : 'default' }}
+          noWrap
+        >{node.title}</Typography>
+        {hasKids && <Chip size="small" variant="outlined" label={`${kids.length}`} sx={{ height: 18, '& .MuiChip-label': { px: 0.75, fontSize: 11 } }} />}
+        {/* Subtarefa não mostra prioridade própria — segue a da tarefa principal. */}
+        {!heading && node.due_date && <Chip size="small" icon={<CalendarMonthIcon sx={{ fontSize: 13 }} />} label={fmtDate(node.due_date)} variant="outlined" sx={{ height: 20 }} />}
         {!heading && node.assignee_name && <Typography variant="caption" color="text.secondary" sx={{ maxWidth: 120 }} noWrap>{node.assignee_name}</Typography>}
         {perms?.createTask && (
-          <Tooltip title="Adicionar subitem"><IconButton size="small" onClick={() => setAdding(true)} sx={{ p: 0.25 }}><SubdirectoryArrowRightIcon fontSize="small" /></IconButton></Tooltip>
+          <Tooltip title="Adicionar subitem"><IconButton size="small" onClick={() => { setOpen(true); setAdding(true) }} sx={{ p: 0.25 }}><SubdirectoryArrowRightIcon fontSize="small" /></IconButton></Tooltip>
         )}
         {perms?.editTask && (
           <Tooltip title="Editar"><IconButton size="small" onClick={() => setEditing(true)} sx={{ p: 0.25 }}><EditOutlinedIcon fontSize="small" /></IconButton></Tooltip>
@@ -766,11 +974,11 @@ function SubtreeItem({ node, childrenMap, users, depth, perms, parentLinked = fa
           <Tooltip title="Excluir"><IconButton size="small" color="error" onClick={handleDelete} sx={{ p: 0.25 }}><DeleteOutlineIcon fontSize="small" /></IconButton></Tooltip>
         )}
       </Stack>
-      {/* Detalhes do subitem (com links clicáveis), quando houver. */}
+      {/* Detalhes do subitem (texto rico/links), quando houver. */}
       {node.description && (
-        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', ml: 3.5, mt: -0.25, mb: 0.25, whiteSpace: 'pre-wrap' }}>
-          <LinkedText text={node.description} />
-        </Typography>
+        <Box sx={{ ml: 3.5, mt: -0.25, mb: 0.25, fontSize: '0.75rem', color: 'text.secondary' }}>
+          <RichText html={node.description} />
+        </Box>
       )}
       {/* Só exibe o vínculo do subitem quando o pai NÃO é vinculado (senão é herdado). */}
       {!parentLinked && (node.client_name || node.contract_description) && (
@@ -778,7 +986,7 @@ function SubtreeItem({ node, childrenMap, users, depth, perms, parentLinked = fa
           🔗 {[node.client_name, node.contract_description].filter(Boolean).join(' · ')}
         </Typography>
       )}
-      {kids.map((k) => <SubtreeItem key={k.id} node={k} childrenMap={childrenMap} users={users} depth={depth + 1} perms={perms} parentLinked={Boolean(node.client_id || node.contract_id)} onChanged={onChanged} notify={notify} />)}
+      {open && kids.map((k) => <SubtreeItem key={k.id} node={k} childrenMap={childrenMap} users={users} depth={depth + 1} perms={perms} parentLinked={Boolean(node.client_id || node.contract_id)} onChanged={onChanged} notify={notify} />)}
       {adding && <NodeForm heading="Novo subitem" initial={null} users={users} submitting={add.isPending} parentLinked={Boolean(node.client_id || node.contract_id)} canAssign={perms?.assign} onClose={() => setAdding(false)} onSubmit={(payload) => add.mutate(payload)} />}
       {editing && <NodeForm heading="Editar tarefa" initial={node} users={users} submitting={edit.isPending} parentLinked={parentLinked} canAssign={perms?.assign} onClose={() => setEditing(false)} onSubmit={(payload) => edit.mutate(payload)} />}
     </Box>
@@ -955,6 +1163,22 @@ function ExpandDialog({ nodeId, defaultSteps = [], onClose, onDone, notify }) {
   const clientsQ = useQuery({ queryKey: ['expand-clients', dq], queryFn: () => clientsService.list({ pageSize: 50, q: dq || undefined }), placeholderData: (p) => p })
   const options = clientsQ.data || []
   const [steps, setSteps] = React.useState(defaultSteps.join('\n'))
+  const [loadingAll, setLoadingAll] = React.useState(false)
+  // Seleciona TODOS os clientes de uma vez (a rota limita o pageSize a 100 → pagina).
+  const selectAll = async () => {
+    setLoadingAll(true)
+    try {
+      const first = await clientsService.paginate({ page: 1, pageSize: 100 })
+      let all = first.data || []
+      const pages = Math.ceil((first.total || all.length) / 100)
+      for (let p = 2; p <= pages; p++) {
+        const r = await clientsService.paginate({ page: p, pageSize: 100 })
+        all = all.concat(r.data || [])
+      }
+      setSelected(all)
+    } catch { notify('Falha ao carregar todos os clientes.', 'error') }
+    finally { setLoadingAll(false) }
+  }
   const mut = useMutation({
     mutationFn: () => tasksService.expand(nodeId, { client_ids: selected.map((c) => c.id), granularity, steps: steps.split('\n').map((s) => s.trim()).filter(Boolean) }),
     onSuccess: (r) => { notify(`${r.createdTargets} subtarefa(s) e ${r.createdSteps} passo(s) criados.`); onDone(); onClose() },
@@ -970,12 +1194,19 @@ function ExpandDialog({ nodeId, defaultSteps = [], onClose, onDone, notify }) {
             <ToggleButton value="contract">Uma por contrato</ToggleButton>
           </ToggleButtonGroup>
           <Autocomplete
-            multiple options={options} value={selected}
+            multiple options={options} value={selected} limitTags={6}
             getOptionLabel={(o) => o?.name || ''} isOptionEqualToValue={(o, v) => o.id === v.id}
             filterOptions={(x) => x} loading={clientsQ.isFetching} noOptionsText={dq ? 'Nenhum cliente' : 'Digite para buscar…'}
             onChange={(_e, v) => setSelected(v)} onInputChange={(_e, val, reason) => { if (reason === 'input' || reason === 'clear') setInput(val) }}
-            renderInput={(params) => <TextField {...params} label="Clientes" placeholder="Buscar cliente…" />}
+            renderInput={(params) => <TextField {...params} label="Clientes" placeholder="Buscar cliente… (ou selecione todos)" />}
           />
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap: 'wrap', gap: 1 }}>
+            <Button size="small" variant="outlined" onClick={selectAll} disabled={loadingAll}>
+              {loadingAll ? 'Carregando…' : 'Selecionar todos os clientes'}
+            </Button>
+            {selected.length > 0 && <Button size="small" color="inherit" onClick={() => setSelected([])}>Limpar</Button>}
+            {selected.length > 0 && <Typography variant="caption" color="text.secondary">{selected.length} selecionado(s)</Typography>}
+          </Stack>
           <Typography variant="caption" color="text.secondary">
             {granularity === 'contract' ? 'Cria uma subtarefa por CONTRATO dos clientes selecionados.' : 'Cria uma subtarefa por CLIENTE selecionado.'} Alvos já existentes são ignorados (pode rodar de novo ao incluir novos).
           </Typography>
@@ -997,7 +1228,7 @@ function ExpandDialog({ nodeId, defaultSteps = [], onClose, onDone, notify }) {
 }
 
 // Detalhe da tarefa: cabeçalho editável + árvore de subitens + histórico.
-function TaskDetailDialog({ nodeId, users, stages, perms, currentUserId, labels = [], focusCommentId, onClose, onChanged, notify }) {
+function TaskDetailDialog({ nodeId, users, stages, perms, currentUserId, labels = [], focusCommentId, onClose, onChanged, onRolled, notify }) {
   const confirm = useConfirm()
   const q = useQuery({ queryKey: ['task-node', nodeId], queryFn: () => tasksService.node(nodeId) })
   const [editing, setEditing] = React.useState(false)
@@ -1007,6 +1238,8 @@ function TaskDetailDialog({ nodeId, users, stages, perms, currentUserId, labels 
   const [modelsMenuEl, setModelsMenuEl] = React.useState(null)
   const [highlightId, setHighlightId] = React.useState(null)
   const promptedRef = React.useRef(false)
+  // Ao trocar de nó (ex.: concluiu e o detalhe rolou p/ a próxima ocorrência), rearma o auto-concluir.
+  React.useEffect(() => { promptedRef.current = false }, [nodeId])
   const node = q.data?.node
   const children = q.data?.children || []
   const activity = q.data?.activity || []
@@ -1036,15 +1269,28 @@ function TaskDetailDialog({ nodeId, users, stages, perms, currentUserId, labels 
   // se for recorrente, materializa a próxima ocorrência no backend).
   React.useEffect(() => {
     if (!node) return
-    if (node.is_heading) return // "só título" não tem conclusão
+    const isOccurrence = Boolean(node.source_node_id)
+    // Heading normal ("só título") não conclui; a ocorrência de rotina "só título" SIM
+    // (ao terminar todos os passos, ela rola a próxima e some do quadro).
+    if (node.is_heading && !isOccurrence) return
     if (!allSubDone) { promptedRef.current = false; return }
     if (promptedRef.current || node.status === 'done') return
     promptedRef.current = true
     ;(async () => {
-      const ok = await confirm({ title: 'Subtarefas concluídas', description: `Todas as subtarefas de "${node.title}" foram concluídas. Concluir a tarefa?`, confirmText: 'Concluir' })
+      // Ocorrência de rotina recorrente: conclui AUTOMÁTICO (sem perguntar). O backend
+      // não a manda para "Concluído" — ela some do quadro e a próxima ocorrência nasce
+      // na mesma coluna com TODOS os subitens desmarcados. Tarefa normal: continua perguntando.
+      const ok = isOccurrence
+        || await confirm({ title: 'Subtarefas concluídas', description: `Todas as subtarefas de "${node.title}" foram concluídas. Concluir a tarefa?`, confirmText: 'Concluir' })
       if (ok) {
-        try { await tasksService.toggleNode(node.id, true); refreshAll() }
-        catch (e) { notify(e?.response?.data?.error || 'Falha ao concluir.', 'error') }
+        try {
+          const res = await tasksService.toggleNode(node.id, true)
+          onChanged() // some a concluída do quadro
+          // Recorrente: o backend já criou a PRÓXIMA ocorrência → troca o detalhe p/ ela
+          // automaticamente (zerada, nova data), sem precisar fechar/atualizar.
+          if (res?.rolled_node_id && onRolled) onRolled(res.rolled_node_id)
+          else q.refetch()
+        } catch (e) { notify(e?.response?.data?.error || 'Falha ao concluir.', 'error') }
       }
     })()
   }, [allSubDone, node?.status]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -1115,7 +1361,7 @@ function TaskDetailDialog({ nodeId, users, stages, perms, currentUserId, labels 
             <Box sx={{ display: 'flex', flexDirection: { xs: 'column', md: 'row' }, gap: 2, alignItems: 'stretch' }}>
               {/* Conteúdo principal */}
               <Box sx={{ flex: 1, minWidth: 0 }}>
-                {node.description && <Typography variant="body2" color="text.secondary" sx={{ mb: 2, whiteSpace: 'pre-wrap' }}><LinkedText text={node.description} /></Typography>}
+                {node.description && <Box sx={{ mb: 2, fontSize: '0.875rem', color: 'text.secondary' }}><RichText html={node.description} /></Box>}
                 <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 0.5 }}>
                   <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Subitens</Typography>
                   {canAddSub && (
@@ -1866,7 +2112,7 @@ export default function TasksPage() {
       {dialog === 'checklists' && <ChecklistsDialog onClose={() => setDialog(null)} notify={notify} onChanged={() => qc.invalidateQueries({ queryKey: ['tasks-checklists'] })} />}
       {dialog === 'trash' && <TrashDialog onClose={() => setDialog(null)} notify={notify} onChanged={refresh} />}
       {dialog === 'recurrences' && <RecurrencesDialog perms={perms} onOpen={setOpenNodeId} onClose={() => setDialog(null)} notify={notify} onChanged={refresh} />}
-      {openNodeId && <TaskDetailDialog nodeId={openNodeId} users={usersQ.data?.items || []} stages={stages} perms={perms} currentUserId={user?.id} labels={labels} focusCommentId={focusCommentId} onClose={() => { setOpenNodeId(null); setFocusCommentId(null) }} onChanged={refresh} notify={notify} />}
+      {openNodeId && <TaskDetailDialog nodeId={openNodeId} users={usersQ.data?.items || []} stages={stages} perms={perms} currentUserId={user?.id} labels={labels} focusCommentId={focusCommentId} onClose={() => { setOpenNodeId(null); setFocusCommentId(null) }} onChanged={refresh} onRolled={(id) => setOpenNodeId(id)} notify={notify} />}
 
       {toast && (
         <Paper elevation={6} sx={{ position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)', zIndex: 1400 }}>

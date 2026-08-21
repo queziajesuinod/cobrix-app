@@ -6,7 +6,7 @@ const { requirePermission, requireAnyPermission, getEffectivePermissions } = req
 const { respondError } = require('../utils/http-error');
 const { ensureDateOnly, formatISODate } = require('../utils/date-only');
 const { parsePaidAt } = require('../utils/payment-date');
-const { r2, r4, buildKpis, evolucaoPonto, computeProjecao, computeInsights, computeHealthScore } = require('../services/finance-dashboard');
+const { r2, r4, buildKpis, buildKpisRange, evolucaoPonto, computeProjecao, computeInsights, computeHealthScore } = require('../services/finance-dashboard');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 const router = express.Router();
@@ -825,6 +825,22 @@ const ymOf = (ano, mes) => `${ano}-${String(mes).padStart(2, '0')}`;
 const isoFirst = (ano, mes) => formatISODate(new Date(ano, mes - 1, 1));
 const wantsPrevisto = (q) => String(q.base || '').toUpperCase() === 'REALIZADO_E_PREVISTO';
 
+// Intervalo de meses do PERÍODO selecionado ('mes' | 'tri' = últimos 3 meses até
+// ano-mes | 'ano' = jan–dez). Retorna: from (1º dia do 1º mês), monthsTo (1º dia do
+// ÚLTIMO mês, inclusivo p/ generate_series), toExcl (limite exclusivo p/ filtros de
+// data) e yms (lista de 'YYYY-MM' do período — cobre virada de ano no trimestre).
+function periodBounds(ano, mes, periodo) {
+  let sy = ano, sm = mes; const ey = ano, em = periodo === 'ano' ? 12 : mes;
+  if (periodo === 'ano') { sm = 1; }
+  else if (periodo === 'tri') { const s = mes - 2; sy = s < 1 ? ano - 1 : ano; sm = s < 1 ? s + 12 : s; }
+  const from = isoFirst(sy, sm);
+  const monthsTo = isoFirst(ey, em);
+  const toExcl = isoFirst(em === 12 ? ey + 1 : ey, em === 12 ? 1 : em + 1);
+  const yms = []; let y = sy, m = sm;
+  while (y < ey || (y === ey && m <= em)) { yms.push(ymOf(y, m)); m += 1; if (m > 12) { m = 1; y += 1; } }
+  return { from, monthsTo, toExcl, yms };
+}
+
 // Agrega EM SQL os valores-base de cada mês em [fromDate, toDate] (datas no dia 1):
 // receitas lançadas, contratos pagos, contratos previstos (a vencer), contratos ativos
 // (snapshot no fim do mês), despesas fixas/variáveis e contadores de lançamento.
@@ -890,18 +906,36 @@ async function monthlyFinanceBase(companyId, fromDate, toDate) {
 // O Dashboard é uma visão consolidada (DRE) com permissão própria.
 const dashGuard = [requireAuth, companyScope(true), requirePermission('finance.dashboard.view')];
 
-// GET /dashboard/kpis?ano=&mes=&base= — os 8 indicadores do mês + variação vs. mês anterior.
+// GET /dashboard/kpis?ano=&mes=&base=&periodo= — indicadores do MÊS (+ variação vs. mês
+// anterior) ou AGREGADOS por 'tri' (últimos 3 meses até ano-mes) / 'ano' (Jan–Dez do ano).
 router.get('/dashboard/kpis', ...dashGuard, async (req, res) => {
   try {
     const ano = parseAno(req.query.ano);
     const mes = parseMes(req.query.mes);
     const includePrevisto = wantsPrevisto(req.query);
+    const periodo = String(req.query.periodo || 'mes').toLowerCase();
+
+    // Período agregado: soma vários meses num KPI só (trimestre ou ano).
+    if (periodo === 'ano' || periodo === 'tri') {
+      let from, to, label;
+      if (periodo === 'ano') {
+        from = isoFirst(ano, 1); to = isoFirst(ano, 12); label = `Ano ${ano}`;
+      } else {
+        const startM = mes - 2;
+        const sy = startM < 1 ? ano - 1 : ano;
+        const sm = startM < 1 ? startM + 12 : startM;
+        from = isoFirst(sy, sm); to = isoFirst(ano, mes); label = 'Últimos 3 meses';
+      }
+      const rows = await monthlyFinanceBase(req.companyId, from, to);
+      return res.json({ periodo, competencia: ymOf(ano, mes), periodo_label: label, ...buildKpisRange(rows, includePrevisto) });
+    }
+
     const prev = mes === 1 ? { ano: ano - 1, mes: 12 } : { ano, mes: mes - 1 };
     const rows = await monthlyFinanceBase(req.companyId, isoFirst(prev.ano, prev.mes), isoFirst(ano, mes));
     const empty = { ym: ymOf(ano, mes), mes, closed: false, revManual: 0, conPaid: 0, conPrevisto: 0, contratosAtivos: 0, despesasFixas: 0, despesasVariaveis: 0, nRealizado: 0, nPrevisto: 0 };
     const curRow = rows.find((r) => r.ym === ymOf(ano, mes)) || empty;
     const prevRow = rows.find((r) => r.ym === ymOf(prev.ano, prev.mes));
-    res.json({ competencia: ymOf(ano, mes), ...buildKpis(curRow, prevRow, includePrevisto) });
+    res.json({ periodo: 'mes', competencia: ymOf(ano, mes), ...buildKpis(curRow, prevRow, includePrevisto) });
   } catch (e) { respondError(res, e); }
 });
 
@@ -910,8 +944,9 @@ router.get('/dashboard/despesas-categoria', ...dashGuard, async (req, res) => {
   try {
     const ano = parseAno(req.query.ano);
     const mes = parseMes(req.query.mes);
-    const from = isoFirst(ano, mes);
-    const to = isoFirst(mes === 12 ? ano + 1 : ano, mes === 12 ? 1 : mes + 1);
+    const periodo = String(req.query.periodo || 'mes').toLowerCase();
+    const includePrevisto = wantsPrevisto(req.query);
+    const { from, monthsTo, toExcl } = periodBounds(ano, mes, periodo);
     // Agrupa pela CATEGORIA quando informada; na falta dela (dados antigos), cai
     // no label — assim o gráfico continua populado durante a transição.
     const cat = await query(
@@ -922,10 +957,11 @@ router.get('/dashboard/despesas-categoria', ...dashGuard, async (req, res) => {
         GROUP BY COALESCE(NULLIF(TRIM(fe.category), ''), fe.label), fe.expense_type
        HAVING SUM(fe.amount) <> 0
         ORDER BY SUM(fe.amount) DESC`,
-      [req.companyId, from, to]
+      [req.companyId, from, toExcl]
     );
-    const [monthRow] = await monthlyFinanceBase(req.companyId, from, from);
-    const honorarios = monthRow ? r2(monthRow.revManual + monthRow.conPaid) : 0;
+    // Receita do período (denominador do AV%) — soma os meses do intervalo.
+    const monthRows = await monthlyFinanceBase(req.companyId, from, monthsTo);
+    const honorarios = r2(monthRows.reduce((a, m) => a + m.revManual + m.conPaid + (includePrevisto ? m.conPrevisto : 0), 0));
     const total = r2(cat.rows.reduce((a, c) => a + Number(c.valor || 0), 0));
     const itens = cat.rows.map((c) => {
       const valor = r2(Number(c.valor || 0));
@@ -1042,7 +1078,10 @@ router.get('/dashboard/receita-tipo-contrato', ...dashGuard, async (req, res) =>
   try {
     const ano = parseAno(req.query.ano);
     const mes = parseMes(req.query.mes);
-    const from = isoFirst(ano, 1);
+    const periodo = String(req.query.periodo || 'mes').toLowerCase();
+    const { from: pFrom, yms } = periodBounds(ano, mes, periodo);
+    const yearStart = isoFirst(ano, 1);
+    const from = pFrom < yearStart ? pFrom : yearStart; // cobre trimestre que cruza o ano
     const toEnd = isoFirst(ano + 1, 1); // exclusivo: 1º de janeiro do ano seguinte
     const r = await query(
       `WITH src AS (
@@ -1074,8 +1113,9 @@ router.get('/dashboard/receita-tipo-contrato', ...dashGuard, async (req, res) =>
     for (const row of r.rows) totalPorTipo.set(row.tipo_nome, (totalPorTipo.get(row.tipo_nome) || 0) + Number(row.valor || 0));
     const tipos = [...totalPorTipo.entries()].sort((a, b) => b[1] - a[1]).map(([nome]) => nome);
 
-    // Donut do mês selecionado.
-    const mesRows = r.rows.filter((row) => row.ym === alvoYm);
+    // Donut do PERÍODO selecionado (mês, últimos 3 meses ou ano).
+    const setYms = new Set(yms);
+    const mesRows = r.rows.filter((row) => setYms.has(row.ym));
     const totalMes = r2(mesRows.reduce((a, row) => a + Number(row.valor || 0), 0));
     const itensMes = mesRows
       .map((row) => ({ tipo_nome: row.tipo_nome, valor: r2(Number(row.valor || 0)) }))

@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Alert, Autocomplete, Box, Button, Card, CardContent, Checkbox, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
   Divider, FormControlLabel, Grid, IconButton, MenuItem, Snackbar, Stack, Switch, Tab, Table, TableBody,
-  TableCell, TableHead, TableRow, Tabs, TextField, Tooltip, Typography,
+  TableCell, TableHead, TablePagination, TableRow, Tabs, TextField, Tooltip, Typography,
 } from '@mui/material'
 import { alpha } from '@mui/material/styles'
 import AddIcon from '@mui/icons-material/Add'
@@ -33,6 +33,28 @@ import { contractsService } from '@/features/contracts/contracts.service'
 import DeleteSweepIcon from '@mui/icons-material/DeleteSweep'
 
 const BRL = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+
+// Paginação client-side para as tabelas (receitas/despesas/contratos pagos): fatia a
+// lista já carregada e devolve o rodapé de paginação. `resetKey` volta à 1ª página
+// quando o filtro (período) muda.
+function usePaged(items, resetKey) {
+  const [page, setPage] = React.useState(0)
+  const [rpp, setRpp] = React.useState(10)
+  React.useEffect(() => { setPage(0) }, [resetKey])
+  const total = items.length
+  const maxPage = Math.max(0, Math.ceil(total / rpp) - 1)
+  const safePage = Math.min(page, maxPage)
+  const paged = items.slice(safePage * rpp, safePage * rpp + rpp)
+  const pager = total > 0 ? (
+    <TablePagination
+      component="div" count={total} page={safePage} onPageChange={(_e, p) => setPage(p)}
+      rowsPerPage={rpp} onRowsPerPageChange={(e) => { setRpp(parseInt(e.target.value, 10)); setPage(0) }}
+      rowsPerPageOptions={[10, 25, 50, 100]} labelRowsPerPage="Por página:"
+      labelDisplayedRows={({ from, to, count }) => `${from}–${to} de ${count}`}
+    />
+  ) : null
+  return { paged, pager }
+}
 const fmtDate = (v) => (v && /^\d{4}-\d{2}-\d{2}/.test(String(v)) ? String(v).slice(0, 10).split('-').reverse().join('/') : (v ? new Date(v).toLocaleDateString('pt-BR') : '-'))
 
 const pad = (n) => String(n).padStart(2, '0')
@@ -476,6 +498,7 @@ function RevenuesTab({ notify, range, canManage }) {
   const [dialog, setDialog] = React.useState(null)
   const q = useQuery({ queryKey: ['finance-revenues', range.from, range.to], queryFn: () => financeService.revenues(range) })
   const items = q.data?.items || []
+  const { paged, pager } = usePaged(items, `${range.from}|${range.to}`)
   const refresh = () => { qc.invalidateQueries({ queryKey: ['finance-revenues'] }); qc.invalidateQueries({ queryKey: ['finance-summary'] }) }
   const del = useMutation({ mutationFn: (id) => financeService.deleteRevenue(id), onSuccess: () => { notify('Receita excluída.'); refresh() }, onError: (e) => notify(e?.response?.data?.error || 'Falha ao excluir.', 'error') })
 
@@ -523,7 +546,7 @@ function RevenuesTab({ notify, range, canManage }) {
             </TableRow>
           </TableHead>
           <TableBody>
-            {items.map((r) => (
+            {paged.map((r) => (
               <TableRow key={r.id} hover>
                 <TableCell>
                   <Typography sx={{ fontWeight: 600 }}>{r.label}</Typography>
@@ -551,6 +574,7 @@ function RevenuesTab({ notify, range, canManage }) {
           </TableBody>
         </Table>
       </Box>
+      {pager}
       {dialog && <EntryDialog kind="revenue" entry={dialog.id ? dialog : null} onClose={() => setDialog(null)} onSaved={refresh} notify={notify} />}
       {preview && <ImportPreviewDialog kind="revenue" rows={preview} onClose={() => setPreview(null)} onConfirm={(items) => importMut.mutate(items)} submitting={importMut.isPending} />}
     </>
@@ -564,6 +588,7 @@ function ExpensesTab({ notify, range, canManage }) {
   const [selected, setSelected] = React.useState(() => new Set())
   const q = useQuery({ queryKey: ['finance-expenses', range.from, range.to], queryFn: () => financeService.expenses(range) })
   const items = q.data?.items || []
+  const { paged, pager } = usePaged(items, `${range.from}|${range.to}`)
   // Remove ids da lista em cache imediatamente — não depende do refetch (a
   // rota GET regenera despesas recorrentes, então só invalidar podia "trazer de
   // volta" a linha; aqui a exclusão aparece na hora).
@@ -745,7 +770,7 @@ function ExpensesTab({ notify, range, canManage }) {
             </TableRow>
           </TableHead>
           <TableBody>
-            {items.map((r) => (
+            {paged.map((r) => (
               <TableRow key={r.id} hover selected={selected.has(r.id)}>
                 {canManage && (
                   <TableCell padding="checkbox">
@@ -787,6 +812,7 @@ function ExpensesTab({ notify, range, canManage }) {
           </TableBody>
         </Table>
       </Box>
+      {pager}
       {dialog && <EntryDialog kind="expense" entry={dialog.id ? dialog : null} onClose={() => setDialog(null)} onSaved={refresh} notify={notify} />}
       {preview && <ImportPreviewDialog kind="expense" rows={preview} onClose={() => setPreview(null)} onConfirm={(items) => importMut.mutate(items)} submitting={importMut.isPending} />}
       {importResult && (
@@ -864,6 +890,7 @@ function PaidContractsTab({ notify, range, canManage }) {
   const [editRow, setEditRow] = React.useState(null)
   const q = useQuery({ queryKey: ['finance-paid', range.from, range.to], queryFn: () => financeService.paidContracts(range) })
   const items = q.data?.items || []
+  const { paged, pager } = usePaged(items, `${range.from}|${range.to}`)
   const refresh = () => { qc.invalidateQueries({ queryKey: ['finance-paid'] }); qc.invalidateQueries({ queryKey: ['finance-summary'] }) }
   const reverse = useMutation({
     mutationFn: (id) => financeService.reversePaidContract(id),
@@ -892,7 +919,7 @@ function PaidContractsTab({ notify, range, canManage }) {
             </TableRow>
           </TableHead>
           <TableBody>
-            {items.map((r) => (
+            {paged.map((r) => (
               <TableRow key={r.billing_id} hover>
                 <TableCell><Typography sx={{ fontWeight: 600 }}>{r.client_name}</Typography></TableCell>
                 <TableCell><Typography variant="body2" color="text.secondary">#{r.contract_id} · {r.contract_description || 'Contrato'}</Typography></TableCell>
@@ -912,6 +939,7 @@ function PaidContractsTab({ notify, range, canManage }) {
           </TableBody>
         </Table>
       </Box>
+      {pager}
       {editRow && <EditPaidDialog row={editRow} onClose={() => setEditRow(null)} onSaved={refresh} notify={notify} />}
     </>
   )

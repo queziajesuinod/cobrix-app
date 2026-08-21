@@ -93,7 +93,12 @@ async function cloneChildren(srcParentId, newParentId, companyId, stageId) {
 }
 
 // Cria a ocorrência do template para o prazo dado, se ainda não existir. Retorna 1/0.
-async function ensureOccurrence(t, dueISO) {
+// `src` = de onde copiar os dados do topo E a subárvore COMPLETA. Padrão = o próprio
+// template (1ª ocorrência). Ao ROLAR (concluiu/venceu), passamos a ocorrência ANTERIOR
+// como src → a nova nasce com TODOS os subitens que o usuário montou, desmarcados e com
+// o novo prazo. source_node_id continua sendo o template (âncora da rotina).
+async function ensureOccurrence(t, dueISO, src = null) {
+  const source = src || t;
   const exists = await query(
     `SELECT 1 FROM ${SCHEMA}.task_nodes WHERE source_node_id=$1 AND due_date=$2 LIMIT 1`,
     [t.id, dueISO]
@@ -108,17 +113,17 @@ async function ensureOccurrence(t, dueISO) {
   const r = await query(
     `INSERT INTO ${SCHEMA}.task_nodes
        (company_id, group_id, parent_id, stage_id, kind, title, description, assignee_id, priority, due_date,
-        recurrence, is_template, source_node_id, client_id, contract_id, position, created_by)
-     VALUES ($1,$2,NULL,$3,'fixa',$4,$5,$6,$7,$8,'none',false,$9,$10,$11,$12,$13) RETURNING id`,
-    [t.company_id, t.group_id, stageId, t.title, t.description, t.assignee_id, t.priority, dueISO, t.id, t.client_id, t.contract_id, pos.rows[0].p, t.created_by]
+        recurrence, is_template, source_node_id, client_id, contract_id, position, created_by, is_heading)
+     VALUES ($1,$2,NULL,$3,'fixa',$4,$5,$6,$7,$8,'none',false,$9,$10,$11,$12,$13,$14) RETURNING id`,
+    [t.company_id, t.group_id, stageId, source.title, source.description, source.assignee_id, source.priority, dueISO, t.id, source.client_id, source.contract_id, pos.rows[0].p, t.created_by, source.is_heading]
   );
   const occId = r.rows[0].id;
-  await cloneChildren(t.id, occId, t.company_id, stageId);
+  await cloneChildren(source.id, occId, t.company_id, stageId);
   await query(
     `INSERT INTO ${SCHEMA}.task_node_activity (node_id, user_id, action, detail) VALUES ($1,NULL,'generated',$2)`,
     [occId, `Ocorrência ${dueISO.split('-').reverse().join('/')} da rotina`]
   );
-  return 1;
+  return occId;
 }
 
 // Modelo "roll-forward": mantém 1 ocorrência ativa por rotina. Cria a 1ª quando não
@@ -133,15 +138,17 @@ async function generateOccurrences(companyId, now = new Date()) {
   let count = 0;
   for (const t of tps.rows) {
     const last = await query(
-      `SELECT due_date, status FROM ${SCHEMA}.task_nodes
+      `SELECT id, due_date, status FROM ${SCHEMA}.task_nodes
         WHERE source_node_id=$1 AND parent_id IS NULL AND deleted_at IS NULL ORDER BY due_date DESC NULLS LAST LIMIT 1`,
       [t.id]
     );
     const latest = last.rows[0];
-    if (!latest) { count += await ensureOccurrence(t, currentPeriodISO(t, now)); continue; }
+    if (!latest) { if (await ensureOccurrence(t, currentPeriodISO(t, now))) count += 1; continue; }
     const latestISO = formatISODate(latest.due_date);
     if (latestISO && (latest.status === 'done' || latestISO < today)) {
-      count += await ensureOccurrence(t, nextOccurrenceISO(t, latestISO));
+      // Clona a próxima a partir da ocorrência ANTERIOR (estrutura completa), não do template.
+      const full = await query(`SELECT * FROM ${SCHEMA}.task_nodes WHERE id=$1`, [latest.id]);
+      if (await ensureOccurrence(t, nextOccurrenceISO(t, latestISO), full.rows[0] || null)) count += 1;
     }
   }
   return count;
@@ -159,7 +166,9 @@ async function rollNextOccurrence(companyId, occ) {
   if (!t) return 0;
   const dueISO = formatISODate(occ.due_date);
   if (!dueISO) return 0;
-  return ensureOccurrence(t, nextOccurrenceISO(t, dueISO));
+  // Passa a ocorrência concluída como fonte → a próxima nasce com a estrutura COMPLETA
+  // (todos os subitens que o usuário montou), desmarcada e com o novo prazo.
+  return ensureOccurrence(t, nextOccurrenceISO(t, dueISO), occ);
 }
 
 // Avisos de prazo (1 aviso por fase, via dedup_key). Cadência robusta (à prova de

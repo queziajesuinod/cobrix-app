@@ -20,7 +20,10 @@ const BaseCalculo = z.enum(['REALIZADO', 'REALIZADO_E_PREVISTO'])
 
 export const kpisSchema = z.object({
   competencia: z.string(),
-  status_competencia: StatusCompetencia,
+  // Período agregado (trimestre/ano) não tem status de competência → null.
+  status_competencia: StatusCompetencia.nullable(),
+  periodo: z.enum(['mes', 'tri', 'ano']).optional(),
+  periodo_label: z.string().optional(),
   base_calculo: BaseCalculo,
   tem_lancamento: z.boolean(),
   honorarios: Dinheiro,
