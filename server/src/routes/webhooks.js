@@ -62,7 +62,14 @@ router.post('/pix/:secret', async (req, res) => {
 // Registra (ou re-registra) a URL do webhook na EFI para a empresa
 router.post('/register/:companyId', requireAuth, companyScope(true), async (req, res) => {
   try {
-    const companyId = Number(req.params.companyId);
+    // Isolamento multi-tenant: usa o companyId JÁ validado pelo companyScope
+    // (req.companyId), não o path param cru. Sem isso, um usuário do tenant A
+    // passaria o id do tenant B e registraria webhook contra o gateway de B.
+    const paramCompanyId = Number(req.params.companyId);
+    if (req.user.role !== 'master' && paramCompanyId !== req.companyId) {
+      return res.status(403).json({ error: 'Acesso negado à empresa solicitada' });
+    }
+    const companyId = req.user.role === 'master' ? paramCompanyId : req.companyId;
     const secret = process.env.EFI_WEBHOOK_SECRET;
 
     if (!secret) {

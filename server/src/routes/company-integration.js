@@ -16,8 +16,12 @@ function canWrite(user, selectedCompanyId, targetCompanyId){
   return false
 }
 function canRead(user, selectedCompanyId, targetCompanyId){
+  // Integração (QR do WhatsApp, status/host SMTP, teste de envio) é dado
+  // sensível de administração — restrito a admin/master, não a qualquer usuário
+  // comum da empresa. Escrita já usava canWrite; leitura agora tem o mesmo gate.
   if (isMaster(user)) return true
-  return Number(selectedCompanyId) === Number(targetCompanyId)
+  if (user?.role === 'admin') return Number(selectedCompanyId) === Number(targetCompanyId)
+  return false
 }
 
 function formatEvoResponse(row, data) {

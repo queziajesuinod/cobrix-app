@@ -20,6 +20,26 @@ function canManageCompany(user, companyId) {
   return false;
 }
 
+// Impede escalonamento de privilégio via as rotas de empresa. O alvo é sempre
+// a LINHA GLOBAL do usuário (UPDATE/DELETE users WHERE id=...), e todo master é
+// vinculado a todas as empresas (public.js), então sem esta trava um admin de
+// qualquer tenant poderia trocar a senha/email do master (takeover) ou de outro
+// admin (escalonamento lateral). Regra: só um master pode agir sobre master/admin.
+// Retorna o role do alvo se permitido; caso contrário responde e retorna null.
+async function assertCanActOnTarget(req, res, userId) {
+  const target = await query(`SELECT id, role FROM users WHERE id = $1`, [userId]);
+  if (!target.rows[0]) {
+    res.status(404).json({ error: "Usuário não encontrado" });
+    return null;
+  }
+  const targetRole = target.rows[0].role;
+  if ((targetRole === "master" || targetRole === "admin") && req.user.role !== "master") {
+    res.status(403).json({ error: "Sem permissão para agir sobre este usuário" });
+    return null;
+  }
+  return targetRole;
+}
+
 // Validação simples
 function validateCreateUser(data) {
   const { email, password, role, active, name } = data || {};
@@ -151,6 +171,12 @@ router.post("/:companyId/users", requireAuth, async (req, res) => {
     if (existingUser.rows[0]) {
       targetUserId = existingUser.rows[0].id;
 
+      // Trava: admin não pode anexar à sua empresa um master/admin já existente.
+      const existingRole = existingUser.rows[0].role;
+      if ((existingRole === "master" || existingRole === "admin") && req.user.role !== "master") {
+        return res.status(403).json({ error: "Sem permissão para vincular este usuário" });
+      }
+
       // Verificar se já está associado
       const alreadyLinked = await query(`
         SELECT 1 FROM user_companies WHERE user_id = $1 AND company_id = $2
@@ -272,6 +298,9 @@ router.put("/:companyId/users/:userId", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "Usuário não encontrado nesta empresa" });
     }
 
+    // Trava de escalonamento: não deixa admin editar master/outro admin (takeover).
+    if ((await assertCanActOnTarget(req, res, userId)) === null) return;
+
     // Se está alterando email, verificar se não existe
     if (updateData.email) {
       const emailCheck = await query("SELECT id FROM users WHERE email = $1 AND id != $2", [updateData.email, userId]);
@@ -375,6 +404,9 @@ router.delete("/:companyId/users/:userId", requireAuth, async (req, res) => {
     if (!userCheck.rows[0]) {
       return res.status(404).json({ error: "Usuário não encontrado nesta empresa" });
     }
+
+    // Trava de escalonamento: não deixa admin remover/apagar master ou outro admin.
+    if ((await assertCanActOnTarget(req, res, userId)) === null) return;
 
     // Não permitir remover o próprio usuário
     if (userId === req.user.id) {

@@ -49,6 +49,12 @@ app.use('/api', rateLimit({ windowMs: 15 * 60 * 1000, limit: 300 }))
 // /api/auth para valer só nas rotas de autenticação.
 app.use('/api/auth/login', rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: true, legacyHeaders: false }))
 
+// Endpoints públicos NÃO autenticados que criam recursos ou enumeram dados
+// (signup cria empresa+usuário+PIX; validação de cupom). Limite estrito para
+// mitigar abuso/spam/enumeração. Fica ANTES do mount de /api/public.
+app.use('/api/public/signup', rateLimit({ windowMs: 60 * 60 * 1000, limit: 15, standardHeaders: true, legacyHeaders: false }))
+app.use('/api/public/coupon', rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false }))
+
 // Row-Level Security (opcional, DESLIGADO por padrão). Quando ENABLE_RLS=true,
 // cada request roda num cliente de banco com app.company_id setado, permitindo
 // que as policies RLS filtrem por empresa no nível do banco (defesa em
