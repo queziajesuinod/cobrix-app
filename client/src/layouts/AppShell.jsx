@@ -19,6 +19,7 @@ import AssignmentTurnedInIcon from '@mui/icons-material/AssignmentTurnedIn'
 import AlternateEmailIcon from '@mui/icons-material/AlternateEmail'
 import LeaderboardIcon from '@mui/icons-material/Leaderboard'
 import { menuService } from '@/features/menu/menu.service'
+import geroLogo from '@/assets/gero2.png'
 
 // Ícones
 import MenuIcon from '@mui/icons-material/Menu'
@@ -88,10 +89,10 @@ const buildSections = (role, isPartner) => [
     ],
   },
   {
-    label: 'Notificações',
+    label: 'Cobranças',
     items: [
-      { to: '/notifications/auto', label: 'Automático', icon: <AutorenewIcon />, perm: 'notifications.auto.view' },
-      { to: '/notifications/templates', label: 'Modelos', icon: <EditNoteIcon />, perm: 'notifications.templates.view' },
+      { to: '/notifications/auto', label: 'Cobrança', icon: <AutorenewIcon />, perm: 'notifications.auto.view' },
+      { to: '/notifications/templates', label: 'Modelo de Cobranças', icon: <EditNoteIcon />, perm: 'notifications.templates.view' },
       { to: '/billings/paid', label: 'Contratos pagos', icon: <CheckCircleIcon />, perm: 'billings.paid.view' },
       { to: '/reports/overdue-clients', label: 'Inadimplentes', icon: <WarningAmberIcon />, perm: 'reports.overdue.view' },
     ],
@@ -294,8 +295,8 @@ export default function AppShell({ children }) {
     >
       {/* Logo */}
       <Box sx={{ px: compact ? 0 : 2.5, py: 2.25, display: 'flex', alignItems: 'center', justifyContent: compact ? 'center' : 'flex-start', gap: 1 }}>
-        <Box sx={{ width: 32, height: 32, borderRadius: '10px', flexShrink: 0, background: 'linear-gradient(135deg,#5b8def,#8E2DE2)' }} />
-        {!compact && <Typography variant="h6" sx={{ fontWeight: 800, letterSpacing: 0.3 }}>Cobrix</Typography>}
+        <Box component="img" src={geroLogo} alt="GERO" sx={{ width: 32, height: 32, borderRadius: '10px', flexShrink: 0, objectFit: 'contain' }} />
+        {!compact && <Typography variant="h6" sx={{ fontWeight: 800, letterSpacing: 0.3 }}>GERO</Typography>}
       </Box>
 
       {/* Bloco de perfil */}
@@ -344,7 +345,7 @@ export default function AppShell({ children }) {
                   disableSticky
                   sx={{
                     bgcolor: 'transparent',
-                    color: '#ec407a',
+                    color: 'primary.main',
                     fontWeight: 700,
                     fontSize: 11,
                     letterSpacing: 1,
@@ -389,7 +390,7 @@ export default function AppShell({ children }) {
                     <Chip
                       label="Novo"
                       size="small"
-                      sx={{ height: 18, fontSize: 10, fontWeight: 700, bgcolor: '#ec407a', color: '#fff', '& .MuiChip-label': { px: 0.75 } }}
+                      sx={{ height: 18, fontSize: 10, fontWeight: 700, bgcolor: 'primary.main', color: 'primary.contrastText', '& .MuiChip-label': { px: 0.75 } }}
                     />
                   )}
                 </ListItemButton>
@@ -457,7 +458,7 @@ export default function AppShell({ children }) {
             </Typography>
             <Breadcrumbs separator="›" sx={{ fontSize: 12, '& .MuiBreadcrumbs-li': { fontSize: 12 } }}>
               <MuiLink component={NavLink} to="/dashboard" underline="hover" color="text.secondary" sx={{ fontSize: 12 }}>
-                Cobrix
+                GERO
               </MuiLink>
               {current?.section && (
                 <Typography color="text.secondary" sx={{ fontSize: 12 }}>{current.section}</Typography>

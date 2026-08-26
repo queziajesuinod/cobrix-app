@@ -1,19 +1,33 @@
 import { createTheme, alpha } from '@mui/material/styles'
 import { ptBR } from '@mui/material/locale'
 
-// Tokens de cor por modo. Ajuste aqui para reafinar a identidade visual.
+// Tokens de cor por modo — derivados da logo GERO (teal #1DA695 + navy #0C2C46).
+// `primary` usa um teal levemente mais escuro que a marca (#0E8174) para que o
+// texto branco dos botões passe em contraste WCAG AA (4.76:1); o teal exato da
+// marca vira o tom `light` (usado em realces/nav ativo). Ajuste aqui para
+// reafinar a identidade visual.
 const tokens = {
   light: {
-    primary: '#2065D1',
-    secondary: '#3366FF',
+    primary: '#0E8174',
+    primaryLight: '#1DA695',
+    primaryDark: '#0A5F56',
+    primaryContrast: '#ffffff',
+    secondary: '#0C2C46',
+    success: '#12805A',
+    successContrast: '#ffffff',
     bgDefault: '#f4f6fb',
     bgPaper: '#ffffff',
-    divider: 'rgba(15,23,42,0.08)',
+    divider: 'rgba(12,44,70,0.10)',
     cardShadow: '0 1px 3px rgba(15,23,42,0.06), 0 1px 2px rgba(15,23,42,0.04)',
   },
   dark: {
-    primary: '#5b8def',
-    secondary: '#6b8dff',
+    primary: '#2CBBAA',
+    primaryLight: '#4BD0C0',
+    primaryDark: '#12897B',
+    primaryContrast: '#04211B',
+    secondary: '#9DB8D6',
+    success: '#34B978',
+    successContrast: '#04211B',
     bgDefault: '#0d1117',
     bgPaper: '#161b22',
     divider: 'rgba(255,255,255,0.09)',
@@ -27,8 +41,14 @@ export function createAppTheme(mode = 'light') {
   return createTheme({
     palette: {
       mode,
-      primary: { main: t.primary },
+      primary: {
+        main: t.primary,
+        light: t.primaryLight,
+        dark: t.primaryDark,
+        contrastText: t.primaryContrast,
+      },
       secondary: { main: t.secondary },
+      success: { main: t.success, contrastText: t.successContrast },
       background: { default: t.bgDefault, paper: t.bgPaper },
       divider: t.divider,
     },

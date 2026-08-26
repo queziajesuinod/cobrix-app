@@ -98,6 +98,19 @@ router.get("/", requireAuth, async (req, res) => {
   res.json(rows);
 });
 
+// LIST das empresas do próprio usuário (id+name) — alimenta o seletor de empresa.
+// Diferente de "/" (master, dados completos), esta serve qualquer papel e devolve
+// só o necessário para trocar de empresa. Deve vir ANTES de "/:id".
+router.get("/mine", requireAuth, async (req, res) => {
+  const ids = req.user.company_ids || [];
+  if (ids.length === 0) return res.json([]);
+  const r = await query(
+    `SELECT id, name FROM companies WHERE id = ANY($1::int[]) ORDER BY name ASC`,
+    [ids]
+  );
+  res.json(r.rows);
+});
+
 // GET by id
 router.get("/:id", requireAuth, async (req, res) => {
   const id = Number(req.params.id);

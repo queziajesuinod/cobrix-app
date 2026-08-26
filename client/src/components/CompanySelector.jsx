@@ -15,19 +15,28 @@ import { useAuth } from '@/features/auth/AuthContext'
 import { companyService } from '@/features/companies/company.service'
 import BusinessIcon from '@mui/icons-material/Business'
 
+// Seletor de empresa ativa. Aparece para:
+//  - master: sempre (pode alternar entre todas as empresas às quais está vinculado);
+//  - demais papéis (ex.: admin): apenas quando vinculado a MAIS de uma empresa.
+// A troca persiste em selectedCompanyId (localStorage) e o X-Company-Id vai em
+// toda requisição, agora honrado pelo backend também para não-master.
 export default function CompanySelector() {
   const { user, selectedCompanyId, setSelectedCompanyId } = useAuth()
 
-  // Buscar empresas disponíveis para o usuário master
+  const isMaster = user?.role === 'master'
+  const linkedCount = user?.company_ids?.length || 0
+  // Não-master só precisa do seletor quando tem mais de uma empresa.
+  const shouldRender = isMaster || linkedCount > 1
+
   const { data: companies = [], isLoading, error } = useQuery({
-    queryKey: ['companies'],
-    queryFn: () => companyService.list(),
-    enabled: user?.role === 'master',
-    staleTime: 5 * 60 * 1000, // 5 minutos
+    // Master usa a lista completa (/companies); demais usam apenas as suas (/mine).
+    queryKey: isMaster ? ['companies'] : ['companies-mine'],
+    queryFn: () => (isMaster ? companyService.list() : companyService.mine()),
+    enabled: shouldRender,
+    staleTime: 5 * 60 * 1000,
   })
 
-  // Se não for master, não mostrar o seletor
-  if (user?.role !== 'master') {
+  if (!shouldRender) {
     return null
   }
 
@@ -36,7 +45,7 @@ export default function CompanySelector() {
     setSelectedCompanyId(companyId === '' ? null : Number(companyId))
   }
 
-  const selectedCompany = companies.find(c => c.id === selectedCompanyId)
+  const selectedCompany = companies.find((c) => c.id === selectedCompanyId)
 
   if (isLoading) {
     return (
@@ -58,7 +67,7 @@ export default function CompanySelector() {
   }
 
   return (
-    <Box 
+    <Box
       sx={{ p: 2, borderBottom: '1px solid', borderColor: 'divider' }}
       data-testid="company-selector"
     >
@@ -82,11 +91,15 @@ export default function CompanySelector() {
             }
           }}
         >
-          <MenuItem value="">
-            <Typography color="text.secondary" fontStyle="italic">
-              Selecione uma empresa
-            </Typography>
-          </MenuItem>
+          {/* Master pode "desmarcar" (fica sem empresa e escolhe na lista de Empresas).
+              Para não-master, uma empresa ativa é sempre necessária. */}
+          {isMaster && (
+            <MenuItem value="">
+              <Typography color="text.secondary" fontStyle="italic">
+                Selecione uma empresa
+              </Typography>
+            </MenuItem>
+          )}
           {companies.map((company) => (
             <MenuItem key={company.id} value={company.id}>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
@@ -117,7 +130,7 @@ export default function CompanySelector() {
         </Box>
       )}
 
-      {!selectedCompanyId && companies.length > 0 && (
+      {isMaster && !selectedCompanyId && companies.length > 0 && (
         <Typography variant="caption" color="warning.main" sx={{ mt: 1, display: 'block' }}>
           ⚠️ Selecione uma empresa para acessar os dados
         </Typography>

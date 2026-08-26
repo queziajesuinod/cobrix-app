@@ -10,7 +10,7 @@ COPY client/package.json client/package-lock.json ./
 RUN npm ci
 COPY client/ ./
 # URL da API embutida no bundle em build time.
-ARG VITE_API_URL=https://apicobrix.aleftec.com.br
+ARG VITE_API_URL=https://api.gero.app.br
 ENV VITE_API_URL=${VITE_API_URL}
 RUN npm run build
 

@@ -321,7 +321,7 @@ router.post('/:id/integration/email/test', requireAuth, async (req, res) => {
   try {
     const result = await sendEmail(id, {
       to,
-      subject: 'Teste de e-mail — Cobrix',
+      subject: 'Teste de e-mail — GERO',
       html: '<p>Se você recebeu esta mensagem, a integração de e-mail da empresa está funcionando. 🎉</p>',
       text: 'Se você recebeu esta mensagem, a integração de e-mail da empresa está funcionando.',
     })

@@ -91,7 +91,7 @@ const INTEGRATIONS = [
     key: 'webhooks',
     name: 'Webhooks & API',
     category: 'Desenvolvedor',
-    description: 'Receba eventos (pagamento, atraso, novo contrato) e integre o Cobrix a sistemas próprios.',
+    description: 'Receba eventos (pagamento, atraso, novo contrato) e integre o GERO a sistemas próprios.',
     icon: <WebhookIcon />,
     color: '#455A64',
     status: 'soon',
@@ -238,7 +238,7 @@ export default function IntegrationsHubPage() {
     <Stack spacing={2}>
       <PageHeader
         title="Integrações"
-        subtitle="Conecte o Cobrix às ferramentas que sua empresa já usa para automatizar cobranças, pagamentos e notificações."
+        subtitle="Conecte o GERO às ferramentas que sua empresa já usa para automatizar cobranças, pagamentos e notificações."
       />
 
       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>

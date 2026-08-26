@@ -24,7 +24,7 @@ function QrCodeViewer({ base64 }) {
 }
 
 const TEST_NUMBER = '5567992625560'
-const TEST_MESSAGE = '🔄 Teste de conexão Cobrix: se você recebeu esta mensagem, o WhatsApp da empresa está pronto para enviar notificações automáticas.'
+const TEST_MESSAGE = '🔄 Teste de conexão GERO: se você recebeu esta mensagem, o WhatsApp da empresa está pronto para enviar notificações automáticas.'
 
 export default function EvoConnectionPage() {
   const { selectedCompanyId, user } = useAuth()
@@ -216,7 +216,7 @@ export default function EvoConnectionPage() {
     <Stack spacing={2}>
       <PageHeader
         title="WhatsApp"
-        subtitle="Conecte o WhatsApp da empresa ao Cobrix. Utilize esta tela para gerar um novo QR Code sempre que a conexão cair."
+        subtitle="Conecte o WhatsApp da empresa ao GERO. Utilize esta tela para gerar um novo QR Code sempre que a conexão cair."
       />
 
       {!enabled && (

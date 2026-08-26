@@ -138,17 +138,18 @@ function formatDateBr(value) {
   return dt.toLocaleDateString('pt-BR');
 }
 
-function buildOverdueWhere({ companyId, todayIso, filters, clientId = null, billingIds = null, minDaysOverdue = 30 }) {
-  // minDaysOverdue: dias mínimos de atraso para entrar na lista. Default 30
-  // (comportamento da tela "Clientes em atraso"); a Carteira em risco passa 0
-  // para cobrar qualquer cobrança vencida.
+function buildOverdueWhere({ companyId, todayIso, filters, clientId = null, billingIds = null, minDaysOverdue = 3 }) {
+  // minDaysOverdue: dias mínimos de atraso para entrar na lista. Default 3
+  // (comportamento da tela "Inadimplentes": aparece quando hoje já é 3+ dias
+  // depois do vencimento e a cobrança segue pendente). A comparação é >=, então
+  // exatamente o 3º dia após o vencimento já conta.
   const params = [companyId, todayIso, minDaysOverdue];
   const where = [
     'b.company_id = $1',
     'c.company_id = $1',
     "LOWER(COALESCE(b.status, 'pending')) = 'pending'",
     'b.billing_date < $2::date',
-    '($2::date - b.billing_date) > $3',
+    '($2::date - b.billing_date) >= $3',
   ];
 
   if (clientId != null) {
@@ -246,7 +247,7 @@ async function listOverdueBillings({
   all = false,
   page = 1,
   pageSize = 20,
-  minDaysOverdue = 30,
+  minDaysOverdue = 3,
 }) {
   const today = ensureDateOnly(new Date()) || new Date();
   const todayIso = formatISODate(today);
@@ -473,7 +474,7 @@ router.post('/overdue-clients/client/:clientId/notify', requireAuth, companyScop
     const filters = parseFilters(req.body || {});
     const billingIds = parseBillingIds(req.body?.billingIds);
     const parsedMinDays = parseNumberParam(req.body?.minDaysOverdue, 'minDaysOverdue', { integer: true, min: 0 });
-    const minDaysOverdue = parsedMinDays == null ? 30 : parsedMinDays;
+    const minDaysOverdue = parsedMinDays == null ? 3 : parsedMinDays;
 
     const report = await listOverdueBillings({
       companyId,

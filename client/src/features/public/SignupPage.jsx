@@ -210,7 +210,7 @@ export default function SignupPage() {
   return (
     <Container maxWidth="md" sx={{ py: { xs: 4, md: 6 } }}>
       <Stack spacing={1} sx={{ mb: 3, textAlign: 'center' }}>
-        <Typography variant="h4" sx={{ fontWeight: 800 }}>Assine o Cobrix</Typography>
+        <Typography variant="h4" sx={{ fontWeight: 800 }}>Assine o GERO</Typography>
         <Typography color="text.secondary">Escolha o plano ideal e comece a automatizar suas cobranças hoje.</Typography>
       </Stack>
 

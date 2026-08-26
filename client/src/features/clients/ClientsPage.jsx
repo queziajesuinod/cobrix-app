@@ -22,7 +22,6 @@ import { formatDocumentValue } from './ClientForm'
 import { useConfirm } from '@/components/ConfirmDialog'
 import { usePermissions } from '@/features/permissions/PermissionsContext'
 import { useSensitive } from '@/features/permissions/useSensitive'
-import AuditInfo from '@/components/AuditInfo'
 
 const STATUS_OPTIONS = [
   { value: 'active', label: 'Ativos' },
@@ -148,24 +147,23 @@ export default function ClientsPage() {
                 <TableCell>Responsável</TableCell>
                 <TableCell>Email</TableCell>
                 <TableCell>Telefone</TableCell>
-                <TableCell>Documento</TableCell>
+                <TableCell sx={{ whiteSpace: 'nowrap' }}>Documento</TableCell>
                 <TableCell>Status</TableCell>
-                <TableCell>Auditoria</TableCell>
                 <TableCell align="right">Ações</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
               {list.isLoading ? (
-                <TableSkeleton rows={6} columns={9} />
+                <TableSkeleton rows={6} columns={8} />
               ) : list.error ? (
                 <TableRow>
-                  <TableCell colSpan={9} sx={{ border: 0 }}>
+                  <TableCell colSpan={8} sx={{ border: 0 }}>
                     <Alert severity="error" sx={{ my: 1 }}>Erro ao carregar clientes.</Alert>
                   </TableCell>
                 </TableRow>
               ) : rows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} sx={{ border: 0 }}>
+                  <TableCell colSpan={8} sx={{ border: 0 }}>
                     <EmptyState
                       icon={<PeopleIcon />}
                       title="Nenhum cliente encontrado"
@@ -184,12 +182,9 @@ export default function ClientsPage() {
                     <TableCell>{r.responsavel || '-'}</TableCell>
                     <TableCell>{r.email || '-'}</TableCell>
                     <TableCell>{phone(r.phone)}</TableCell>
-                    <TableCell>{formatDocumentValue(r.document || r.document_cpf || r.document_cnpj || '') || '-'}</TableCell>
+                    <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatDocumentValue(r.document || r.document_cpf || r.document_cnpj || '') || '-'}</TableCell>
                     <TableCell>
                       <Chip label={r.active ? 'Ativo' : 'Inativo'} color={r.active ? 'success' : 'default'} size="small" />
-                    </TableCell>
-                    <TableCell>
-                      <AuditInfo createdByName={r.created_by_name} createdAt={r.created_at} updatedByName={r.updated_by_name} updatedAt={r.updated_at} />
                     </TableCell>
                     <TableCell align="right">
                       {can('clients.edit') && (

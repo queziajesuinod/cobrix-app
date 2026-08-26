@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '@/features/auth/AuthContext'
 import { Box, Card, Stack, TextField, Typography, Button, Alert } from '@mui/material'
+import geroLogo from '@/assets/gero1.png'
 
 export default function LoginPage() {
   const { login } = useAuth()
@@ -30,15 +31,23 @@ export default function LoginPage() {
 
   return (
     <Box sx={{ display: 'grid', placeItems: 'center', minHeight: '100vh', bgcolor: 'background.default', p: 2 }}>
-      <Card sx={{ p: 3, width: 380 }}>
-        <Stack spacing={2} component="form" onSubmit={onSubmit}>
+      <Stack spacing={3} alignItems="center">
+        <Box
+          component="img"
+          src={geroLogo}
+          alt="GERO"
+          sx={{ display: 'block', maxWidth: '100%', height: 'auto', maxHeight: 120 }}
+        />
+        <Card sx={{ p: 3, width: 380 }}>
+          <Stack spacing={2} component="form" onSubmit={onSubmit}>
           <Typography variant="h5" sx={{ fontWeight: 700 }}>Entrar</Typography>
           <TextField label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} required fullWidth />
           <TextField label="Senha" type="password" value={password} onChange={e => setPassword(e.target.value)} required fullWidth />
           {error && <Alert severity="error">{error}</Alert>}
           <Button type="submit" variant="contained">Entrar</Button>
-        </Stack>
-      </Card>
+          </Stack>
+        </Card>
+      </Stack>
     </Box>
   )
 }

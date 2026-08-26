@@ -22,7 +22,6 @@ import PaymentsIcon from '@mui/icons-material/Payments'
 import PageHeader from '@/components/PageHeader'
 import PapperBlock from '@/components/PapperBlock'
 import CompanyRequiredAlert from '@/components/CompanyRequiredAlert'
-import AuditInfo from '@/components/AuditInfo'
 import { useAuth } from '@/features/auth/AuthContext'
 import { usePermissions } from '@/features/permissions/PermissionsContext'
 import { useConfirm } from '@/components/ConfirmDialog'
@@ -541,7 +540,6 @@ function RevenuesTab({ notify, range, canManage }) {
               <TableCell>Descrição</TableCell>
               <TableCell align="right">Valor</TableCell>
               <TableCell>Recebido em</TableCell>
-              <TableCell>Auditoria</TableCell>
               <TableCell align="right">Ações</TableCell>
             </TableRow>
           </TableHead>
@@ -559,7 +557,6 @@ function RevenuesTab({ notify, range, canManage }) {
                 <TableCell><Typography variant="body2" color="text.secondary">{r.description || '-'}</Typography></TableCell>
                 <TableCell align="right" sx={{ fontWeight: 700, color: 'success.main' }}>{BRL(r.amount)}</TableCell>
                 <TableCell>{fmtDate(r.received_at)}</TableCell>
-                <TableCell><AuditInfo createdByName={r.created_by_name} createdAt={r.created_at} updatedByName={r.updated_by_name} updatedAt={r.updated_at} /></TableCell>
                 <TableCell align="right">
                   {canManage ? (
                     <>
@@ -570,7 +567,7 @@ function RevenuesTab({ notify, range, canManage }) {
                 </TableCell>
               </TableRow>
             ))}
-            {!items.length && <TableRow><TableCell colSpan={6}><Box sx={{ py: 4, textAlign: 'center', color: 'text.secondary' }}>Nenhuma receita.</Box></TableCell></TableRow>}
+            {!items.length && <TableRow><TableCell colSpan={5}><Box sx={{ py: 4, textAlign: 'center', color: 'text.secondary' }}>Nenhuma receita.</Box></TableCell></TableRow>}
           </TableBody>
         </Table>
       </Box>
@@ -765,7 +762,6 @@ function ExpensesTab({ notify, range, canManage }) {
               <TableCell>Situação</TableCell>
               <TableCell>Tipo</TableCell>
               <TableCell>Recorrência</TableCell>
-              <TableCell>Auditoria</TableCell>
               <TableCell align="right">Ações</TableCell>
             </TableRow>
           </TableHead>
@@ -789,7 +785,6 @@ function ExpensesTab({ notify, range, canManage }) {
                     color={r.expense_type === 'fixed' ? 'default' : 'warning'} />
                 </TableCell>
                 <TableCell>{recurrenceChip(r)}</TableCell>
-                <TableCell><AuditInfo createdByName={r.created_by_name} createdAt={r.created_at} updatedByName={r.updated_by_name} updatedAt={r.updated_at} /></TableCell>
                 <TableCell align="right">
                   {canManage ? (
                     <>
@@ -808,7 +803,7 @@ function ExpensesTab({ notify, range, canManage }) {
                 </TableCell>
               </TableRow>
             ))}
-            {!items.length && <TableRow><TableCell colSpan={canManage ? 12 : 11}><Box sx={{ py: 4, textAlign: 'center', color: 'text.secondary' }}>Nenhuma despesa.</Box></TableCell></TableRow>}
+            {!items.length && <TableRow><TableCell colSpan={canManage ? 11 : 10}><Box sx={{ py: 4, textAlign: 'center', color: 'text.secondary' }}>Nenhuma despesa.</Box></TableCell></TableRow>}
           </TableBody>
         </Table>
       </Box>

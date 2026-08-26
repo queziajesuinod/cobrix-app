@@ -86,14 +86,18 @@ async function requireAuth(req, res, next) {
         req.companyId = null;
       }
     } else {
-      // Usuários normais só podem acessar a empresa a que estão vinculados
+      // Usuários normais só podem acessar empresas às quais estão vinculados.
       if (req.user.company_ids.length === 0) {
         return res.status(403).json({ error: "Usuário não vinculado a nenhuma empresa" });
       }
       if (requestedCompanyId && !req.user.company_ids.includes(requestedCompanyId)) {
         return res.status(403).json({ error: "Acesso negado à empresa solicitada" });
       }
-      req.companyId = req.user.company_ids[0]; // Usuário normal tem uma única empresa principal
+      // Quando vinculado a mais de uma empresa, honra a empresa selecionada
+      // (X-Company-Id) desde que seja uma das suas; senão usa a primeira.
+      req.companyId = requestedCompanyId && req.user.company_ids.includes(requestedCompanyId)
+        ? requestedCompanyId
+        : req.user.company_ids[0];
     }
 
     next();
@@ -131,7 +135,9 @@ async function maybeAuth(req, _res, next) {
         } else if (requestedCompanyId && !req.user.company_ids.includes(requestedCompanyId)) {
           req.companyId = null;
         } else {
-          req.companyId = req.user.company_ids[0];
+          req.companyId = requestedCompanyId && req.user.company_ids.includes(requestedCompanyId)
+            ? requestedCompanyId
+            : req.user.company_ids[0];
         }
       }
     } catch {
@@ -156,7 +162,11 @@ function companyScope(required = true) {
       if (req.user.company_ids.length === 0) {
         return res.status(403).json({ error: "Usuário não vinculado a nenhuma empresa" });
       }
-      companyId = req.user.company_ids[0];
+      const requested = req.header("X-Company-Id") || req.query.companyId || null;
+      if (requested && !req.user.company_ids.includes(Number(requested))) {
+        return res.status(403).json({ error: "Acesso negado à empresa solicitada" });
+      }
+      companyId = requested ? Number(requested) : req.user.company_ids[0];
     }
 
     if (required && !companyId) {

@@ -487,8 +487,8 @@ export default function OverdueClientsPage() {
       />
 
       <Alert severity="info" icon={<WarningAmberIcon />}>
-        Esta tela lista os <strong>inadimplentes</strong>: clientes com cobranças pendentes vencidas há <strong>mais de 30 dias</strong>.
-        Cobranças com menos de 30 dias de atraso ainda não aparecem aqui. Selecione cobranças para <strong>abonar</strong> (sai da
+        Esta tela lista os <strong>inadimplentes</strong>: clientes com cobranças pendentes vencidas há <strong>3 dias ou mais</strong>.
+        Cobranças com menos de 3 dias de atraso ainda não aparecem aqui. Selecione cobranças para <strong>abonar</strong> (sai da
         inadimplência sem virar receita) ou <strong>registrar um acordo</strong> (valor manual com juros/desconto, lançado como receita na data do pagamento).
       </Alert>
 

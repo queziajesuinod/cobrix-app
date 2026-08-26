@@ -20,7 +20,7 @@ app.use(helmet())
 const baseAllowlist = [
   'http://localhost:5173',
   'http://localhost:3002',
-  'https://cobrix.aleftec.com.br',
+  'https://gero.app.br',
 ]
 const envOrigins = (process.env.ALLOWED_ORIGINS || '')
   .split(',')

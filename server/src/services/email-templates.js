@@ -41,7 +41,7 @@ async function buildBillingEmail(ctx = {}, { type = 'pre', companyId = null } = 
   const b = buildBindings(ctx);
   const isPaid = type === 'paid';
   const title = headline(type, b);
-  const company = esc(b.company_name || 'Cobrix');
+  const company = esc(b.company_name || 'GERO');
   const bodyText = await resolveEmailBody(type, b, companyId ?? ctx.companyId ?? ctx.company_id);
   const bodyHtml = bodyToHtml(bodyText);
   const amount = esc(b.payment_amount || b.amount || '');
@@ -52,8 +52,8 @@ async function buildBillingEmail(ctx = {}, { type = 'pre', companyId = null } = 
   const pixKey = esc(b.pix_key || '');
 
   const subject = isPaid
-    ? `Pagamento confirmado — ${b.company_name || 'Cobrix'}`
-    : `Cobrança${refMonth ? ` ${refMonth}` : ''} — ${b.company_name || 'Cobrix'}`;
+    ? `Pagamento confirmado — ${b.company_name || 'GERO'}`
+    : `Cobrança${refMonth ? ` ${refMonth}` : ''} — ${b.company_name || 'GERO'}`;
 
   const accent = isPaid ? '#2e7d32' : (type === 'late' ? '#c62828' : '#2065d1');
 

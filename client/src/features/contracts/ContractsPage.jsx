@@ -8,7 +8,6 @@ import { useAuth } from '@/features/auth/AuthContext'
 import { useConfirm } from '@/components/ConfirmDialog'
 import { usePermissions } from '@/features/permissions/PermissionsContext'
 import { useSensitive } from '@/features/permissions/useSensitive'
-import AuditInfo from '@/components/AuditInfo'
 import PageHeader from '@/components/PageHeader'
 import PapperBlock from '@/components/PapperBlock'
 import TableSkeleton from '@/components/TableSkeleton'
@@ -820,22 +819,21 @@ export default function ContractsPage() {
                     <TableCell>Dia</TableCell>
                     <TableCell>Status</TableCell>
                     <TableCell>última cobrança</TableCell>
-                    <TableCell>Auditoria</TableCell>
                     <TableCell align="right">Ações</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {list.isLoading ? (
-                    <TableSkeleton rows={6} columns={12} />
+                    <TableSkeleton rows={6} columns={11} />
                   ) : list.error ? (
                     <TableRow>
-                      <TableCell colSpan={12} sx={{ border: 0 }}>
+                      <TableCell colSpan={11} sx={{ border: 0 }}>
                         <Alert severity="error" sx={{ my: 1 }}>Erro ao carregar contratos: {list.error?.message || 'tente novamente.'}</Alert>
                       </TableCell>
                     </TableRow>
                   ) : rows.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={12} sx={{ border: 0 }}>
+                      <TableCell colSpan={11} sx={{ border: 0 }}>
                         <EmptyState
                           icon={<DescriptionIcon />}
                           title="Nenhum contrato encontrado"
@@ -866,9 +864,6 @@ export default function ContractsPage() {
                           </Stack>
                         </TableCell>
                         <TableCell>{formatDateOnly(r.last_billed_date)}</TableCell>
-                        <TableCell>
-                          <AuditInfo createdByName={r.created_by_name} createdAt={r.created_at} updatedByName={r.updated_by_name} updatedAt={r.updated_at} />
-                        </TableCell>
                         <TableCell align="right">
                           {can('contracts.edit') && (
                             <IconButton size="small" onClick={() => handleEdit(r)} disabled={!enabled}><EditIcon fontSize="small" /></IconButton>

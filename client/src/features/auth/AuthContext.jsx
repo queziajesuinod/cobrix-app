@@ -66,10 +66,12 @@ export function AuthProvider({ children }) {
           if (selectedCompanyId && !u.company_ids?.includes(selectedCompanyId)) {
             persistSelectedCompanyId(null)
           }
-        } else if (u?.company_ids?.length > 0 && !selectedCompanyId) {
-          // Usuário normal: usar a primeira empresa disponível
-          const defaultCompanyId = u.company_ids[0]
-          persistSelectedCompanyId(defaultCompanyId)
+        } else if (u?.company_ids?.length > 0) {
+          // Usuário normal: mantém a empresa selecionada se ainda for válida
+          // (permite alternar entre várias); senão cai na primeira disponível.
+          if (!selectedCompanyId || !u.company_ids.includes(selectedCompanyId)) {
+            persistSelectedCompanyId(u.company_ids[0])
+          }
         }
       } catch {
         authService.clearToken()
@@ -110,9 +112,11 @@ export function AuthProvider({ children }) {
         persistSelectedCompanyId(null)
       }
     } else if (u?.company_ids?.length > 0) {
-      // Usuário normal: selecionar automaticamente a primeira empresa
-      const defaultCompanyId = u.company_ids[0]
-      persistSelectedCompanyId(defaultCompanyId)
+      // Usuário normal: mantém a empresa já selecionada se continuar válida
+      // (multi-empresa); caso contrário seleciona a primeira automaticamente.
+      if (!selectedCompanyId || !u.company_ids.includes(selectedCompanyId)) {
+        persistSelectedCompanyId(u.company_ids[0])
+      }
     }
     return data
   }
