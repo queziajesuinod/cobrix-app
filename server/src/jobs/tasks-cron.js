@@ -199,8 +199,9 @@ async function rollNextOccurrence(companyId, occ) {
 //   • atrasada: em QUALQUER dia após o prazo (diff < 0) → 1 aviso.
 // Assim, uma tarefa recorrente dia 15 avisa ~3 dias antes e, se passar do 15,
 // avisa uma vez mesmo que o cron não tenha rodado exatamente no -1. Pessoal para o
-// responsável; sem responsável, vai para a empresa. Só tarefas abertas com prazo
-// (não templates).
+// responsável; sem responsável, vai só para os ADMINS/GESTORES da empresa (nunca
+// para a empresa toda — um não-admin só é avisado de tarefa dele). Só tarefas
+// abertas com prazo (não templates).
 async function notifyDeadlines(now) {
   const today = formatISODate(now);
   const nodes = await query(
@@ -208,6 +209,32 @@ async function notifyDeadlines(now) {
        FROM ${SCHEMA}.task_nodes
       WHERE status='open' AND is_template=false AND due_date IS NOT NULL AND deleted_at IS NULL`
   );
+
+  // Admins (role 'admin') + gestores de tarefas (permissão 'tasks.gestor', por perfil
+  // ou override, respeitando deny). Exclui master. Cache por empresa dentro da rodada.
+  const adminCache = new Map();
+  const adminsFor = async (companyId) => {
+    if (adminCache.has(companyId)) return adminCache.get(companyId);
+    const r = await query(
+      `SELECT DISTINCT u.id
+         FROM ${SCHEMA}.users u
+         JOIN ${SCHEMA}.user_companies uc ON uc.user_id = u.id
+        WHERE uc.company_id = $1 AND u.role <> 'master'
+          AND (
+            u.role = 'admin'
+            OR (
+              (EXISTS (SELECT 1 FROM ${SCHEMA}.profile_permissions pp WHERE pp.profile_id = u.profile_id AND pp.permission_key = 'tasks.gestor')
+               OR EXISTS (SELECT 1 FROM ${SCHEMA}.user_permission_overrides o WHERE o.user_id = u.id AND o.permission_key = 'tasks.gestor' AND o.allowed = true))
+              AND NOT EXISTS (SELECT 1 FROM ${SCHEMA}.user_permission_overrides o WHERE o.user_id = u.id AND o.permission_key = 'tasks.gestor' AND o.allowed = false)
+            )
+          )`,
+      [companyId]
+    );
+    const ids = r.rows.map((x) => x.id);
+    adminCache.set(companyId, ids);
+    return ids;
+  };
+
   let created = 0;
   for (const n of nodes.rows) {
     const dueISO = formatISODate(n.due_date);
@@ -219,13 +246,21 @@ async function notifyDeadlines(now) {
     else if (diff <= 3) { bucket = 'soon'; title = `Tarefa vence em ${diff} dia${diff > 1 ? 's' : ''}: ${n.title}`; }
     if (!bucket) continue;
     const dateBr = dueISO.split('-').reverse().join('/');
-    await createNotification({
-      companyId: n.company_id, userId: n.assignee_id || null, type: 'task_due', title,
-      body: diff < 0 ? `Prazo era ${dateBr} — está atrasada.` : `Prazo em ${dateBr}.`,
-      refType: 'task_node', refId: n.id, link: '/tasks',
-      dedupKey: `task-due:${n.id}:${bucket}`,
-    });
-    created++;
+    const body = diff < 0 ? `Prazo era ${dateBr} — está atrasada.` : `Prazo em ${dateBr}.`;
+    const base = { companyId: n.company_id, type: 'task_due', title, body, refType: 'task_node', refId: n.id, link: '/tasks' };
+
+    if (n.assignee_id) {
+      // Com responsável: pessoal só para ele.
+      await createNotification({ ...base, userId: n.assignee_id, dedupKey: `task-due:${n.id}:${bucket}` });
+      created++;
+    } else {
+      // Sem responsável: uma notificação pessoal para cada admin/gestor (dedup por usuário).
+      const admins = await adminsFor(n.company_id);
+      for (const uid of admins) {
+        await createNotification({ ...base, userId: uid, dedupKey: `task-due:${n.id}:${bucket}:u${uid}` });
+        created++;
+      }
+    }
   }
   return created;
 }
