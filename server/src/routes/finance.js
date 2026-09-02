@@ -780,6 +780,7 @@ router.get('/summary/annual', requireAuth, companyScope(true),
          LEFT JOIN LATERAL (
            SELECT COUNT(*)::int AS n FROM ${SCHEMA}.contracts c
             WHERE c.company_id = $1
+              AND c.active = true
               AND c.start_date <= m.eom AND c.end_date >= m.som
               AND (c.cancellation_date IS NULL OR c.cancellation_date >= m.som)
          ) ct ON true
@@ -876,7 +877,8 @@ async function monthlyFinanceBase(companyId, fromDate, toDate) {
        ) prev ON true
        LEFT JOIN LATERAL (
          SELECT COUNT(*) n FROM ${SCHEMA}.contracts c
-          WHERE c.company_id = $1 AND c.start_date <= m.eom AND c.end_date >= m.som
+          WHERE c.company_id = $1 AND c.active = true
+            AND c.start_date <= m.eom AND c.end_date >= m.som
             AND (c.cancellation_date IS NULL OR c.cancellation_date >= m.som)
        ) ct ON true
        LEFT JOIN LATERAL (

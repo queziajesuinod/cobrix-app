@@ -4,14 +4,18 @@ import { useQuery } from '@tanstack/react-query'
 import { Alert, Button, CircularProgress, Stack } from '@mui/material'
 import HandshakeIcon from '@mui/icons-material/Handshake'
 import ReceiptLongIcon from '@mui/icons-material/ReceiptLong'
+import AccountTreeIcon from '@mui/icons-material/AccountTree'
 import PageHeader from '@/components/PageHeader'
 import PapperBlock from '@/components/PapperBlock'
 import CompanyRequiredAlert from '@/components/CompanyRequiredAlert'
 import { useAuth } from '@/features/auth/AuthContext'
 import { companyService } from './company.service'
 import PartnerPlanPrices from './PartnerPlanPrices'
+import PartnerNetwork from './PartnerNetwork'
+import PartnerNetworkData from './PartnerNetworkData'
 import PartnerCoupons from '@/features/commissions/PartnerCoupons'
 import LocalOfferIcon from '@mui/icons-material/LocalOffer'
+import BusinessIcon from '@mui/icons-material/Business'
 
 const fmtDate = (v) => {
   if (!v) return ''
@@ -87,6 +91,12 @@ export default function PartnerPortalPage() {
           <ResellerStatusBanner status={resellerStatus} since={delinquentSince} />
           <PapperBlock title="Revenda do parceiro" icon={<HandshakeIcon />} iconColor="primary.main">
             <PartnerPlanPrices companyId={selectedCompanyId} resellerStatus={resellerStatus} />
+          </PapperBlock>
+          <PapperBlock title="Minha rede de parceiros" icon={<AccountTreeIcon />} iconColor="primary.main">
+            <PartnerNetwork companyId={selectedCompanyId} resellerStatus={resellerStatus} />
+          </PapperBlock>
+          <PapperBlock title="Dados das empresas da minha rede" icon={<BusinessIcon />} iconColor="primary.main">
+            <PartnerNetworkData companyId={selectedCompanyId} />
           </PapperBlock>
           <PapperBlock title="Cupons de desconto" icon={<LocalOfferIcon />} iconColor="secondary.main">
             <PartnerCoupons />

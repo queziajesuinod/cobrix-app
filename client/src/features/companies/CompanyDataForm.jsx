@@ -6,6 +6,8 @@ export default function CompanyDataForm({ defaultValues, onSubmit, submitting, p
   const formatLimit = (value) => (value === undefined || value === null ? '' : String(value))
   const showPlan = Array.isArray(plans)
   const [name, setName] = React.useState(defaultValues?.name || '')
+  const [documentValue, setDocumentValue] = React.useState(defaultValues?.document_cnpj || defaultValues?.document_cpf || '')
+  React.useEffect(()=>{ setDocumentValue(defaultValues?.document_cnpj || defaultValues?.document_cpf || '') }, [defaultValues?.document_cnpj, defaultValues?.document_cpf])
   const [pix, setPix] = React.useState(defaultValues?.pix_key || '')
   const [planId, setPlanId] = React.useState(defaultValues?.plan_id == null ? '' : String(defaultValues.plan_id))
   React.useEffect(()=>{ setPlanId(defaultValues?.plan_id == null ? '' : String(defaultValues.plan_id)) }, [defaultValues?.plan_id])
@@ -61,18 +63,23 @@ export default function CompanyDataForm({ defaultValues, onSubmit, submitting, p
     if (!can) return
     const payload = {
       name: name.trim(),
+      document: documentValue.trim() || null,
       pix_key: pix.trim() || null,
-      clients_limit: toNumberOrNull(clientsLimit),
-      contracts_limit: toNumberOrNull(contractsLimit),
-      gateway_client_id: gatewayClientId.trim() || null,
-    }
-    if (gatewayClientSecret.trim()) {
-      payload.gateway_client_secret = gatewayClientSecret.trim()
-    }
-    if (gatewayCert.value !== null) {
-      payload.gateway_cert_base64 = gatewayCert.value || null
     }
     if (showPlan) {
+      // Gateway EfiPay (client id/secret/cert): por enquanto só o master configura.
+      // Fora do modo master NÃO enviamos esses campos — senão um "Salvar" limparia o
+      // gateway já configurado.
+      payload.gateway_client_id = gatewayClientId.trim() || null
+      if (gatewayClientSecret.trim()) {
+        payload.gateway_client_secret = gatewayClientSecret.trim()
+      }
+      if (gatewayCert.value !== null) {
+        payload.gateway_cert_base64 = gatewayCert.value || null
+      }
+      // Cotas do plano: só o master ajusta (evita um admin furar a própria cota).
+      payload.clients_limit = toNumberOrNull(clientsLimit)
+      payload.contracts_limit = toNumberOrNull(contractsLimit)
       payload.plan_id = planId === '' ? null : Number(planId)
       payload.is_saas_owner = isOwner
       payload.is_partner = isPartner
@@ -88,6 +95,14 @@ export default function CompanyDataForm({ defaultValues, onSubmit, submitting, p
     <form onSubmit={handleSubmit}>
       <Stack spacing={2}>
         <TextField label="Nome da empresa" value={name} onChange={(e)=>setName(e.target.value)} fullWidth />
+        <TextField
+          label="CPF/CNPJ"
+          value={documentValue}
+          onChange={(e)=>setDocumentValue(e.target.value)}
+          fullWidth
+          placeholder="Somente números — 11 (CPF) ou 14 (CNPJ) dígitos"
+          helperText="Usado nas cobranças/identificação da empresa."
+        />
         {showPlan && (
           <TextField
             select
@@ -155,6 +170,7 @@ export default function CompanyDataForm({ defaultValues, onSubmit, submitting, p
           </>
         )}
         <TextField label="Chave PIX" value={pix} onChange={(e)=>setPix(e.target.value)} fullWidth placeholder="Informe a chave PIX usada nas cobranças" />
+        {showPlan && (
         <Stack spacing={1}>
           <Typography variant="subtitle2" color="text.secondary">Gateway de pagamento (Pix)</Typography>
           <TextField
@@ -187,26 +203,29 @@ export default function CompanyDataForm({ defaultValues, onSubmit, submitting, p
             </Stack>
           </Stack>
         </Stack>
-        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
-          <TextField
-            label="Limite de clientes"
-            type="number"
-            inputProps={{ min: 0 }}
-            helperText="Em branco = ilimitado"
-            value={clientsLimit}
-            onChange={(e)=>setClientsLimit(e.target.value)}
-            fullWidth
-          />
-          <TextField
-            label="Limite de contratos"
-            type="number"
-            inputProps={{ min: 0 }}
-            helperText="Em branco = ilimitado"
-            value={contractsLimit}
-            onChange={(e)=>setContractsLimit(e.target.value)}
-            fullWidth
-          />
-        </Stack>
+        )}
+        {showPlan && (
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+            <TextField
+              label="Limite de clientes"
+              type="number"
+              inputProps={{ min: 0 }}
+              helperText="Em branco = ilimitado"
+              value={clientsLimit}
+              onChange={(e)=>setClientsLimit(e.target.value)}
+              fullWidth
+            />
+            <TextField
+              label="Limite de contratos"
+              type="number"
+              inputProps={{ min: 0 }}
+              helperText="Em branco = ilimitado"
+              value={contractsLimit}
+              onChange={(e)=>setContractsLimit(e.target.value)}
+              fullWidth
+            />
+          </Stack>
+        )}
         <Stack direction="row" justifyContent="flex-end">
           <Button type="submit" variant="contained" disabled={!can || submitting}>{submitting ? 'Salvando...' : 'Salvar'}</Button>
         </Stack>

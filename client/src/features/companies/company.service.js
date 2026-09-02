@@ -8,4 +8,8 @@ export const companyService = {
   remove: async (id) => (await api.delete(`/companies/${id}`)).data,
   partnerPrices: async (id) => (await api.get(`/companies/${id}/partner-prices`)).data,
   savePartnerPrice: async (id, planId, payload) => (await api.put(`/companies/${id}/partner-prices/${planId}`, payload)).data,
+  downline: async (id) => (await api.get(`/companies/${id}/downline`)).data,
+  saveDownlinePartner: async (id, childId, payload) => (await api.put(`/companies/${id}/downline/${childId}`, payload)).data,
+  downlineOne: async (id, childId) => (await api.get(`/companies/${id}/downline/${childId}`)).data,
+  saveDownlineData: async (id, childId, payload) => (await api.put(`/companies/${id}/downline/${childId}/data`, payload)).data,
 }

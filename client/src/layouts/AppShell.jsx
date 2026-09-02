@@ -126,6 +126,14 @@ const buildSections = (role, isPartner) => [
       { to: '/finance', label: 'Gerenciador Financeiro', icon: <AccountBalanceIcon />, perms: ['finance.revenues.view', 'finance.expenses.view', 'finance.resumo.view'], since: '2026-07-30' },
     ],
   },
+  ...((role === 'admin' || role === 'master')
+    ? [{
+        label: 'Minha conta',
+        items: [
+          { to: '/minha-empresa', label: 'Minha empresa', icon: <BusinessIcon />, since: '2026-09-02' },
+        ],
+      }]
+    : []),
   ...(isPartner
     ? [{
         label: 'Revenda',

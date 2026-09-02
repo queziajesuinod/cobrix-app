@@ -67,6 +67,16 @@ function canWriteCompany(user, selectedCompanyId, targetCompanyId) {
   return false;
 }
 
+// CPF (11) ou CNPJ (14) a partir de uma string livre. Vazio = zera os dois.
+function parseDocument(value) {
+  if (value == null || value === '') return { cpf: null, cnpj: null };
+  const d = String(value).replace(/\D+/g, '');
+  if (!d) return { cpf: null, cnpj: null };
+  if (d.length === 11) return { cpf: d, cnpj: null };
+  if (d.length === 14) return { cpf: null, cnpj: d };
+  const e = new Error('Documento deve ter 11 dígitos (CPF) ou 14 dígitos (CNPJ)'); e.status = 400; throw e;
+}
+
 function parseLimitField(value, label) {
   if (value === undefined || value === null) return null;
   const str = typeof value === 'string' ? value.trim() : value;
@@ -115,7 +125,7 @@ router.get("/mine", requireAuth, async (req, res) => {
 router.get("/:id", requireAuth, async (req, res) => {
   const id = Number(req.params.id);
   if (!canReadCompany(req.user, req.companyId, id)) return res.status(403).json({ error: "Sem permissão" });
-  const r = await query(`SELECT id, name, pix_key, evo_api_url, evo_api_key, evo_instance, clients_limit, contracts_limit, plan_id, status, is_saas_owner, is_partner, parent_partner_id, partner_override_type, partner_override_value, reseller_status, reseller_delinquent_since, created_at, updated_at,
+  const r = await query(`SELECT id, name, pix_key, document_cpf, document_cnpj, evo_api_url, evo_api_key, evo_instance, clients_limit, contracts_limit, plan_id, status, is_saas_owner, is_partner, parent_partner_id, partner_override_type, partner_override_value, reseller_status, reseller_delinquent_since, created_at, updated_at,
     (SELECT COALESCE(NULLIF(cu.name,''), cu.email) FROM users cu WHERE cu.id = companies.created_by) AS created_by_name,
     (SELECT COALESCE(NULLIF(eu.name,''), eu.email) FROM users eu WHERE eu.id = companies.updated_by) AS updated_by_name,
     efi_client_id_enc, efi_client_secret_enc, efi_cert_base64_enc FROM companies WHERE id=$1`, [id]);
@@ -251,7 +261,20 @@ router.put("/:id", requireAuth, async (req, res) => {
       return res.status(400).json({ error: gatewayErr.message });
     }
 
-    await query("UPDATE companies SET name=$1, pix_key=$2, clients_limit=$3, contracts_limit=$4, efi_client_id_enc=$5, efi_client_secret_enc=$6, efi_cert_base64_enc=$7, updated_by=$8, updated_at=now() WHERE id=$9", [String(name).trim(), pix_key || null, normalizedClientLimit, normalizedContractLimit, gatewayColumns.clientIdEnc, gatewayColumns.clientSecretEnc, gatewayColumns.certBase64Enc, req.user.id, id]);
+    await query("UPDATE companies SET name=$1, pix_key=$2, efi_client_id_enc=$3, efi_client_secret_enc=$4, efi_cert_base64_enc=$5, updated_by=$6, updated_at=now() WHERE id=$7", [String(name).trim(), pix_key || null, gatewayColumns.clientIdEnc, gatewayColumns.clientSecretEnc, gatewayColumns.certBase64Enc, req.user.id, id]);
+
+    // Cotas do plano (clientes/contratos): SOMENTE master. Impede um admin de furar a
+    // própria cota pela tela self-service de "Minha empresa".
+    if (isMaster(req.user)) {
+      await query("UPDATE companies SET clients_limit=$1, contracts_limit=$2 WHERE id=$3", [normalizedClientLimit, normalizedContractLimit, id]);
+    }
+
+    // CPF/CNPJ da empresa (nota fiscal / identificação). Enviado como um campo único
+    // `document`; separamos em cpf/cnpj pelo tamanho. Só grava se veio no payload.
+    if (Object.prototype.hasOwnProperty.call(payload, 'document')) {
+      const doc = parseDocument(payload.document);
+      await query("UPDATE companies SET document_cpf=$1, document_cnpj=$2 WHERE id=$3", [doc.cpf, doc.cnpj, id]);
+    }
 
     // Plano (SaaS): somente master define/altera o plano da empresa. Vazio = sem
     // plano (acesso total). O teto passa a valer para os usuários da empresa.
@@ -442,6 +465,152 @@ router.put('/:id/partner-prices/:planId', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('[partner-prices] PUT', err);
     res.status(500).json({ error: 'Falha ao salvar preço de revenda' });
+  }
+});
+
+// ===================== REDE DO PARCEIRO (sub-parceiros) =====================
+// Self-service: o próprio parceiro habilita como SUB-PARCEIRAS as empresas que
+// assinaram pela indicação dele (downline DIRETA: parent_partner_id = :id) e define
+// o override de cada uma. Antes isso era só do master (PUT /:id). Escopo estrito:
+//   - caller admin/master da própria empresa parceira (canRead/canWrite :id);
+//   - :id precisa ser parceira e, para escrever, estar com a revenda ATIVA
+//     (link_locked/network_seized não onboarda novos sub-parceiros);
+//   - o filho precisa ser da downline DIRETA de :id (não mexe em empresa alheia).
+router.get('/:id/downline', requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'id inválido' });
+  if (!canReadCompany(req.user, req.companyId, id)) return res.status(403).json({ error: 'Sem permissão' });
+  try {
+    const me = await query('SELECT is_partner FROM companies WHERE id=$1', [id]);
+    if (!me.rows[0]) return res.status(404).json({ error: 'Empresa não encontrada' });
+    if (!me.rows[0].is_partner) return res.status(400).json({ error: 'Empresa não é parceira' });
+    const r = await query(
+      `SELECT id, name, is_partner, partner_override_type, partner_override_value,
+              (pix_key IS NOT NULL OR efi_client_id_enc IS NOT NULL) AS can_receive
+         FROM companies
+        WHERE parent_partner_id = $1
+        ORDER BY name ASC`,
+      [id]
+    );
+    res.json({ companies: r.rows });
+  } catch (err) {
+    console.error('[downline] GET', err);
+    res.status(500).json({ error: 'Falha ao carregar a rede de parceiros' });
+  }
+});
+
+router.put('/:id/downline/:childId', requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const childId = Number(req.params.childId);
+  if (!Number.isInteger(id) || !Number.isInteger(childId)) return res.status(400).json({ error: 'Parâmetros inválidos' });
+  if (!canWriteCompany(req.user, req.companyId, id)) return res.status(403).json({ error: 'Sem permissão' });
+  try {
+    const me = await query('SELECT is_partner, reseller_status FROM companies WHERE id=$1', [id]);
+    if (!me.rows[0]) return res.status(404).json({ error: 'Empresa não encontrada' });
+    if (!me.rows[0].is_partner) return res.status(400).json({ error: 'Empresa não é parceira' });
+    if (me.rows[0].reseller_status && me.rows[0].reseller_status !== 'active') {
+      return res.status(403).json({ error: 'Revenda bloqueada por inadimplência. Regularize para gerenciar sua rede.' });
+    }
+    const child = await query('SELECT parent_partner_id FROM companies WHERE id=$1', [childId]);
+    if (!child.rows[0]) return res.status(404).json({ error: 'Empresa não encontrada' });
+    if (Number(child.rows[0].parent_partner_id) !== id) {
+      return res.status(403).json({ error: 'Esta empresa não faz parte da sua rede' });
+    }
+
+    const isPartner = Boolean(req.body?.is_partner);
+    const type = req.body?.partner_override_type === 'fixed' ? 'fixed' : 'percent';
+    const rawVal = Number(String(req.body?.partner_override_value ?? '').replace(',', '.'));
+    const value = Number.isFinite(rawVal) && rawVal >= 0 ? rawVal : 0;
+    if (type === 'percent' && value > 100) return res.status(400).json({ error: 'Override em % não pode passar de 100' });
+
+    await query(
+      'UPDATE companies SET is_partner=$1, partner_override_type=$2, partner_override_value=$3 WHERE id=$4',
+      [isPartner, type, value, childId]
+    );
+    clearCompanyCache(childId);
+    res.json({ ok: true, id: childId, is_partner: isPartner, partner_override_type: type, partner_override_value: value });
+  } catch (err) {
+    console.error('[downline] PUT', err);
+    res.status(500).json({ error: 'Falha ao salvar sub-parceiro' });
+  }
+});
+
+// Dados cadastrais/recebimento de uma empresa da rede DIRETA (não é revenda): o
+// parceiro ajusta nome, CPF/CNPJ, PIX e gateway das empresas que entraram por ele.
+// Mesmo escopo estrito da rede: :id parceira, filho na downline direta de :id.
+router.get('/:id/downline/:childId', requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const childId = Number(req.params.childId);
+  if (!Number.isInteger(id) || !Number.isInteger(childId)) return res.status(400).json({ error: 'Parâmetros inválidos' });
+  if (!canReadCompany(req.user, req.companyId, id)) return res.status(403).json({ error: 'Sem permissão' });
+  try {
+    const me = await query('SELECT is_partner FROM companies WHERE id=$1', [id]);
+    if (!me.rows[0]) return res.status(404).json({ error: 'Empresa não encontrada' });
+    if (!me.rows[0].is_partner) return res.status(400).json({ error: 'Empresa não é parceira' });
+    const r = await query(
+      `SELECT id, name, pix_key, document_cpf, document_cnpj, parent_partner_id,
+              efi_client_id_enc, efi_client_secret_enc, efi_cert_base64_enc
+         FROM companies WHERE id=$1`,
+      [childId]
+    );
+    const row = r.rows[0];
+    if (!row) return res.status(404).json({ error: 'Empresa não encontrada' });
+    if (Number(row.parent_partner_id) !== id) return res.status(403).json({ error: 'Esta empresa não faz parte da sua rede' });
+    res.json(mapGatewayResponse(row));
+  } catch (err) {
+    console.error('[downline] GET one', err);
+    res.status(500).json({ error: 'Falha ao carregar empresa da rede' });
+  }
+});
+
+router.put('/:id/downline/:childId/data', requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const childId = Number(req.params.childId);
+  if (!Number.isInteger(id) || !Number.isInteger(childId)) return res.status(400).json({ error: 'Parâmetros inválidos' });
+  if (!canWriteCompany(req.user, req.companyId, id)) return res.status(403).json({ error: 'Sem permissão' });
+  const payload = req.body || {};
+  const name = String(payload.name || '').trim();
+  if (name.length < 2) return res.status(400).json({ error: 'Nome obrigatório' });
+  try {
+    const me = await query('SELECT is_partner FROM companies WHERE id=$1', [id]);
+    if (!me.rows[0]) return res.status(404).json({ error: 'Empresa não encontrada' });
+    if (!me.rows[0].is_partner) return res.status(400).json({ error: 'Empresa não é parceira' });
+    const cur = await query('SELECT parent_partner_id, efi_client_id_enc, efi_client_secret_enc, efi_cert_base64_enc FROM companies WHERE id=$1', [childId]);
+    const currentRow = cur.rows[0];
+    if (!currentRow) return res.status(404).json({ error: 'Empresa não encontrada' });
+    if (Number(currentRow.parent_partner_id) !== id) return res.status(403).json({ error: 'Esta empresa não faz parte da sua rede' });
+
+    const doc = parseDocument(payload.document);
+    const hasGatewayId = Object.prototype.hasOwnProperty.call(payload, 'gateway_client_id');
+    const hasGatewaySecret = Object.prototype.hasOwnProperty.call(payload, 'gateway_client_secret');
+    const hasGatewayCert = Object.prototype.hasOwnProperty.call(payload, 'gateway_cert_base64');
+    let gatewayColumns;
+    try {
+      gatewayColumns = buildGatewayUpdate({
+        clientIdInput: hasGatewayId ? payload.gateway_client_id : undefined,
+        clientSecretInput: hasGatewaySecret ? payload.gateway_client_secret : undefined,
+        currentClientIdEnc: currentRow.efi_client_id_enc || null,
+        currentSecretEnc: currentRow.efi_client_secret_enc || null,
+        certificateBase64Input: hasGatewayCert ? payload.gateway_cert_base64 : undefined,
+        currentCertEnc: currentRow.efi_cert_base64_enc || null,
+      });
+    } catch (gatewayErr) {
+      return res.status(400).json({ error: gatewayErr.message });
+    }
+
+    await query(
+      `UPDATE companies SET name=$1, pix_key=$2, document_cpf=$3, document_cnpj=$4,
+              efi_client_id_enc=$5, efi_client_secret_enc=$6, efi_cert_base64_enc=$7, updated_by=$8, updated_at=now()
+        WHERE id=$9`,
+      [name, payload.pix_key ? String(payload.pix_key).trim() : null, doc.cpf, doc.cnpj,
+       gatewayColumns.clientIdEnc, gatewayColumns.clientSecretEnc, gatewayColumns.certBase64Enc, req.user.id, childId]
+    );
+    clearCompanyCache(childId);
+    res.json({ ok: true });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    console.error('[downline] PUT data', err);
+    res.status(500).json({ error: 'Falha ao salvar dados da empresa' });
   }
 });
 

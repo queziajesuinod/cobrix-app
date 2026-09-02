@@ -36,6 +36,7 @@ const SystemHealthPage = lazy(() => import('@/features/system/SystemHealthPage')
 const CompanyListPage = lazy(() => import('@/features/companies/CompanyListPage'))
 const CompanyFormPage = lazy(() => import('@/features/companies/CompanyFormPage'))
 const CompanySettingsPage = lazy(() => import('@/features/companies/CompanySettingsPage'))
+const MyCompanyPage = lazy(() => import('@/features/companies/MyCompanyPage'))
 export default function AppRouter() {
   return (
     <Suspense fallback={<div style={{ padding: 24 }}>Carregando…</div>}>
@@ -48,6 +49,7 @@ export default function AppRouter() {
         <Route path="/companies/new" element={<ProtectedRoute><AppShell><CompanyCreatePage /></AppShell></ProtectedRoute>} />
 
         <Route path="/companies/:id/settings" element={<ProtectedRoute><AppShell><CompanySettingsPage /></AppShell></ProtectedRoute>} />
+        <Route path="/minha-empresa" element={<ProtectedRoute><AppShell><MyCompanyPage /></AppShell></ProtectedRoute>} />
         <Route path="/cadastro" element={<ProtectedRoute><AppShell><CadastroPage /></AppShell></ProtectedRoute>} />
         <Route path="/clients" element={<ProtectedRoute><AppShell><ClientsPage /></AppShell></ProtectedRoute>} />
         <Route path="/clients/new" element={<ProtectedRoute><AppShell><ClientFormPage /></AppShell></ProtectedRoute>} />
