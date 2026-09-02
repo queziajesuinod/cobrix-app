@@ -5,7 +5,7 @@
 const express = require('express');
 const { query } = require('../db');
 const { requireAuth, companyScope } = require('./auth');
-const { selfCancelAtPeriodEnd, changePlan } = require('../services/subscription-service');
+const { selfCancelAtPeriodEnd, changePlan, listAccountCompanies, addCompanyToAccount, removeCompanyFromAccount } = require('../services/subscription-service');
 const { respondError } = require('../utils/http-error');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
@@ -65,6 +65,36 @@ router.post('/me/change-plan', requireAuth, companyScope(true), async (req, res)
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }
+});
+
+// ---- Empresas da conta (multi-empresa com o mesmo login) ----
+const isAccountAdmin = (req) => req.user.role === 'admin' || req.user.role === 'master';
+
+// GET /api/subscriptions/me/companies — principal + extras + custo de uma extra.
+router.get('/me/companies', requireAuth, companyScope(true), async (req, res) => {
+  try {
+    const data = await listAccountCompanies(req.companyId);
+    res.json(data);
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
+// POST /api/subscriptions/me/companies { name } — adiciona empresa extra (cobra
+// a diferença proporcional na hora). Só o admin da conta.
+router.post('/me/companies', requireAuth, companyScope(true), async (req, res) => {
+  if (!isAccountAdmin(req)) return res.status(403).json({ error: 'Apenas o administrador da conta pode adicionar empresas' });
+  try {
+    const result = await addCompanyToAccount({ companyId: req.companyId, name: req.body?.name, document: req.body?.document });
+    res.status(201).json(result);
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
+// DELETE /api/subscriptions/me/companies/:id — remove uma empresa extra da conta.
+router.delete('/me/companies/:id', requireAuth, companyScope(true), async (req, res) => {
+  if (!isAccountAdmin(req)) return res.status(403).json({ error: 'Apenas o administrador da conta pode remover empresas' });
+  try {
+    const result = await removeCompanyFromAccount({ companyId: req.companyId, extraCompanyId: Number(req.params.id) });
+    res.json(result);
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
 module.exports = router;

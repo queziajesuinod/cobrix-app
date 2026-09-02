@@ -153,8 +153,28 @@ async function getCompanyCeiling(companyId) {
 // liberadas por outra dimensão — ex.: revenda pela flag is_partner da empresa).
 const CEILING_EXEMPT = new Set(['partner.portal.view']);
 
+// Permissões de um PERFIL (sem overrides de usuário), já intersectadas com o teto do
+// plano da empresa em escopo. É o que o master enxerga no modo "ver como perfil":
+// exatamente o que um usuário daquele perfil veria naquela empresa.
+async function getProfilePermissions(profileId, companyId) {
+  const r = await query(
+    `SELECT permission_key FROM ${SCHEMA}.profile_permissions WHERE profile_id = $1`,
+    [profileId]
+  );
+  let effective = r.rows.map((x) => x.permission_key).filter(isValidPermission);
+  const ceiling = await getCompanyCeiling(companyId);
+  if (ceiling) effective = effective.filter((k) => ceiling.has(k) || CEILING_EXEMPT.has(k));
+  return effective;
+}
+
 async function getEffectivePermissions(user, companyId) {
   if (!user) return [];
+  // Modo "ver como perfil" (master pré-visualizando): usa as permissões do perfil
+  // escolhido, não o bypass total. requireAuth só define isso para master de verdade.
+  if (user.role === 'master' && user.viewAsProfileId) {
+    const cid = companyId ?? (Array.isArray(user.company_ids) ? user.company_ids[0] : null);
+    return getProfilePermissions(user.viewAsProfileId, cid);
+  }
   if (user.role === 'master') return [...ALL_KEYS];
 
   const profilePerms = await query(
@@ -191,7 +211,7 @@ function requirePermission(key) {
   return async (req, res, next) => {
     try {
       if (!req.user) return res.status(401).json({ error: 'Não autenticado' });
-      if (req.user.role === 'master') return next();
+      if (req.user.role === 'master' && !req.user.viewAsProfileId) return next();
       const perms = await getEffectivePermissions(req.user, req.companyId);
       if (perms.includes(key)) return next();
       return res.status(403).json({ error: 'Acesso negado: sem permissão para esta ação.' });
@@ -206,7 +226,7 @@ function requireAnyPermission(keys) {
   return async (req, res, next) => {
     try {
       if (!req.user) return res.status(401).json({ error: 'Não autenticado' });
-      if (req.user.role === 'master') return next();
+      if (req.user.role === 'master' && !req.user.viewAsProfileId) return next();
       const perms = await getEffectivePermissions(req.user, req.companyId);
       if (keys.some((k) => perms.includes(k))) return next();
       return res.status(403).json({ error: 'Acesso negado: sem permissão para esta ação.' });

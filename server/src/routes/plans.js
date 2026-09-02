@@ -49,6 +49,7 @@ router.get('/', requireAuth, masterOnly, async (_req, res) => {
   try {
     const r = await query(
       `SELECT p.id, p.name, p.description, p.price_monthly, p.price_annual,
+              p.extra_company_price_monthly, p.extra_company_price_annual,
               p.clients_limit, p.contracts_limit, p.permission_keys, p.active,
               p.partner_commission_type, p.partner_commission_value,
               p.created_at, p.updated_at,
@@ -66,7 +67,8 @@ router.get('/:id', requireAuth, masterOnly, async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) return res.status(400).json({ error: 'id inválido' });
     const r = await query(
-      `SELECT id, name, description, price_monthly, price_annual, clients_limit,
+      `SELECT id, name, description, price_monthly, price_annual,
+              extra_company_price_monthly, extra_company_price_annual, clients_limit,
               contracts_limit, permission_keys, active,
               partner_commission_type, partner_commission_value, created_at, updated_at
          FROM ${SCHEMA}.plans WHERE id = $1`,
@@ -91,13 +93,15 @@ router.post('/', requireAuth, masterOnly, async (req, res) => {
     const keys = parseKeys(req.body?.permission_keys);
     const active = req.body?.active === undefined ? true : Boolean(req.body.active);
     const commission = parseCommission(req.body);
+    const extraMonthly = parseMoney(req.body?.extra_company_price_monthly);
+    const extraAnnual = parseMoney(req.body?.extra_company_price_annual);
 
     const r = await query(
       `INSERT INTO ${SCHEMA}.plans
-         (name, description, price_monthly, price_annual, clients_limit, contracts_limit, permission_keys, active, partner_commission_type, partner_commission_value, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7::text[],$8,$9,$10,$11)
-       RETURNING id, name, description, price_monthly, price_annual, clients_limit, contracts_limit, permission_keys, active, partner_commission_type, partner_commission_value`,
-      [name, description, priceMonthly, priceAnnual, parseLimit(req.body?.clients_limit), parseLimit(req.body?.contracts_limit), keys, active, commission.type, commission.value, req.user.id]
+         (name, description, price_monthly, price_annual, clients_limit, contracts_limit, permission_keys, active, partner_commission_type, partner_commission_value, extra_company_price_monthly, extra_company_price_annual, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::text[],$8,$9,$10,$11,$12,$13)
+       RETURNING id, name, description, price_monthly, price_annual, extra_company_price_monthly, extra_company_price_annual, clients_limit, contracts_limit, permission_keys, active, partner_commission_type, partner_commission_value`,
+      [name, description, priceMonthly, priceAnnual, parseLimit(req.body?.clients_limit), parseLimit(req.body?.contracts_limit), keys, active, commission.type, commission.value, extraMonthly, extraAnnual, req.user.id]
     );
     res.status(201).json(r.rows[0]);
   } catch (e) {
@@ -122,15 +126,18 @@ router.put('/:id', requireAuth, masterOnly, async (req, res) => {
     const keys = parseKeys(req.body?.permission_keys);
     const active = req.body?.active === undefined ? true : Boolean(req.body.active);
     const commission = parseCommission(req.body);
+    const extraMonthly = parseMoney(req.body?.extra_company_price_monthly);
+    const extraAnnual = parseMoney(req.body?.extra_company_price_annual);
 
     const r = await query(
       `UPDATE ${SCHEMA}.plans
           SET name = $1, description = $2, price_monthly = $3, price_annual = $4,
               clients_limit = $5, contracts_limit = $6, permission_keys = $7::text[],
-              active = $8, partner_commission_type = $9, partner_commission_value = $10, updated_at = now()
+              active = $8, partner_commission_type = $9, partner_commission_value = $10,
+              extra_company_price_monthly = $12, extra_company_price_annual = $13, updated_at = now()
         WHERE id = $11
-        RETURNING id, name, description, price_monthly, price_annual, clients_limit, contracts_limit, permission_keys, active, partner_commission_type, partner_commission_value`,
-      [name, description, priceMonthly, priceAnnual, parseLimit(req.body?.clients_limit), parseLimit(req.body?.contracts_limit), keys, active, commission.type, commission.value, id]
+        RETURNING id, name, description, price_monthly, price_annual, extra_company_price_monthly, extra_company_price_annual, clients_limit, contracts_limit, permission_keys, active, partner_commission_type, partner_commission_value`,
+      [name, description, priceMonthly, priceAnnual, parseLimit(req.body?.clients_limit), parseLimit(req.body?.contracts_limit), keys, active, commission.type, commission.value, id, extraMonthly, extraAnnual]
     );
     if (!r.rows[0]) return res.status(404).json({ error: 'Plano não encontrado' });
     res.json(r.rows[0]);

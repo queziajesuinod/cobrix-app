@@ -110,11 +110,25 @@ async function initDb() {
     // partner_commission_type: 'percent' (% do piso) ou 'fixed' (R$ por assinatura).
     await c.query(`ALTER TABLE ${schema}.plans ADD COLUMN IF NOT EXISTS partner_commission_type TEXT NOT NULL DEFAULT 'percent';`);
     await c.query(`ALTER TABLE ${schema}.plans ADD COLUMN IF NOT EXISTS partner_commission_value NUMERIC(14,2) NOT NULL DEFAULT 0;`);
+    // Empresa ADICIONAL na mesma conta: valor cobrado por cada empresa extra vinculada
+    // ao mesmo login, ALÉM da 1ª (que é o preço do plano). Fatura única = preço do plano
+    // + (nº de extras × este valor). Mesma convenção de price_annual (valor POR MÊS).
+    await c.query(`ALTER TABLE ${schema}.plans ADD COLUMN IF NOT EXISTS extra_company_price_monthly NUMERIC(14,2);`);
+    await c.query(`ALTER TABLE ${schema}.plans ADD COLUMN IF NOT EXISTS extra_company_price_annual NUMERIC(14,2);`);
     await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS plan_id INTEGER REFERENCES ${schema}.plans(id);`);
     await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';`);
     // Empresa "dona" do SaaS: onde vivem os clientes/contratos das assinaturas e
     // para onde vão os pagamentos. Só uma empresa deve ter is_saas_owner = true.
     await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS is_saas_owner BOOLEAN NOT NULL DEFAULT false;`);
+    // Conta multi-empresa: empresa ADICIONAL aponta para a empresa PRINCIPAL da conta
+    // (que carrega a assinatura). NULL = empresa principal/normal. A extra não tem
+    // assinatura própria — é cobrada como adicional na fatura da principal.
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS parent_account_company_id INTEGER REFERENCES ${schema}.companies(id) ON DELETE SET NULL;`);
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_companies_parent_account ON ${schema}.companies(parent_account_company_id);`);
+    // Documento (CPF/CNPJ) da própria empresa (identidade do tenant). Usado ao criar
+    // empresas no cadastro/conta — cada empresa (principal e adicionais) tem o seu.
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS document_cpf TEXT;`);
+    await c.query(`ALTER TABLE ${schema}.companies ADD COLUMN IF NOT EXISTS document_cnpj TEXT;`);
     // Revenda/parceria (ver memória partner-reseller-commission-model): empresa
     // marcada como parceira revende o SaaS — recebe a assinatura cheia dos clientes
     // que vendeu (owner_company_id da assinatura = parceiro) e paga comissão à
@@ -391,6 +405,10 @@ async function initDb() {
     await c.query(`ALTER TABLE ${schema}.contracts ADD COLUMN IF NOT EXISTS billing_mode TEXT NOT NULL DEFAULT 'monthly';`);
     await c.query(`ALTER TABLE ${schema}.contracts ADD COLUMN IF NOT EXISTS billing_interval_days INTEGER;`);
     await c.query(`UPDATE ${schema}.contracts SET billing_mode = 'monthly' WHERE billing_mode IS NULL;`);
+    // Gestão externa: a cobrança (ex.: boleto) NÃO é gerada/enviada pelo Gero (fica a
+    // cargo de terceiros), mas o pago/não-pago é gerido aqui. Para esses contratos o
+    // cron NÃO dispara os lembretes D-4 (pré) e D0 (vencimento); só o D+3 (atraso).
+    await c.query(`ALTER TABLE ${schema}.contracts ADD COLUMN IF NOT EXISTS external_billing BOOLEAN NOT NULL DEFAULT false;`);
     await c.query(`
       CREATE TABLE IF NOT EXISTS ${schema}.contract_custom_billings (
         id SERIAL PRIMARY KEY,

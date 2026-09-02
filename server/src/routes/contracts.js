@@ -102,6 +102,9 @@ const contractSchema = z.object({
   billing_interval_months: billingIntervalField,
   billing_interval_days: billingIntervalDaysField.optional(),
   billing_mode: billingModeField,
+  // Gestão externa: o Gero gere pago/não-pago, mas NÃO gera nem envia a cobrança
+  // (boleto de terceiros). Cron pula D-4 e D0; só dispara o D+3 (atraso).
+  external_billing: z.preprocess((v) => (v === undefined || v === null || v === '' ? false : Boolean(v)), z.boolean()).optional(),
   cancellation_date: optionalDateField.optional()
 }).refine((data) => {
   if (data.billing_mode === 'interval_days') return !!data.billing_interval_days;
@@ -300,6 +303,7 @@ router.post('/', requireAuth, companyScope(true), requirePermission('contracts.c
   const billing_day = parse.data.billing_day || 1;
   const billing_interval_months = billing_mode === 'monthly' ? parse.data.billing_interval_months : 1;
   const billing_interval_days = billing_mode === 'interval_days' ? parse.data.billing_interval_days : null;
+  const external_billing = Boolean(parse.data.external_billing);
   if (new Date(start_date) >= new Date(end_date)) return res.status(400).json({ error: 'Data de início deve ser anterior à data de fim' });
   if (cancellation_date) {
     const cancelDt = new Date(cancellation_date);
@@ -317,9 +321,9 @@ router.post('/', requireAuth, companyScope(true), requirePermission('contracts.c
     await ensureUniqueContractDescription(req.companyId, client_id, description, null);
     await assertContractLimit(req.companyId);
     const r = await query(`
-      INSERT INTO contracts (company_id, client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, billing_interval_days, billing_mode, cancellation_date, created_by)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *
-    `, [req.companyId, client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, billing_interval_days, billing_mode, cancellation_date, req.user.id]);
+      INSERT INTO contracts (company_id, client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, billing_interval_days, billing_mode, external_billing, cancellation_date, created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *
+    `, [req.companyId, client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, billing_interval_days, billing_mode, external_billing, cancellation_date, req.user.id]);
 
     res.status(201).json(r.rows[0]);
   } catch (err) {
@@ -343,6 +347,7 @@ router.put('/:id', requireAuth, companyScope(true), requirePermission('contracts
   const billing_day = parse.data.billing_day || 1;
   const billing_interval_months = billing_mode === 'monthly' ? parse.data.billing_interval_months : 1;
   const billing_interval_days = billing_mode === 'interval_days' ? parse.data.billing_interval_days : null;
+  const external_billing = Boolean(parse.data.external_billing);
   if (new Date(start_date) >= new Date(end_date)) return res.status(400).json({ error: 'Data de início deve ser anterior à data de fim' });
   if (cancellation_date) {
     const cancelDt = new Date(cancellation_date);
@@ -359,10 +364,10 @@ router.put('/:id', requireAuth, companyScope(true), requirePermission('contracts
 
     const r = await query(`
       UPDATE contracts
-      SET client_id=$1, contract_type_id=$2, description=$3, value=$4, start_date=$5, end_date=$6, billing_day=$7, billing_interval_months=$8, billing_interval_days=$9, billing_mode=$10, cancellation_date=$11,
-          updated_by=$12, updated_at=now()
-      WHERE id=$13 AND company_id=$14 RETURNING *
-    `, [client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, billing_interval_days, billing_mode, cancellation_date, req.user.id, req.params.id, req.companyId]);
+      SET client_id=$1, contract_type_id=$2, description=$3, value=$4, start_date=$5, end_date=$6, billing_day=$7, billing_interval_months=$8, billing_interval_days=$9, billing_mode=$10, external_billing=$11, cancellation_date=$12,
+          updated_by=$13, updated_at=now()
+      WHERE id=$14 AND company_id=$15 RETURNING *
+    `, [client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, billing_interval_days, billing_mode, external_billing, cancellation_date, req.user.id, req.params.id, req.companyId]);
     if (!r.rows[0]) return res.status(404).json({ error: 'Contrato não encontrado' });
     res.json({ ok: true });
   } catch (err) {

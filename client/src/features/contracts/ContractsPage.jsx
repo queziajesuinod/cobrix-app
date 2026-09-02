@@ -14,7 +14,7 @@ import TableSkeleton from '@/components/TableSkeleton'
 import EmptyState from '@/components/EmptyState'
 import {
   Alert, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
-  Grid, IconButton, MenuItem, Snackbar, Stack, Table, TableBody, TableCell, TableHead, TableRow,
+  FormControlLabel, Grid, IconButton, MenuItem, Snackbar, Stack, Switch, Table, TableBody, TableCell, TableHead, TableRow,
   TablePagination, TextField, Tooltip, Typography
 } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
@@ -77,6 +77,7 @@ const schema = z.object({
   billing_day: z.coerce.number().int().min(1).max(31),
   billing_interval_months: z.coerce.number().int().positive().default(1),
   billing_interval_days: z.coerce.number().int().positive().optional(),
+  external_billing: z.coerce.boolean().optional(),
   cancellation_date: z.string().optional(),
 }).superRefine((data, ctx) => {
   if (data.billing_mode !== 'custom_dates') {
@@ -186,6 +187,7 @@ export const normalizePayloadDates = (form) => {
     billing_mode: billingMode,
     billing_interval_months: Number(form.billing_interval_months ?? 1),
     billing_interval_days: billingMode === 'interval_days' ? Number(form.billing_interval_days || 7) : null,
+    external_billing: Boolean(form.external_billing),
   };
 };
 
@@ -207,6 +209,7 @@ export function ContractDialog({ open, onClose, onSubmit, defaultValues, contrac
     billing_day: defaultValues?.billing_day ?? 1,
     billing_interval_months: defaultValues?.billing_interval_months ?? 1,
     billing_interval_days: defaultValues?.billing_interval_days ?? 7,
+    external_billing: Boolean(defaultValues?.external_billing),
     cancellation_date: toDateInput(defaultValues?.cancellation_date),
   }), [defaultValues])
   const { register, handleSubmit, formState:{ errors, isSubmitting, dirtyFields }, reset, watch, setValue } = useForm({ resolver: zodResolver(schema), defaultValues: formDefaults })
@@ -216,6 +219,7 @@ export function ContractDialog({ open, onClose, onSubmit, defaultValues, contrac
   const selectedContractTypeId = watch('contract_type_id')
   const billingIntervalMonths = watch('billing_interval_months')
   const billingIntervalDays = watch('billing_interval_days')
+  const externalBilling = watch('external_billing')
   const startDate = watch('start_date')
   const selectedType = useMemo(
     () => (contractTypes || []).find((t) => String(t.id) === String(selectedContractTypeId)),
@@ -496,6 +500,16 @@ export function ContractDialog({ open, onClose, onSubmit, defaultValues, contrac
           </Grid>
           <Grid item xs={12} md={4}>
             <TextField fullWidth label="Cancelado em" type="date" InputLabelProps={{ shrink: true }} {...register('cancellation_date')} error={!!errors.cancellation_date} helperText={errors.cancellation_date?.message || 'Preencha apenas se o contrato foi encerrado.'} />
+          </Grid>
+          <Grid item xs={12}>
+            <FormControlLabel
+              control={<Switch checked={Boolean(externalBilling)} onChange={(e) => setValue('external_billing', e.target.checked, { shouldDirty: true })} />}
+              label="Cobrança/gestão externa (boleto de terceiros)"
+            />
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: -0.5 }}>
+              O Gero não gera nem envia esta cobrança — o envio fica por conta de terceiros. Aqui você só gerencia se foi paga ou não.
+              As mensagens automáticas de 4 dias antes e no dia do vencimento <strong>não</strong> são enviadas; só o aviso de atraso (D+3), se o cliente não pagar.
+            </Typography>
           </Grid>
           {billingMode === 'custom_dates' && (
             <Grid item xs={12}>
@@ -853,7 +867,16 @@ export default function ContractsPage() {
                         <TableCell>{r.client_name}</TableCell>
                         <TableCell>{r.description}</TableCell>
                         <TableCell>{r.contract_type_name || '-'}</TableCell>
-                        <TableCell>{formatBillingMode(r.billing_mode, r.billing_interval_months, r.billing_interval_days)}</TableCell>
+                        <TableCell>
+                          <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap">
+                            <span>{formatBillingMode(r.billing_mode, r.billing_interval_months, r.billing_interval_days)}</span>
+                            {r.external_billing ? (
+                              <Tooltip title="Gestão externa: o Gero não gera nem envia a cobrança. Sem lembrete D-4 e no vencimento; só aviso de atraso (D+3).">
+                                <Chip label="Externa" size="small" color="warning" variant="outlined" />
+                              </Tooltip>
+                            ) : null}
+                          </Stack>
+                        </TableCell>
                         <TableCell>{money(r.value)}</TableCell>
                         <TableCell>{formatDateOnly(r.start_date)} ? {formatDateOnly(r.end_date)}</TableCell>
                         <TableCell>{r.billing_day}</TableCell>

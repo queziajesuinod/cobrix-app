@@ -130,6 +130,12 @@ async function activateSubscriptionForContract(contractId) {
         `UPDATE ${SCHEMA}.companies SET status='active' WHERE id=$1 AND status='pending_payment'`,
         [row.company_id]
       );
+      // Empresas ADICIONAIS da conta (mesmo login, fatura única) ativam junto com a
+      // principal — a cobrança paga cobre o plano + os extras.
+      await query(
+        `UPDATE ${SCHEMA}.companies SET status='active' WHERE parent_account_company_id=$1 AND status='pending_payment'`,
+        [row.company_id]
+      );
       logger.info({ companyId: row.company_id, contractId }, '[saas] assinatura ativada pelo pagamento');
     }
 

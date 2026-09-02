@@ -557,6 +557,24 @@ function planChargeForPeriod(plan, period) {
   return per === 'annual' ? Number(rate) * 12 : Number(rate);
 }
 
+// Valor de UMA empresa adicional num período (mesma convenção do plano). Null/0 se o
+// plano não cobra por empresa extra.
+function extraCompanyChargeForPeriod(plan, period) {
+  const per = period === 'annual' ? 'annual' : 'monthly';
+  const rate = per === 'annual' ? plan.extra_company_price_annual : plan.extra_company_price_monthly;
+  if (rate == null) return 0;
+  return per === 'annual' ? Number(rate) * 12 : Number(rate);
+}
+
+// Valor TOTAL da assinatura de uma conta (fatura única): preço do plano + o valor de
+// cada empresa ADICIONAL. `extraCount` = nº de empresas extras ativas da conta.
+function accountChargeForPeriod(plan, period, extraCount = 0) {
+  const base = planChargeForPeriod(plan, period);
+  if (base == null) return null;
+  const extras = Math.max(0, Number(extraCount) || 0) * extraCompanyChargeForPeriod(plan, period);
+  return Number((base + extras).toFixed(2));
+}
+
 // Prévia do reajuste: para cada assinatura ATIVA do plano, compara o valor atual
 // do contrato com o valor vigente do plano (respeitando o período de cada uma).
 async function previewPlanAdjustment(planId) {
@@ -644,6 +662,210 @@ async function applyPlanAdjustment(planId, { subscriptionIds = null, appliedBy =
   return { ok: true, adjusted: items.length, items };
 }
 
+// ===================== CONTA MULTI-EMPRESA (empresas adicionais) =====================
+// A empresa PRINCIPAL carrega a assinatura; empresas EXTRAS (parent_account_company_id)
+// não têm assinatura própria e são cobradas como adicional na fatura da principal.
+
+// Separa um documento em CPF (11) ou CNPJ (14). Vazio = { null, null }.
+function parseDocument(value) {
+  if (value == null || value === '') return { cpf: null, cnpj: null };
+  const d = String(value).replace(/\D+/g, '');
+  if (!d) return { cpf: null, cnpj: null };
+  if (d.length === 11) return { cpf: d, cnpj: null };
+  if (d.length === 14) return { cpf: null, cnpj: d };
+  const e = new Error('Documento deve ter 11 dígitos (CPF) ou 14 dígitos (CNPJ)'); e.status = 400; throw e;
+}
+
+// Empresa que carrega a assinatura da conta (se `companyId` já é uma extra, sobe p/ a principal).
+async function resolvePrincipalCompanyId(companyId) {
+  const r = await query(`SELECT id, parent_account_company_id FROM ${SCHEMA}.companies WHERE id=$1`, [companyId]);
+  const c = r.rows[0];
+  if (!c) { const e = new Error('Empresa não encontrada'); e.status = 404; throw e; }
+  return c.parent_account_company_id || c.id;
+}
+
+// Carrega a assinatura ATIVA da principal + plano + contrato de cobrança.
+async function loadAccountSubscription(principalId) {
+  const subRes = await query(
+    `SELECT cs.id, cs.company_id, cs.owner_company_id, cs.contract_id, cs.period, cs.status, cs.plan_id
+       FROM ${SCHEMA}.company_subscriptions cs
+      WHERE cs.company_id=$1 AND cs.status IN ('active','canceling','pending_payment')
+      ORDER BY cs.created_at DESC LIMIT 1`,
+    [principalId]
+  );
+  const sub = subRes.rows[0];
+  if (!sub) { const e = new Error('Esta conta não tem assinatura ativa'); e.status = 400; throw e; }
+  const planRes = await query(
+    `SELECT id, name, price_monthly, price_annual, extra_company_price_monthly, extra_company_price_annual, clients_limit, contracts_limit
+       FROM ${SCHEMA}.plans WHERE id=$1`,
+    [sub.plan_id]
+  );
+  const plan = planRes.rows[0];
+  if (!plan) { const e = new Error('Plano da assinatura indisponível'); e.status = 400; throw e; }
+  const conRes = sub.contract_id
+    ? await query(`SELECT id, value, last_billed_date, billing_interval_months FROM ${SCHEMA}.contracts WHERE id=$1`, [sub.contract_id])
+    : { rows: [] };
+  return { sub, plan, contract: conRes.rows[0] || null };
+}
+
+// Nº de empresas extras ativas (billáveis) da conta.
+async function countActiveExtras(principalId, client = null) {
+  const q = client ? client.query.bind(client) : query;
+  const r = await q(`SELECT COUNT(*)::int AS n FROM ${SCHEMA}.companies WHERE parent_account_company_id=$1 AND status <> 'canceled'`, [principalId]);
+  return r.rows[0].n;
+}
+
+// Fração do período já pago que ainda resta (para cobrança proporcional).
+function remainingPeriodFraction(contract, today) {
+  const periodStart = ensureDateOnly(contract?.last_billed_date) || ensureDateOnly(today);
+  const interval = Number(contract?.billing_interval_months) || 1;
+  const periodEnd = addMonths(periodStart, interval);
+  const DAY = 86400000;
+  const totalDays = Math.max(1, Math.round((periodEnd - periodStart) / DAY));
+  const remainingDays = Math.max(0, Math.round((periodEnd - ensureDateOnly(today)) / DAY));
+  return Math.min(1, remainingDays / totalDays);
+}
+
+// Recalcula o valor recorrente do contrato da assinatura = plano + extras × valor-extra.
+// Não cobra nada (usado ao REMOVER uma empresa — o valor só cai no próximo ciclo).
+async function recomputeAccountRecurringValue(principalId) {
+  const { sub, plan, contract } = await loadAccountSubscription(principalId);
+  if (!contract) return null;
+  const per = sub.period === 'annual' ? 'annual' : 'monthly';
+  const extras = await countActiveExtras(principalId);
+  const newValue = accountChargeForPeriod(plan, per, extras);
+  await query(`UPDATE ${SCHEMA}.contracts SET value=$1, updated_at=NOW() WHERE id=$2`, [newValue, contract.id]);
+  return { recurringValue: newValue, extras };
+}
+
+// Lista as empresas da conta (principal + extras) e o custo de uma empresa adicional.
+async function listAccountCompanies(companyId) {
+  const principalId = await resolvePrincipalCompanyId(companyId);
+  const { sub, plan } = await loadAccountSubscription(principalId);
+  const per = sub.period === 'annual' ? 'annual' : 'monthly';
+  const rows = await query(
+    `SELECT id, name, status, parent_account_company_id, document_cpf, document_cnpj
+       FROM ${SCHEMA}.companies
+      WHERE (id=$1 OR parent_account_company_id=$1) AND status <> 'canceled'
+      ORDER BY (parent_account_company_id IS NULL) DESC, id ASC`,
+    [principalId]
+  );
+  const principal = rows.rows.find((r) => r.id === principalId) || null;
+  const extras = rows.rows.filter((r) => r.id !== principalId);
+  return {
+    principalId,
+    period: per,
+    planName: plan.name,
+    extraPrice: extraCompanyChargeForPeriod(plan, per),
+    extraAllowed: extraCompanyChargeForPeriod(plan, per) > 0,
+    recurringValue: accountChargeForPeriod(plan, per, extras.length),
+    principal,
+    extras,
+  };
+}
+
+// Adiciona uma empresa EXTRA à conta: cria o tenant, vincula os mesmos usuários da
+// principal, sobe o valor recorrente e COBRA a diferença proporcional na hora (PIX).
+async function addCompanyToAccount({ companyId, name, document = null }) {
+  const cleanName = String(name || '').trim();
+  if (cleanName.length < 2) { const e = new Error('Informe o nome da empresa'); e.status = 400; throw e; }
+  const doc = parseDocument(document);
+  const principalId = await resolvePrincipalCompanyId(companyId);
+  const { sub, plan, contract } = await loadAccountSubscription(principalId);
+  const per = sub.period === 'annual' ? 'annual' : 'monthly';
+  const extraRate = extraCompanyChargeForPeriod(plan, per);
+  if (!(extraRate > 0)) { const e = new Error('O plano desta conta não permite empresa adicional. Defina o preço da empresa adicional no plano.'); e.status = 400; throw e; }
+
+  const today = new Date();
+  const todayIso = formatISODate(today);
+  const fraction = contract ? remainingPeriodFraction(contract, today) : 1;
+  const diff = Math.round(extraRate * fraction * 100) / 100;
+
+  const out = await withClient(async (client) => {
+    await client.query('BEGIN');
+    try {
+      const comp = await client.query(
+        `INSERT INTO ${SCHEMA}.companies (name, status, plan_id, clients_limit, contracts_limit, parent_account_company_id, document_cpf, document_cnpj)
+         VALUES ($1, 'active', $2, $3, $4, $5, $6, $7) RETURNING id`,
+        [cleanName, plan.id, plan.clients_limit, plan.contracts_limit, principalId, doc.cpf, doc.cnpj]
+      );
+      const newId = comp.rows[0].id;
+      // Mesmos usuários da principal (inclui o master, que já é vinculado a ela).
+      await client.query(
+        `INSERT INTO ${SCHEMA}.user_companies (user_id, company_id)
+           SELECT user_id, $1 FROM ${SCHEMA}.user_companies WHERE company_id=$2
+         ON CONFLICT (user_id, company_id) DO NOTHING`,
+        [newId, principalId]
+      );
+      // Novo valor recorrente = plano + (extras, já incluindo esta) × valor-extra.
+      const extras = await countActiveExtras(principalId, client);
+      const newValue = accountChargeForPeriod(plan, per, extras);
+      let billingId = null;
+      if (contract) {
+        await client.query(`UPDATE ${SCHEMA}.contracts SET value=$1, updated_at=NOW() WHERE id=$2`, [newValue, contract.id]);
+        // Cobrança proporcional imediata: acumula na cobrança pendente de hoje se já
+        // houver uma (ex.: mensalidade do dia), senão cria uma nova.
+        if (diff > 0) {
+          const b = await client.query(
+            `INSERT INTO ${SCHEMA}.billings (company_id, contract_id, billing_date, amount, status)
+             VALUES ($1,$2,$3,$4,'pending')
+             ON CONFLICT (contract_id, billing_date)
+             DO UPDATE SET amount = billings.amount + EXCLUDED.amount, updated_at=NOW()
+             WHERE billings.status = 'pending'
+             RETURNING id`,
+            [sub.owner_company_id, contract.id, todayIso, diff]
+          );
+          billingId = b.rows[0]?.id || null;
+        }
+      }
+      await client.query('COMMIT');
+      return { newId, newValue, billingId };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    }
+  });
+
+  let pix = null;
+  if (out.billingId && contract && diff > 0) {
+    const link = await resolvePixPayment({
+      companyId: sub.owner_company_id, contractId: contract.id,
+      billingId: out.billingId, amount: diff, dueDate: todayIso,
+    });
+    if (link) pix = { copyPaste: link.copyPaste || null, qrCodeImage: link.qrCodeImage || null, amount: Number(link.amount || diff) };
+  }
+  logger.info({ principalId, companyId: out.newId, plan: plan.name, diff }, '[saas] empresa adicional criada');
+  return { ok: true, companyId: out.newId, recurringValue: out.newValue, amount: diff, pix };
+}
+
+// Remove (cancela) uma empresa EXTRA da conta e baixa o valor recorrente (sem estorno).
+async function removeCompanyFromAccount({ companyId, extraCompanyId }) {
+  const principalId = await resolvePrincipalCompanyId(companyId);
+  const exRes = await query(
+    `SELECT id, parent_account_company_id FROM ${SCHEMA}.companies WHERE id=$1`,
+    [Number(extraCompanyId)]
+  );
+  const ex = exRes.rows[0];
+  if (!ex || ex.parent_account_company_id !== principalId) {
+    const e = new Error('Empresa adicional não encontrada nesta conta'); e.status = 404; throw e;
+  }
+  await withClient(async (client) => {
+    await client.query('BEGIN');
+    try {
+      await client.query(`UPDATE ${SCHEMA}.companies SET status='canceled', updated_at=NOW() WHERE id=$1`, [ex.id]);
+      // Tira o acesso: remove os vínculos de usuário desta empresa (some do seletor).
+      await client.query(`DELETE FROM ${SCHEMA}.user_companies WHERE company_id=$1`, [ex.id]);
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    }
+  });
+  const rec = await recomputeAccountRecurringValue(principalId);
+  logger.info({ principalId, removed: ex.id }, '[saas] empresa adicional removida');
+  return { ok: true, recurringValue: rec?.recurringValue ?? null };
+}
+
 module.exports = {
   setCompanyUsersActive,
   deactivateCompanyAccess,
@@ -655,4 +877,11 @@ module.exports = {
   changePlan,
   previewPlanAdjustment,
   applyPlanAdjustment,
+  planChargeForPeriod,
+  extraCompanyChargeForPeriod,
+  accountChargeForPeriod,
+  listAccountCompanies,
+  addCompanyToAccount,
+  removeCompanyFromAccount,
+  recomputeAccountRecurringValue,
 };

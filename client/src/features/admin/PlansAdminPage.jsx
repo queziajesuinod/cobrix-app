@@ -25,6 +25,7 @@ const BRL = (v) => v == null
 
 const EMPTY = {
   id: null, name: '', description: '', price_monthly: '', price_annual: '',
+  extra_company_price_monthly: '', extra_company_price_annual: '',
   clients_limit: '', contracts_limit: '', active: true, permission_keys: [],
   partner_commission_type: 'percent', partner_commission_value: '',
 }
@@ -42,6 +43,8 @@ function PlanDialog({ open, initial, catalog, onClose, onSave, saving }) {
         description: initial.description || '',
         price_monthly: initial.price_monthly ?? '',
         price_annual: initial.price_annual ?? '',
+        extra_company_price_monthly: initial.extra_company_price_monthly ?? '',
+        extra_company_price_annual: initial.extra_company_price_annual ?? '',
         clients_limit: initial.clients_limit ?? '',
         contracts_limit: initial.contracts_limit ?? '',
         active: initial.active ?? true,
@@ -107,6 +110,24 @@ function PlanDialog({ open, initial, catalog, onClose, onSave, saving }) {
               helperText={form.price_annual !== '' && Number(form.price_annual) > 0
                 ? `× 12 = ${BRL(Number(form.price_annual) * 12)} cobrado 1×/ano`
                 : 'Valor por mês · cobrado 12× de uma vez no ano'}
+            />
+          </Grid>
+          <Grid item xs={12}>
+            <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>Empresa adicional (mesma conta / login)</Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+              Valor cobrado por cada empresa a mais vinculada ao mesmo usuário, somado na mesma fatura. Vazio = não permite empresa adicional neste plano.
+            </Typography>
+          </Grid>
+          <Grid item xs={6} sm={3}>
+            <TextField fullWidth type="number" label="Empresa extra — mensal (R$)" value={form.extra_company_price_monthly} onChange={setField('extra_company_price_monthly')} inputProps={{ min: 0, step: '0.01' }} helperText="Por empresa a mais / mês" />
+          </Grid>
+          <Grid item xs={6} sm={3}>
+            <TextField
+              fullWidth type="number" label="Empresa extra — mensal (anual)" value={form.extra_company_price_annual}
+              onChange={setField('extra_company_price_annual')} inputProps={{ min: 0, step: '0.01' }}
+              helperText={form.extra_company_price_annual !== '' && Number(form.extra_company_price_annual) > 0
+                ? `× 12 = ${BRL(Number(form.extra_company_price_annual) * 12)} / empresa / ano`
+                : 'Por empresa a mais · no plano anual'}
             />
           </Grid>
           <Grid item xs={6} sm={3}>
@@ -433,6 +454,8 @@ export default function PlansAdminPage() {
         description: form.description?.trim() || null,
         price_monthly: form.price_monthly === '' ? null : form.price_monthly,
         price_annual: form.price_annual === '' ? null : form.price_annual,
+        extra_company_price_monthly: form.extra_company_price_monthly === '' ? null : form.extra_company_price_monthly,
+        extra_company_price_annual: form.extra_company_price_annual === '' ? null : form.extra_company_price_annual,
         clients_limit: form.clients_limit === '' ? null : form.clients_limit,
         contracts_limit: form.contracts_limit === '' ? null : form.contracts_limit,
         active: form.active,

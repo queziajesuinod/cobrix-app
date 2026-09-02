@@ -9,6 +9,9 @@ import CancelOutlinedIcon from '@mui/icons-material/CancelOutlined'
 import TrendingUpIcon from '@mui/icons-material/TrendingUp'
 import CheckIcon from '@mui/icons-material/Check'
 import ContentCopyIcon from '@mui/icons-material/ContentCopy'
+import BusinessIcon from '@mui/icons-material/Business'
+import AddIcon from '@mui/icons-material/Add'
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
 import PageHeader from '@/components/PageHeader'
 import PapperBlock from '@/components/PapperBlock'
 import { useConfirm } from '@/components/ConfirmDialog'
@@ -128,11 +131,11 @@ function UpgradeDialog({ open, currentPlanId, currentPeriod, currentAmount, onCl
   )
 }
 
-// Diálogo do PIX gerado após a mudança de plano.
-function PixResultDialog({ pix, onClose }) {
+// Diálogo do PIX gerado após a mudança de plano / adição de empresa.
+function PixResultDialog({ pix, onClose, title = 'Plano alterado — pague o novo valor' }) {
   return (
     <Dialog open={Boolean(pix)} onClose={onClose} maxWidth="xs" fullWidth>
-      <DialogTitle sx={{ fontWeight: 700 }}>Plano alterado — pague o novo valor</DialogTitle>
+      <DialogTitle sx={{ fontWeight: 700 }}>{title}</DialogTitle>
       <DialogContent dividers sx={{ textAlign: 'center' }}>
         {pix && (pix.qrCodeImage || pix.copyPaste) ? (
           <Stack spacing={2} alignItems="center">
@@ -154,15 +157,84 @@ function PixResultDialog({ pix, onClose }) {
   )
 }
 
+// Diálogo para adicionar uma empresa adicional à conta (mesmo login).
+function AddCompanyDialog({ open, extraPrice, period, onClose, onConfirm, saving }) {
+  const [name, setName] = useState('')
+  const [document, setDocument] = useState('')
+  React.useEffect(() => { if (open) { setName(''); setDocument('') } }, [open])
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
+      <DialogTitle sx={{ fontWeight: 700 }}>Adicionar empresa</DialogTitle>
+      <DialogContent dividers>
+        <Stack spacing={2} sx={{ mt: 0.5 }}>
+          <TextField label="Nome da empresa" value={name} onChange={(e) => setName(e.target.value)} fullWidth autoFocus />
+          <TextField label="CPF ou CNPJ" placeholder="Só números" value={document} onChange={(e) => setDocument(e.target.value)} fullWidth />
+          <Alert severity="info">
+            Custo por empresa adicional: <strong>{BRL(extraPrice)}</strong>{period === 'annual' ? ' /mês (no anual)' : ' /mês'}, somado na mesma fatura.
+            Ao confirmar, você paga <strong>agora</strong> apenas a parte proporcional aos dias restantes do período já pago; o valor cheio entra no próximo ciclo.
+          </Alert>
+        </Stack>
+      </DialogContent>
+      <DialogActions sx={{ px: 3, py: 2 }}>
+        <Button onClick={onClose} color="inherit">Cancelar</Button>
+        <Button variant="contained" disabled={saving || name.trim().length < 2} onClick={() => onConfirm({ name: name.trim(), document: document.trim() })}>
+          {saving ? 'Adicionando…' : 'Adicionar e pagar'}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  )
+}
+
 export default function MySubscriptionPage() {
   const queryClient = useQueryClient()
   const confirm = useConfirm()
   const [snack, setSnack] = useState(null)
   const [upgradeOpen, setUpgradeOpen] = useState(false)
   const [pixResult, setPixResult] = useState(null)
+  const [addOpen, setAddOpen] = useState(false)
+  const [addPix, setAddPix] = useState(null)
 
   const subQuery = useQuery({ queryKey: ['my-subscription'], queryFn: subscriptionSelfService.get })
   const sub = subQuery.data?.subscription || null
+  const hasAccount = Boolean(sub) && (sub.status === 'active' || sub.status === 'canceling')
+
+  const companiesQuery = useQuery({
+    queryKey: ['account-companies'],
+    queryFn: subscriptionSelfService.listCompanies,
+    enabled: hasAccount,
+  })
+  const acct = companiesQuery.data || null
+
+  const addCompanyMut = useMutation({
+    mutationFn: (payload) => subscriptionSelfService.addCompany(payload),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['account-companies'] })
+      queryClient.invalidateQueries({ queryKey: ['my-subscription'] })
+      setAddOpen(false)
+      if (data?.pix && (data.pix.copyPaste || data.pix.qrCodeImage)) setAddPix(data.pix)
+      setSnack({ severity: 'success', msg: `Empresa adicionada. Cobrado agora ${BRL(data?.amount)} (proporcional); a mensalidade passou a ${BRL(data?.recurringValue)}.` })
+    },
+    onError: (err) => setSnack({ severity: 'error', msg: err?.response?.data?.error || 'Falha ao adicionar empresa.' }),
+  })
+
+  const removeCompanyMut = useMutation({
+    mutationFn: (id) => subscriptionSelfService.removeCompany(id),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['account-companies'] })
+      queryClient.invalidateQueries({ queryKey: ['my-subscription'] })
+      setSnack({ severity: 'success', msg: `Empresa removida. A mensalidade passa a ${BRL(data?.recurringValue)} no próximo ciclo.` })
+    },
+    onError: (err) => setSnack({ severity: 'error', msg: err?.response?.data?.error || 'Falha ao remover empresa.' }),
+  })
+
+  const handleRemoveCompany = async (c) => {
+    const ok = await confirm({
+      title: 'Remover empresa',
+      description: `Remover "${c.name}" da sua conta? O acesso a ela será encerrado e o valor dessa empresa adicional deixa de ser cobrado (sem estorno do período atual).`,
+      confirmText: 'Remover', color: 'error',
+    })
+    if (ok) removeCompanyMut.mutate(c.id)
+  }
 
   const cancelMutation = useMutation({
     mutationFn: () => subscriptionSelfService.cancel(),
@@ -266,6 +338,53 @@ export default function MySubscriptionPage() {
         )}
       </PapperBlock>
 
+      {hasAccount && (
+        <PapperBlock title="Minhas empresas" subtitle="Empresas que você acessa com este login" icon={<BusinessIcon />}>
+          {companiesQuery.isLoading ? (
+            <Stack alignItems="center" sx={{ py: 3 }}><CircularProgress /></Stack>
+          ) : !acct ? (
+            <Alert severity="info">Não foi possível carregar as empresas da conta.</Alert>
+          ) : (
+            <Stack spacing={1.5}>
+              <Stack spacing={1}>
+                {acct.principal && (
+                  <Stack direction="row" alignItems="center" spacing={1} sx={{ py: 0.5 }}>
+                    <BusinessIcon fontSize="small" color="action" />
+                    <Typography sx={{ fontWeight: 600, flex: 1 }} noWrap>{acct.principal.name}</Typography>
+                    <Chip size="small" label="Principal" />
+                  </Stack>
+                )}
+                {(acct.extras || []).map((c) => (
+                  <Stack key={c.id} direction="row" alignItems="center" spacing={1} sx={{ py: 0.5 }}>
+                    <BusinessIcon fontSize="small" color="action" />
+                    <Typography sx={{ flex: 1 }} noWrap>{c.name}</Typography>
+                    <Chip size="small" variant="outlined" color="primary" label={`Adicional · ${BRL(acct.extraPrice)}${acct.period === 'annual' ? '/mês' : '/mês'}`} />
+                    <Button size="small" color="error" startIcon={<DeleteOutlineIcon />} onClick={() => handleRemoveCompany(c)} disabled={removeCompanyMut.isPending}>Remover</Button>
+                  </Stack>
+                ))}
+              </Stack>
+              <Divider />
+              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                <Box sx={{ flex: 1, minWidth: 180 }}>
+                  <Typography variant="caption" color="text.secondary">Mensalidade atual (todas as empresas)</Typography>
+                  <Typography sx={{ fontWeight: 700 }}>{BRL(acct.recurringValue)}</Typography>
+                </Box>
+                {acct.extraAllowed ? (
+                  <Button variant="contained" startIcon={<AddIcon />} onClick={() => setAddOpen(true)}>Adicionar empresa</Button>
+                ) : (
+                  <Alert severity="info" sx={{ flex: 1 }}>Este plano não inclui empresas adicionais. Fale com o suporte ou faça upgrade.</Alert>
+                )}
+              </Stack>
+              {acct.extraAllowed && (
+                <Typography variant="caption" color="text.secondary">
+                  Cada empresa a mais custa <strong>{BRL(acct.extraPrice)}</strong> e é somada nesta fatura. Ao adicionar, você paga a diferença proporcional na hora.
+                </Typography>
+              )}
+            </Stack>
+          )}
+        </PapperBlock>
+      )}
+
       <UpgradeDialog
         open={upgradeOpen}
         currentPlanId={sub?.plan_id}
@@ -275,7 +394,16 @@ export default function MySubscriptionPage() {
         onClose={() => setUpgradeOpen(false)}
         onConfirm={(payload) => changeMutation.mutate(payload)}
       />
+      <AddCompanyDialog
+        open={addOpen}
+        extraPrice={acct?.extraPrice}
+        period={acct?.period}
+        saving={addCompanyMut.isPending}
+        onClose={() => setAddOpen(false)}
+        onConfirm={(payload) => addCompanyMut.mutate(payload)}
+      />
       <PixResultDialog pix={pixResult} onClose={() => setPixResult(null)} />
+      <PixResultDialog pix={addPix} onClose={() => setAddPix(null)} title="Empresa adicionada — pague o valor proporcional" />
 
       {snack && <Alert severity={snack.severity} onClose={() => setSnack(null)}>{snack.msg}</Alert>}
     </Stack>

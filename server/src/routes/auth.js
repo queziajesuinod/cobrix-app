@@ -69,6 +69,15 @@ async function requireAuth(req, res, next) {
       company_ids: payload.company_ids || [], // Agora é um array
     };
 
+    // Master "ver como perfil": pré-visualiza o sistema com as permissões de um perfil
+    // específico (header X-View-As-Profile). Vale só para master de verdade — os checks
+    // de permissão passam a usar o perfil escolhido em vez do bypass total. Fica no
+    // req.user para fluir por getEffectivePermissions sem tocar em cada call site.
+    if (req.user.role === "master") {
+      const vap = Number(req.header("x-view-as-profile"));
+      req.user.viewAsProfileId = Number.isInteger(vap) && vap > 0 ? vap : null;
+    }
+
     const hdr = req.header("x-company-id");
     let requestedCompanyId = hdr ? Number(hdr) : null;
 

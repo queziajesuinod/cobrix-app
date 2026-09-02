@@ -3,6 +3,7 @@ import {
   AppBar, Toolbar, Typography, IconButton, Drawer, List, ListItemButton,
   ListItemIcon, ListItemText, Box, useMediaQuery, Avatar, Menu, MenuItem,
   Tooltip, Badge, Breadcrumbs, Link as MuiLink, Divider, ListSubheader, Button, Chip,
+  TextField,
 } from '@mui/material'
 import { useTheme, alpha } from '@mui/material/styles'
 import { useNavigate, NavLink, useLocation } from 'react-router-dom'
@@ -11,6 +12,8 @@ import { useAuth } from '@/features/auth/AuthContext'
 import { usePermissions } from '@/features/permissions/PermissionsContext'
 import { useColorMode } from '@/theme/ColorModeProvider'
 import CompanySelector from '@/components/CompanySelector'
+import { permissionsService } from '@/features/permissions/permissions.service'
+import VisibilityIcon from '@mui/icons-material/Visibility'
 import { notificationsService } from '@/features/notifications/notifications.service'
 import { companyService } from '@/features/companies/company.service'
 import HandshakeIcon from '@mui/icons-material/Handshake'
@@ -175,8 +178,18 @@ export default function AppShell({ children }) {
   const navigate = useNavigate()
   const location = useLocation()
   const { user, logout, selectedCompanyId } = useAuth()
-  const { can } = usePermissions()
+  const { can, realIsMaster, isPreviewing, previewProfileId, setPreviewProfileId } = usePermissions()
   const { mode, toggle } = useColorMode()
+
+  // "Ver como perfil" (master): lista de perfis para o seletor e o nome da prévia atual.
+  const profilesQ = useQuery({
+    queryKey: ['view-as-profiles'],
+    queryFn: permissionsService.listProfiles,
+    enabled: realIsMaster,
+    staleTime: 5 * 60 * 1000,
+  })
+  const profiles = profilesQ.data?.profiles || []
+  const previewName = profiles.find((p) => p.id === previewProfileId)?.name || `Perfil #${previewProfileId}`
 
   const [anchorEl, setAnchorEl] = React.useState(null)
   const [notifAnchor, setNotifAnchor] = React.useState(null)
@@ -254,7 +267,10 @@ export default function AppShell({ children }) {
   })
   const isPartner = Boolean(companyQ.data?.is_partner)
 
-  const sections = React.useMemo(() => buildSections(user?.role, isPartner), [user?.role, isPartner])
+  // Na prévia "ver como perfil", o menu segue o papel EFETIVO (usuário comum), então
+  // as seções exclusivas de master somem — o master vê o sistema como o perfil escolhido.
+  const effectiveRole = isPreviewing ? 'user' : user?.role
+  const sections = React.useMemo(() => buildSections(effectiveRole, isPartner), [effectiveRole, isPartner])
   // Um item aparece se o usuário tem sua permissão (ou QUALQUER uma de `perms`).
   const canNav = React.useCallback((it) => (it?.perms ? it.perms.some((p) => can(p)) : can(it?.perm)), [can])
   const visibleSections = React.useMemo(
@@ -271,7 +287,7 @@ export default function AppShell({ children }) {
   const userName = user?.name || ''
   const displayName = userName || userEmail || 'Usuário'
   const initials = (displayName.trim()[0] || 'U').toUpperCase()
-  const roleLabel = user?.role === 'master' ? 'Administrador' : 'Usuário'
+  const roleLabel = isPreviewing ? `Prévia: ${previewName}` : (user?.role === 'master' ? 'Administrador' : 'Usuário')
 
   // Cor de destaque do item ativo (segue o tema).
   const activeBg = alpha(theme.palette.primary.main, mode === 'dark' ? 0.24 : 0.12)
@@ -325,6 +341,24 @@ export default function AppShell({ children }) {
 
       {/* Seletor de empresa (master) — oculto no modo mini */}
       {!compact && <CompanySelector />}
+
+      {/* "Ver como perfil" (só master de verdade): pré-visualiza o sistema com as
+          permissões de um perfil. "Master (acesso total)" = sai da prévia. */}
+      {!compact && realIsMaster && (
+        <Box sx={{ px: 2, pb: 1 }}>
+          <TextField
+            select
+            size="small"
+            fullWidth
+            label="Ver como"
+            value={previewProfileId ? String(previewProfileId) : ''}
+            onChange={(e) => setPreviewProfileId(e.target.value || null)}
+          >
+            <MenuItem value=""><em>Master (acesso total)</em></MenuItem>
+            {profiles.map((p) => <MenuItem key={p.id} value={String(p.id)}>{p.name}</MenuItem>)}
+          </TextField>
+        </Box>
+      )}
 
       {/* Navegação em seções — scroll sem barra visível */}
       <Box
@@ -470,6 +504,20 @@ export default function AppShell({ children }) {
           </Box>
 
           <Box sx={{ flexGrow: 1 }} />
+
+          {/* Banner do modo "ver como perfil" — clique no X sai da prévia. */}
+          {isPreviewing && (
+            <Tooltip title="Você está vendo o sistema como este perfil. Clique para sair da prévia.">
+              <Chip
+                color="warning"
+                variant="outlined"
+                icon={<VisibilityIcon />}
+                label={`Prévia: ${previewName}`}
+                onDelete={() => setPreviewProfileId(null)}
+                sx={{ fontWeight: 600, maxWidth: { xs: 160, sm: 'none' } }}
+              />
+            </Tooltip>
+          )}
 
           {canTasks && (
             <>

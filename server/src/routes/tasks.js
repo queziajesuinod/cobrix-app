@@ -45,12 +45,12 @@ async function permsOf(req) {
 }
 // Exige, dentro do handler, que o usuário tenha ao menos UMA das chaves (master passa).
 async function ensurePerm(req, ...keys) {
-  if (req.user.role === 'master') return;
+  if (req.user.role === 'master' && !req.user.viewAsProfileId) return;
   const perms = await permsOf(req);
   if (!keys.some((k) => perms.has(k))) err('Acesso negado: sem permissão para esta ação.', 403);
 }
 async function hasPerm(req, key) {
-  if (req.user.role === 'master') return true;
+  if (req.user.role === 'master' && !req.user.viewAsProfileId) return true;
   return (await permsOf(req)).has(key);
 }
 
@@ -183,9 +183,10 @@ async function getNode(companyId, id) {
   return r.rows[0];
 }
 
-// Gestor/admin (tasks.gestor) ou master enxergam tudo.
+// Gestor/admin (tasks.gestor) ou master enxergam tudo. No modo "ver como perfil", o
+// master segue a visibilidade do perfil escolhido (não é gestor por padrão).
 async function isGestorReq(req) {
-  if (req.user.role === 'master') return true;
+  if (req.user.role === 'master' && !req.user.viewAsProfileId) return true;
   const perms = await getEffectivePermissions(req.user, req.companyId);
   return perms.includes('tasks.gestor');
 }
@@ -554,8 +555,14 @@ router.post('/nodes', ...base, async (req, res) => {
     const kind = parseKind(req.body?.kind ?? (group ? 'fixa' : 'avulsa'));
     const stageId = optId(req.body?.stage_id) || (parent ? parent.stage_id : await firstStageId(req.companyId));
     // Subitem herda o responsável do pai; tarefa de topo usa o padrão da rotina.
-    const assigneeId = req.body?.assignee_id !== undefined ? optId(req.body.assignee_id)
+    let assigneeId = req.body?.assignee_id !== undefined ? optId(req.body.assignee_id)
       : (parent ? parent.assignee_id : (group?.default_assignee_id || null));
+    // Quem NÃO pode atribuir a outros (sem tasks.task.assign e não é gestor/master) só
+    // delega para SI MESMO: toda tarefa que criar fica sob sua responsabilidade (nunca
+    // "sem responsável"). Assim ela entra em "Minhas tarefas" e respeita a visibilidade
+    // restrita (comum só vê o que é delegado a ele). Tentar atribuir a OUTRO cai no 403 abaixo.
+    const canAssignOthers = (await hasPerm(req, 'tasks.task.assign')) || (await hasPerm(req, 'tasks.gestor'));
+    if (!canAssignOthers && !assigneeId) assigneeId = req.user.id;
     const priority = req.body?.priority != null ? parsePriority(req.body.priority) : (group ? group.default_priority : 'media');
     // Vínculo opcional cliente/contrato é só da tarefa: explícito > herdado do pai (subitem).
     const clientId = req.body?.client_id !== undefined ? optId(req.body.client_id) : (parent ? parent.client_id : null);
@@ -634,6 +641,35 @@ router.put('/nodes/reorder', ...view, async (req, res) => {
       }
       await query('COMMIT');
     } catch (e) { await query('ROLLBACK').catch(() => {}); throw e; }
+    res.json({ ok: true });
+  } catch (e) { respondError(res, e); }
+});
+
+// Reordena os subitens DIRETOS de uma tarefa (drag-and-drop ou "A-Z" no detalhe).
+// `order` = ids dos filhos na nova ordem; posições reencaixadas 0..N. Basta tasks.view
+// (reordenar é colaborativo, como o reorder de cartões). Registrar ANTES de nada que
+// possa casar como :id de outra rota — este path é específico (/children/reorder).
+router.put('/nodes/:id/children/reorder', ...view, async (req, res) => {
+  try {
+    const parent = await getAccessibleNode(req, Number(req.params.id));
+    const order = Array.isArray(req.body?.order) ? req.body.order.map(Number).filter(Number.isInteger) : [];
+    if (!order.length) return res.json({ ok: true });
+    // Só reordena filhos DIRETOS e ativos do próprio pai (ignora ids estranhos).
+    const own = await query(`SELECT id FROM ${SCHEMA}.task_nodes WHERE company_id=$1 AND parent_id=$2 AND deleted_at IS NULL`, [req.companyId, parent.id]);
+    const ownIds = new Set(own.rows.map((r) => r.id));
+    await query('BEGIN');
+    try {
+      let pos = 0;
+      for (const id of order) {
+        if (!ownIds.has(id)) continue;
+        await query(`UPDATE ${SCHEMA}.task_nodes SET position=$1 WHERE id=$2 AND company_id=$3`, [pos, id, req.companyId]);
+        pos += 1;
+      }
+      await query('COMMIT');
+    } catch (e) { await query('ROLLBACK').catch(() => {}); throw e; }
+    // Reordenou subitens de uma OCORRÊNCIA recorrente → espelha a ordem no modelo
+    // (cloneSubtreeAsTemplate ordena por position), p/ os próximos meses nascerem assim.
+    await syncTemplateFromOccurrence(req.companyId, parent.id);
     res.json({ ok: true });
   } catch (e) { respondError(res, e); }
 });
@@ -1125,7 +1161,7 @@ router.delete('/comments/:id', ...view, async (req, res) => {
     );
     if (!c.rows[0]) err('Comentário não encontrado', 404);
     const isAuthor = Number(c.rows[0].user_id) === Number(req.user.id);
-    if (!isAuthor && req.user.role !== 'master') {
+    if (!isAuthor && !(req.user.role === 'master' && !req.user.viewAsProfileId)) {
       const perms = await getEffectivePermissions(req.user, req.companyId);
       if (!perms.includes('tasks.task.edit')) err('Sem permissão para excluir este comentário', 403);
     }

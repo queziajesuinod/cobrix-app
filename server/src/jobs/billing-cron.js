@@ -350,6 +350,8 @@ async function sendPreReminders(now = new Date(), companyId = null) {
       AND (c.cancellation_date IS NULL OR c.cancellation_date >= $1)
       AND c.active = true
       AND LOWER(COALESCE(cms.status, 'pending')) NOT IN ('paid','canceled')
+      -- Gestão externa (boleto de terceiros): sem lembrete D-4 (pré-vencimento).
+      AND COALESCE(c.external_billing, false) = false
       ${companyFilter}
   `, params);
 
@@ -490,6 +492,10 @@ async function sendDueReminders(now = new Date(), companyId = null, opts = {}) {
       AND (c.cancellation_date IS NULL OR c.cancellation_date >= $1)
       AND c.active = true
       AND LOWER(COALESCE(cms.status, 'pending')) NOT IN ('paid','canceled')
+      -- Gestão externa (boleto de terceiros): sem lembrete D0 (no vencimento). A
+      -- cobrança continua sendo GERADA (generateBillingsForToday) para gestão do
+      -- pago/não-pago; só não notificamos aqui.
+      AND COALESCE(c.external_billing, false) = false
       ${companyFilter}
   `, params);
 
@@ -611,7 +617,7 @@ async function sendLateRemindersForTarget(now, target, companyId, modeFilter, op
 
   const rows = await query(`
     SELECT b.id AS billing_id, b.contract_id, b.amount, b.status, b.billing_date,
-           c.company_id, c.client_id, c.description, c.billing_mode,
+           c.company_id, c.client_id, c.description, c.billing_mode, c.external_billing,
            cl.name AS client_name, cl.responsavel AS client_responsavel, cl.phone AS client_phone, cl.email AS client_email,
            cl.document_cpf AS client_document_cpf, cl.document_cnpj AS client_document_cnpj,
            cms.status AS month_status
@@ -647,7 +653,9 @@ async function sendLateRemindersForTarget(now, target, companyId, modeFilter, op
         cpf: r.client_document_cpf || null,
         cnpj: r.client_document_cnpj || null,
       };
-      const gatewayPayment = await resolvePixPayment({
+      // Contrato de gestão externa: o pagamento é por terceiros (boleto), então o
+      // aviso de atraso NÃO inclui um PIX gerado pelo Gero — é só o lembrete do atraso.
+      const gatewayPayment = r.external_billing ? null : await resolvePixPayment({
         companyId: r.company_id,
         contractId: r.contract_id,
         billingId: r.billing_id || null,

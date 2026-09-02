@@ -40,6 +40,17 @@ api.interceptors.request.use((config) => {
     config.headers['X-Company-Id'] = String(companyId)
   }
 
+  // Master "ver como perfil": pré-visualiza o sistema com as permissões de um perfil.
+  // O backend só honra este header quando o usuário é master de verdade.
+  try {
+    const viewAs = localStorage.getItem('viewAsProfileId')
+    if (viewAs && !config.headers['X-View-As-Profile']) {
+      config.headers['X-View-As-Profile'] = String(viewAs)
+    }
+  } catch {
+    // ignore storage errors
+  }
+
   return config
 })
 

@@ -46,6 +46,7 @@ router.get('/plans', async (req, res) => {
       `SELECT p.id, p.name, p.description,
               COALESCE(pp.price_monthly, p.price_monthly) AS price_monthly,
               COALESCE(pp.price_annual, p.price_annual) AS price_annual,
+              p.extra_company_price_monthly, p.extra_company_price_annual,
               p.clients_limit, p.contracts_limit, p.permission_keys
          FROM ${SCHEMA}.plans p
          LEFT JOIN ${SCHEMA}.partner_plan_prices pp
@@ -89,7 +90,8 @@ router.post('/signup', async (req, res) => {
   try {
     // Plano ativo + preço do período escolhido.
     const planRes = await query(
-      `SELECT id, name, price_monthly, price_annual, clients_limit, contracts_limit
+      `SELECT id, name, price_monthly, price_annual, clients_limit, contracts_limit,
+              extra_company_price_monthly, extra_company_price_annual
          FROM ${SCHEMA}.plans WHERE id = $1 AND active = true`,
       [planId]
     );
@@ -159,10 +161,36 @@ router.post('/signup', async (req, res) => {
       firstAmount = v.finalAmount;
     }
 
+    // Empresas ADICIONAIS já no cadastro (mesmo login, fatura única): cada empresa
+    // extra tem NOME + documento (CPF/CNPJ) próprios e soma o valor da empresa
+    // adicional do PLANO ao valor recorrente E à 1ª cobrança. Extras NÃO entram no
+    // cupom (o desconto vale só sobre o plano base). Aceita `extra_companies`
+    // ([{name, document}]); mantém retrocompat com `extra_company_names` (só nomes).
+    const extraInput = Array.isArray(b.extra_companies) ? b.extra_companies
+      : (Array.isArray(b.extra_company_names) ? b.extra_company_names.map((n) => ({ name: n })) : []);
+    const extraList = [];
+    for (const ec of extraInput) {
+      const nm = String(ec?.name || '').trim();
+      if (nm.length < 2) continue;
+      const doc = splitDocument(ec?.document); // { cpf, cnpj } — lança 400 se inválido
+      extraList.push({ name: nm, cpf: doc.cpf, cnpj: doc.cnpj });
+    }
+    const extraRate = period === 'annual'
+      ? (plan.extra_company_price_annual == null ? 0 : Number(plan.extra_company_price_annual) * 12)
+      : (plan.extra_company_price_monthly == null ? 0 : Number(plan.extra_company_price_monthly));
+    if (extraList.length && !(extraRate > 0)) {
+      return res.status(400).json({ error: 'Este plano não permite empresas adicionais.' });
+    }
+    const extrasTotal = extraList.length * extraRate;
+    // Valor recorrente do contrato (plano + extras) e valor cobrado agora (1ª fatura).
+    const recurringValue = price + extrasTotal;
+    const firstCharge = firstAmount + extrasTotal;
+
     // Cupom cobriu 100% da 1ª cobrança → não há PIX a pagar. Nesse caso a
     // cobrança já nasce paga e a empresa/assinatura entram ATIVAS na hora
-    // (sem QR Code, acesso liberado direto).
-    const fullyPaid = firstAmount <= 0;
+    // (sem QR Code, acesso liberado direto). Com empresa adicional, os extras são
+    // cobrados cheios, então o cupom raramente zera tudo.
+    const fullyPaid = firstCharge <= 0;
 
     const today = ensureDateOnly(new Date()) || new Date();
     const todayIso = formatISODate(today);
@@ -190,9 +218,9 @@ router.post('/signup', async (req, res) => {
         // 1) Empresa-cliente provisionada (aguardando pagamento). parent_partner_id
         // registra o parceiro que a trouxe (base da hierarquia de revenda).
         const compRes = await client.query(
-          `INSERT INTO ${SCHEMA}.companies (name, status, plan_id, clients_limit, contracts_limit, parent_partner_id)
-           VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-          [companyName, fullyPaid ? 'active' : 'pending_payment', plan.id, plan.clients_limit, plan.contracts_limit, partner ? partner.id : null]
+          `INSERT INTO ${SCHEMA}.companies (name, status, plan_id, clients_limit, contracts_limit, parent_partner_id, document_cpf, document_cnpj)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+          [companyName, fullyPaid ? 'active' : 'pending_payment', plan.id, plan.clients_limit, plan.contracts_limit, partner ? partner.id : null, docFields.cpf, docFields.cnpj]
         );
         const newCompanyId = compRes.rows[0].id;
 
@@ -247,7 +275,7 @@ router.post('/signup', async (req, res) => {
           `INSERT INTO ${SCHEMA}.contracts
              (company_id, client_id, contract_type_id, description, value, start_date, end_date, billing_day, billing_interval_months, billing_mode)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'monthly') RETURNING id`,
-          [ownerId, ownerClientId, contractTypeId, description, price, todayIso, endIso, billingDay, intervalMonths]
+          [ownerId, ownerClientId, contractTypeId, description, recurringValue, todayIso, endIso, billingDay, intervalMonths]
         );
         const ownerContractId = conRes.rows[0].id;
 
@@ -259,7 +287,7 @@ router.post('/signup', async (req, res) => {
            VALUES ($1, $2, $3, $4, $5, ${fullyPaid ? 'now()' : 'NULL'})
            ON CONFLICT (contract_id, billing_date) DO NOTHING
            RETURNING id`,
-          [ownerId, ownerContractId, todayIso, firstAmount, fullyPaid ? 'paid' : 'pending']
+          [ownerId, ownerContractId, todayIso, firstCharge, fullyPaid ? 'paid' : 'pending']
         );
         const firstBillingId = billRes.rows[0]?.id || null;
         await client.query(
@@ -278,6 +306,29 @@ router.post('/signup', async (req, res) => {
           [newCompanyId, plan.id, period, ownerId, ownerClientId, ownerContractId, code, fullyPaid ? 'active' : 'pending_payment', partner ? partner.id : null]
         );
         const newSubscriptionId = subRes.rows[0].id;
+
+        // 5b) Empresas ADICIONAIS (mesmo login): tenants próprios ligados à principal
+        // (parent_account_company_id), SEM assinatura própria — cobradas como adicional
+        // no contrato acima. Vinculam os mesmos usuários (novo admin + master + parceiro)
+        // e ativam junto com a principal quando o pagamento confirmar.
+        for (const ex of extraList) {
+          const ec = await client.query(
+            `INSERT INTO ${SCHEMA}.companies (name, status, plan_id, clients_limit, contracts_limit, parent_account_company_id, parent_partner_id, document_cpf, document_cnpj)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+            [ex.name, fullyPaid ? 'active' : 'pending_payment', plan.id, plan.clients_limit, plan.contracts_limit, newCompanyId, partner ? partner.id : null, ex.cpf, ex.cnpj]
+          );
+          const exId = ec.rows[0].id;
+          await client.query(`INSERT INTO ${SCHEMA}.user_companies (user_id, company_id) VALUES ($1,$2) ON CONFLICT (user_id, company_id) DO NOTHING`, [newUserId, exId]);
+          await client.query(`INSERT INTO ${SCHEMA}.user_companies (user_id, company_id) SELECT id, $1 FROM ${SCHEMA}.users WHERE role='master' ON CONFLICT (user_id, company_id) DO NOTHING`, [exId]);
+          if (partner) {
+            await client.query(
+              `INSERT INTO ${SCHEMA}.user_companies (user_id, company_id)
+                 SELECT uc.user_id, $1 FROM ${SCHEMA}.user_companies uc JOIN ${SCHEMA}.users u ON u.id=uc.user_id
+                WHERE uc.company_id=$2 AND u.role <> 'master' ON CONFLICT (user_id, company_id) DO NOTHING`,
+              [exId, partner.id]
+            );
+          }
+        }
 
         // Resgata o cupom na mesma transação (atômico com limite). Se o limite
         // estourou entre validar e resgatar, aborta tudo.
@@ -316,7 +367,7 @@ router.post('/signup', async (req, res) => {
         companyId: ownerId,
         contractId: result.contractId,
         billingId: result.firstBillingId,
-        amount: Number(firstAmount),
+        amount: Number(firstCharge),
         dueDate: todayIso,
         contractDescription: result.description,
         clientName: companyName,
@@ -326,7 +377,7 @@ router.post('/signup', async (req, res) => {
         pix = {
           copyPaste: link.copyPaste || null,
           qrCodeImage: link.qrCodeImage || null,
-          amount: Number(link.amount || firstAmount),
+          amount: Number(link.amount || firstCharge),
         };
       }
     }
@@ -346,7 +397,9 @@ router.post('/signup', async (req, res) => {
       subscriptionId: result.subscriptionId,
       plan: plan.name,
       period,
-      amount: Number(firstAmount),
+      amount: Number(firstCharge),
+      extraCompanies: extraList.length,
+      recurringValue: Number(recurringValue),
       originalAmount: Number(price),
       discount: couponInfo ? Number(couponInfo.discount) : 0,
       coupon: couponInfo ? { code: couponInfo.coupon.code } : null,

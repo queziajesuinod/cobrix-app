@@ -12,6 +12,15 @@ const { initDb } = require('./db/index')
 const app = express()
 
 
+// Atrás de reverse proxy (nginx / load balancer que termina api.gero.app.br), o
+// req.ip precisa vir do X-Forwarded-For — senão vira o IP do proxy, IGUAL para
+// todos os usuários, e os rate limiters abaixo passam a compartilhar um único
+// balde entre todo mundo (todos tomam 429 em conjunto). Confie APENAS no número
+// exato de hops de proxy (NÃO use `true`/permissivo: permitiria spoof do
+// X-Forwarded-For para furar o limite). Ajuste TRUST_PROXY_HOPS se houver mais
+// de um proxy em cadeia (ex.: CDN + nginx = 2).
+app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 1))
+
 app.use(helmet())
 // Allowlist de CORS. localhost é sempre permitido (não é explorável via CORS —
 // um site atacante não consegue forjar Origin: localhost no navegador da vítima)

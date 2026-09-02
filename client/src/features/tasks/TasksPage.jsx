@@ -30,6 +30,7 @@ import ChevronRightIcon from '@mui/icons-material/ChevronRight'
 import SearchIcon from '@mui/icons-material/Search'
 import FilterAltOffIcon from '@mui/icons-material/FilterAltOff'
 import SortIcon from '@mui/icons-material/Sort'
+import SortByAlphaIcon from '@mui/icons-material/SortByAlpha'
 import SendIcon from '@mui/icons-material/Send'
 import PauseCircleOutlineIcon from '@mui/icons-material/PauseCircleOutline'
 import PlayCircleOutlineIcon from '@mui/icons-material/PlayCircleOutline'
@@ -919,7 +920,47 @@ function NodeForm({ heading, initial, users, submitting, isMain, parentLinked = 
 // Item da árvore de subtarefas (recursivo, profundidade livre).
 // parentLinked = o pai deste nó já tem cliente/contrato → o vínculo é herdado e não
 // é exibido (evita repetir o vínculo do pai em cada subitem).
-function SubtreeItem({ node, childrenMap, users, depth, perms, parentLinked = false, onChanged, notify }) {
+// Ordena por título de forma amigável (pt-BR, ignora caixa, entende números:
+// "00004" antes de "00018"). Usada no botão "A-Z".
+const sortNodesAZ = (list) => [...list].sort((a, b) => String(a.title || '').localeCompare(String(b.title || ''), 'pt-BR', { sensitivity: 'base', numeric: true }))
+
+// Lista de subitens irmãos com reordenação: arraste pela alça (drag-and-drop) ou use
+// "A-Z". O DnD é escopado aos irmãos deste nível (contextos aninhados). Sem permissão
+// de editar (ou com um item só), apenas renderiza a lista.
+function SubtreeList({ parentId, items, childrenMap, users, depth, perms, parentLinked, onChanged, notify }) {
+  const [order, setOrder] = React.useState(items)
+  React.useEffect(() => { setOrder(items) }, [items])
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
+  const canReorder = Boolean(perms?.editTask) && items.length > 1
+  const reorder = useMutation({
+    mutationFn: (ids) => tasksService.reorderChildren(parentId, ids),
+    onSuccess: onChanged,
+    onError: (e) => { setOrder(items); notify(e?.response?.data?.error || 'Falha ao reordenar.', 'error') },
+  })
+  const rows = order.map((k) => (
+    <SubtreeItem key={k.id} node={k} childrenMap={childrenMap} users={users} depth={depth} perms={perms}
+      parentLinked={parentLinked} onChanged={onChanged} notify={notify} sortable={canReorder} />
+  ))
+  if (!canReorder) return <>{rows}</>
+  const onDragEnd = ({ active, over }) => {
+    if (!over || active.id === over.id) return
+    const oldIndex = order.findIndex((n) => n.id === active.id)
+    const newIndex = order.findIndex((n) => n.id === over.id)
+    if (oldIndex < 0 || newIndex < 0) return
+    const next = arrayMove(order, oldIndex, newIndex)
+    setOrder(next)
+    reorder.mutate(next.map((n) => n.id))
+  }
+  return (
+    <DndContext sensors={sensors} collisionDetection={closestCorners} onDragEnd={onDragEnd}>
+      <SortableContext items={order.map((n) => n.id)} strategy={verticalListSortingStrategy}>
+        {rows}
+      </SortableContext>
+    </DndContext>
+  )
+}
+
+function SubtreeItem({ node, childrenMap, users, depth, perms, parentLinked = false, sortable = false, onChanged, notify }) {
   const confirm = useConfirm()
   const [adding, setAdding] = React.useState(false)
   const [editing, setEditing] = React.useState(false)
@@ -928,6 +969,11 @@ function SubtreeItem({ node, childrenMap, users, depth, perms, parentLinked = fa
   const hasKids = kids.length > 0
   const done = node.status === 'done'
   const heading = Boolean(node.is_heading) // "só título": sem check de conclusão
+  // Reordenação: alça de arrasto (quando dentro de uma lista sortable) — hooks sempre
+  // chamados; `disabled` desliga o drag quando não há permissão/DnD ativo.
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: node.id, disabled: !sortable })
+  const dragStyle = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }
+  const sortAZ = useMutation({ mutationFn: () => tasksService.reorderChildren(node.id, sortNodesAZ(kids).map((n) => n.id)), onSuccess: onChanged, onError: (e) => notify(e?.response?.data?.error || 'Falha ao ordenar.', 'error') })
   const toggle = useMutation({ mutationFn: () => tasksService.toggleNode(node.id, !done), onSuccess: onChanged, onError: (e) => notify(e?.response?.data?.error || 'Falha ao atualizar.', 'error') })
   const del = useMutation({ mutationFn: () => tasksService.deleteNode(node.id), onSuccess: onChanged, onError: (e) => notify(e?.response?.data?.error || 'Falha ao excluir.', 'error') })
   const add = useMutation({ mutationFn: (payload) => tasksService.createNode({ ...payload, parent_id: node.id }), onSuccess: () => { setAdding(false); onChanged() }, onError: (e) => notify(e?.response?.data?.error || 'Falha ao adicionar.', 'error') })
@@ -937,8 +983,16 @@ function SubtreeItem({ node, childrenMap, users, depth, perms, parentLinked = fa
     if (ok) del.mutate()
   }
   return (
-    <Box sx={{ ml: depth ? 2.5 : 0, borderLeft: depth ? 1 : 0, borderColor: 'divider', pl: depth ? 1 : 0 }}>
+    <Box ref={setNodeRef} style={dragStyle} sx={{ ml: depth ? 2.5 : 0, borderLeft: depth ? 1 : 0, borderColor: 'divider', pl: depth ? 1 : 0 }}>
       <Stack direction="row" alignItems="center" spacing={0.5} sx={{ py: 0.5 }}>
+        {/* Alça de arrasto (só quando a lista é reordenável). */}
+        {sortable && (
+          <Tooltip title="Arraste para reordenar">
+            <IconButton size="small" {...attributes} {...listeners} sx={{ p: 0.25, cursor: 'grab', touchAction: 'none' }}>
+              <DragIndicatorIcon fontSize="small" sx={{ color: 'text.disabled' }} />
+            </IconButton>
+          </Tooltip>
+        )}
         {/* Ancoragem: subitens ficam recolhidos; a seta (ou o título) expande/recolhe. */}
         {hasKids ? (
           <IconButton size="small" onClick={() => setOpen((o) => !o)} sx={{ p: 0.25 }}>
@@ -964,6 +1018,9 @@ function SubtreeItem({ node, childrenMap, users, depth, perms, parentLinked = fa
         {/* Subtarefa não mostra prioridade própria — segue a da tarefa principal. */}
         {!heading && node.due_date && <Chip size="small" icon={<CalendarMonthIcon sx={{ fontSize: 13 }} />} label={fmtDate(node.due_date)} variant="outlined" sx={{ height: 20 }} />}
         {!heading && node.assignee_name && <Typography variant="caption" color="text.secondary" sx={{ maxWidth: 120 }} noWrap>{node.assignee_name}</Typography>}
+        {hasKids && kids.length > 1 && perms?.editTask && (
+          <Tooltip title="Ordenar subitens A-Z"><IconButton size="small" onClick={() => sortAZ.mutate()} disabled={sortAZ.isPending} sx={{ p: 0.25 }}><SortByAlphaIcon fontSize="small" /></IconButton></Tooltip>
+        )}
         {perms?.createTask && (
           <Tooltip title="Adicionar subitem"><IconButton size="small" onClick={() => { setOpen(true); setAdding(true) }} sx={{ p: 0.25 }}><SubdirectoryArrowRightIcon fontSize="small" /></IconButton></Tooltip>
         )}
@@ -986,7 +1043,9 @@ function SubtreeItem({ node, childrenMap, users, depth, perms, parentLinked = fa
           🔗 {[node.client_name, node.contract_description].filter(Boolean).join(' · ')}
         </Typography>
       )}
-      {open && kids.map((k) => <SubtreeItem key={k.id} node={k} childrenMap={childrenMap} users={users} depth={depth + 1} perms={perms} parentLinked={Boolean(node.client_id || node.contract_id)} onChanged={onChanged} notify={notify} />)}
+      {open && hasKids && (
+        <SubtreeList parentId={node.id} items={kids} childrenMap={childrenMap} users={users} depth={depth + 1} perms={perms} parentLinked={Boolean(node.client_id || node.contract_id)} onChanged={onChanged} notify={notify} />
+      )}
       {adding && <NodeForm heading="Novo subitem" initial={null} users={users} submitting={add.isPending} parentLinked={Boolean(node.client_id || node.contract_id)} canAssign={perms?.assign} onClose={() => setAdding(false)} onSubmit={(payload) => add.mutate(payload)} />}
       {editing && <NodeForm heading="Editar tarefa" initial={node} users={users} submitting={edit.isPending} parentLinked={parentLinked} canAssign={perms?.assign} onClose={() => setEditing(false)} onSubmit={(payload) => edit.mutate(payload)} />}
     </Box>
@@ -1304,6 +1363,7 @@ function TaskDetailDialog({ nodeId, users, stages, perms, currentUserId, labels 
   }, [allSubDone, node?.status]) // eslint-disable-line react-hooks/exhaustive-deps
   const edit = useMutation({ mutationFn: (payload) => tasksService.updateNode(nodeId, payload), onSuccess: () => { setEditing(false); refreshAll() }, onError: (e) => notify(e?.response?.data?.error || 'Falha ao salvar.', 'error') })
   const addTop = useMutation({ mutationFn: (payload) => tasksService.createNode({ ...payload, parent_id: nodeId }), onSuccess: () => { setAddingTop(false); refreshAll() }, onError: (e) => notify(e?.response?.data?.error || 'Falha ao adicionar.', 'error') })
+  const sortTopAZ = useMutation({ mutationFn: () => tasksService.reorderChildren(nodeId, sortNodesAZ(topKids).map((n) => n.id)), onSuccess: refreshAll, onError: (e) => notify(e?.response?.data?.error || 'Falha ao ordenar.', 'error') })
   const addCommentMut = useMutation({ mutationFn: ({ body, ids }) => tasksService.addComment(nodeId, body, ids), onSuccess: () => q.refetch(), onError: (e) => notify(e?.response?.data?.error || 'Falha ao comentar.', 'error') })
   // Deep-link de menção: rola até o comentário e realça por alguns segundos.
   React.useEffect(() => {
@@ -1372,20 +1432,32 @@ function TaskDetailDialog({ nodeId, users, stages, perms, currentUserId, labels 
                 {node.description && <Box sx={{ mb: 2, fontSize: '0.875rem', color: 'text.secondary' }}><RichText html={node.description} /></Box>}
                 <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 0.5 }}>
                   <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Subitens</Typography>
-                  {canAddSub && (
-                    <Stack direction="row" spacing={0.5}>
-                      <Button size="small" startIcon={<PlaylistAddIcon />} endIcon={<ArrowDropDownIcon />} onClick={(e) => setModelsMenuEl(e.currentTarget)}>Modelos</Button>
-                      <Menu anchorEl={modelsMenuEl} open={Boolean(modelsMenuEl)} onClose={() => setModelsMenuEl(null)}>
-                        <MenuItem onClick={() => { setModelsMenuEl(null); setApplying(true) }}>Aplicar na tarefa (geral)…</MenuItem>
-                        <MenuItem onClick={() => { setModelsMenuEl(null); setExpanding(true) }}>Aplicar por cliente/contrato…</MenuItem>
-                      </Menu>
-                      <Button size="small" startIcon={<AddIcon />} onClick={() => setAddingTop(true)}>Adicionar</Button>
-                    </Stack>
-                  )}
+                  <Stack direction="row" spacing={0.5} alignItems="center">
+                    {perms?.editTask && topKids.length > 1 && (
+                      <Tooltip title="Ordenar subitens A-Z">
+                        <Button size="small" startIcon={<SortByAlphaIcon />} disabled={sortTopAZ.isPending} onClick={() => sortTopAZ.mutate()}>A-Z</Button>
+                      </Tooltip>
+                    )}
+                    {canAddSub && (
+                      <>
+                        <Button size="small" startIcon={<PlaylistAddIcon />} endIcon={<ArrowDropDownIcon />} onClick={(e) => setModelsMenuEl(e.currentTarget)}>Modelos</Button>
+                        <Menu anchorEl={modelsMenuEl} open={Boolean(modelsMenuEl)} onClose={() => setModelsMenuEl(null)}>
+                          <MenuItem onClick={() => { setModelsMenuEl(null); setApplying(true) }}>Aplicar na tarefa (geral)…</MenuItem>
+                          <MenuItem onClick={() => { setModelsMenuEl(null); setExpanding(true) }}>Aplicar por cliente/contrato…</MenuItem>
+                        </Menu>
+                        <Button size="small" startIcon={<AddIcon />} onClick={() => setAddingTop(true)}>Adicionar</Button>
+                      </>
+                    )}
+                  </Stack>
                 </Stack>
+                {perms?.editTask && topKids.length > 1 && (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                    Arraste pela alça <DragIndicatorIcon sx={{ fontSize: 13, verticalAlign: 'middle', color: 'text.disabled' }} /> para reordenar, ou use “A-Z”.
+                  </Typography>
+                )}
                 {topKids.length === 0
                   ? <Typography variant="caption" color="text.secondary">Nenhum subitem. {canAddSub ? 'Use “Adicionar” para quebrar a tarefa em passos.' : ''}</Typography>
-                  : topKids.map((k) => <SubtreeItem key={k.id} node={k} childrenMap={childrenMap} users={users} depth={0} perms={perms} parentLinked={Boolean(node.client_id || node.contract_id)} onChanged={refreshAll} notify={notify} />)}
+                  : <SubtreeList parentId={nodeId} items={topKids} childrenMap={childrenMap} users={users} depth={0} perms={perms} parentLinked={Boolean(node.client_id || node.contract_id)} onChanged={refreshAll} notify={notify} />}
 
                 {/* Comentários (discussão) */}
                 <Divider sx={{ my: 2 }} />

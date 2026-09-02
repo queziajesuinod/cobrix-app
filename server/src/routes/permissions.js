@@ -11,8 +11,18 @@ const router = express.Router();
 // Permissões efetivas do usuário logado (usado pelo frontend para gating).
 router.get('/me', requireAuth, async (req, res) => {
   try {
-    const permissions = await getEffectivePermissions(req.user);
-    res.json({ role: req.user.role, permissions });
+    const permissions = await getEffectivePermissions(req.user, req.companyId);
+    // No modo "ver como perfil", o master enxerga o sistema como o perfil escolhido:
+    // devolvemos o papel EFETIVO ('user' na prévia) + o papel real, para o front
+    // esconder os menus exclusivos de master e poder sair da prévia.
+    const previewing = req.user.role === 'master' && Boolean(req.user.viewAsProfileId);
+    res.json({
+      role: previewing ? 'user' : req.user.role,
+      realRole: req.user.role,
+      previewing,
+      viewAsProfileId: req.user.viewAsProfileId || null,
+      permissions,
+    });
   } catch (e) { respondError(res, e); }
 });
 
