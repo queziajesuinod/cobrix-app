@@ -684,9 +684,42 @@ function TaskCard({ node, perms, showProgress = false, onOpen, onChanged, notify
 
 // Casca visual da coluna (cabeçalho + cartões). O comportamento de arraste é injetado
 // pelos wrappers: BoardColumn (sortable) p/ colunas abertas, DoneColumn (droppable) p/ Concluído.
-function ColumnShell({ innerRef, style, isOver, stage, nodes, perms, handleProps, showProgress = false, onOpenNode, onRename, onDelete, onSortByPriority, onChanged, notify }) {
+function ColumnShell({ innerRef, style, isOver, stage, nodes, perms, handleProps, showProgress = false, onOpenNode, onRename, onDelete, onSortByPriority, onChanged, notify, collapsed = false, onToggleCollapse }) {
   const [menuEl, setMenuEl] = React.useState(null)
-  const showMenu = perms?.editStage || perms?.deleteStage
+  // A coluna "Concluído" (is_done) não pode ser excluída → nunca oferece o botão.
+  const canDelete = perms?.deleteStage && !stage.is_done
+  const showMenu = perms?.editStage || canDelete
+
+  // Minimizada: vira uma faixa fina, só com o nome (na vertical) + contagem; clicar na
+  // faixa (ou no botão) maximiza de volta. Mantém innerRef/style para o drag-and-drop
+  // continuar apontando para a coluna.
+  if (collapsed) {
+    return (
+      <Box
+        ref={innerRef}
+        style={style}
+        onClick={() => onToggleCollapse?.(stage)}
+        sx={{
+          flex: '0 0 auto', width: 48, minHeight: 140,
+          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.75,
+          bgcolor: (theme) => (theme.palette.mode === 'dark' ? '#212a38' : '#ffffff'),
+          border: 1, borderColor: 'divider', borderRadius: 2, maxHeight: '72vh', py: 1, cursor: 'pointer',
+        }}
+      >
+        <Tooltip title="Maximizar coluna">
+          <IconButton size="small" onClick={(e) => { e.stopPropagation(); onToggleCollapse?.(stage) }} sx={{ p: 0.25 }}>
+            <ChevronRightIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        <Chip size="small" label={nodes.length} sx={{ height: 20 }} />
+        {stage.is_done && <CheckCircleIcon fontSize="small" sx={{ color: 'success.main' }} />}
+        <Typography variant="subtitle2" noWrap sx={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)', fontWeight: 700, color: stage.is_done ? 'success.main' : 'text.primary', mt: 0.5 }}>
+          {stage.name}
+        </Typography>
+      </Box>
+    )
+  }
+
   return (
     <Box
       ref={innerRef}
@@ -712,6 +745,11 @@ function ColumnShell({ innerRef, style, isOver, stage, nodes, perms, handleProps
         {stage.is_done && <CheckCircleIcon fontSize="small" sx={{ color: 'success.main' }} />}
         <Typography variant="subtitle2" sx={{ fontWeight: 700, flex: 1, minWidth: 0, color: stage.is_done ? 'success.main' : 'text.primary' }} noWrap>{stage.name}</Typography>
         <Chip size="small" label={nodes.length} sx={{ height: 20 }} />
+        {onToggleCollapse && (
+          <Tooltip title="Minimizar coluna">
+            <IconButton size="small" onClick={() => onToggleCollapse(stage)} sx={{ p: 0.25 }}><ChevronLeftIcon fontSize="small" /></IconButton>
+          </Tooltip>
+        )}
         {showMenu && (
           <>
             <IconButton size="small" onClick={(e) => setMenuEl(e.currentTarget)} sx={{ p: 0.25 }}><MoreVertIcon fontSize="small" /></IconButton>
@@ -726,7 +764,7 @@ function ColumnShell({ innerRef, style, isOver, stage, nodes, perms, handleProps
                   <EditOutlinedIcon fontSize="small" sx={{ mr: 1 }} /> Renomear
                 </MenuItem>
               )}
-              {perms?.deleteStage && (
+              {canDelete && (
                 <MenuItem onClick={() => { setMenuEl(null); onDelete(stage) }} sx={{ color: 'error.main' }}>
                   <DeleteOutlineIcon fontSize="small" sx={{ mr: 1 }} /> Excluir
                 </MenuItem>
@@ -1807,6 +1845,16 @@ function CalendarView({ nodes, realNodes, templates, onOpenNode, canReschedule, 
 function CompletedDialog({ onOpen, onClose, notify, onChanged }) {
   const q = useQuery({ queryKey: ['tasks-completed'], queryFn: () => tasksService.completed() })
   const items = q.data?.items || []
+  const [search, setSearch] = React.useState('')
+  // Busca por nome "contém todas as palavras" (case-insensitive), independente da ordem:
+  // "boleto joao" acha "Enviar boleto do João". Filtra em memória a lista já carregada.
+  const terms = search.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  const filtered = terms.length === 0
+    ? items
+    : items.filter((t) => {
+      const hay = (t.title || '').toLowerCase()
+      return terms.every((w) => hay.includes(w))
+    })
   const reopen = useMutation({
     mutationFn: (id) => tasksService.toggleNode(id, false),
     onSuccess: () => { notify('Tarefa reaberta — voltou ao quadro.'); q.refetch(); onChanged() },
@@ -1816,13 +1864,23 @@ function CompletedDialog({ onOpen, onClose, notify, onChanged }) {
     <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
       <DialogTitle sx={{ fontWeight: 700 }}>Tarefas concluídas</DialogTitle>
       <DialogContent dividers>
+        {items.length > 0 && (
+          <TextField
+            size="small" fullWidth autoFocus placeholder="Pesquisar por nome…" value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            InputProps={{ startAdornment: <SearchIcon fontSize="small" sx={{ mr: 0.5, color: 'text.disabled' }} /> }}
+            sx={{ mb: 1.5 }}
+          />
+        )}
         {q.isLoading ? (
           <Typography color="text.secondary">Carregando…</Typography>
         ) : items.length === 0 ? (
           <Typography variant="body2" color="text.secondary">Nenhuma tarefa concluída ainda.</Typography>
+        ) : filtered.length === 0 ? (
+          <Typography variant="body2" color="text.secondary">Nenhuma tarefa encontrada para “{search.trim()}”.</Typography>
         ) : (
           <Stack divider={<Divider flexItem />} spacing={0}>
-            {items.map((t) => (
+            {filtered.map((t) => (
               <Stack key={t.id} direction="row" alignItems="center" spacing={1} sx={{ py: 1 }}>
                 <Box sx={{ flex: 1, minWidth: 0 }}>
                   <Typography variant="body2" sx={{ fontWeight: 600, cursor: 'pointer', '&:hover': { textDecoration: 'underline' } }} noWrap onClick={() => { onOpen(t.id); onClose() }}>
@@ -1931,6 +1989,33 @@ export default function TasksPage() {
   }, [searchParams, setSearchParams])
   const [activeDrag, setActiveDrag] = React.useState(null) // { type, node?|stage? }
   const [view, setView] = React.useState('board') // 'board' | 'calendar'
+  // Colunas minimizadas (só cabeçalho, sem tarefas). Persistido por empresa no
+  // localStorage para sobreviver a recarregar a página. A chave é lida já na
+  // inicialização do estado (lazy init) — assim, ao atualizar a página, as colunas
+  // já renderizam minimizadas na 1ª renderização (sem "piscar" abertas).
+  const collapseKey = (cid) => `tasks-collapsed-cols:${cid}`
+  const readCollapsed = (cid) => {
+    try {
+      const raw = localStorage.getItem(collapseKey(cid))
+      return new Set(raw ? JSON.parse(raw) : [])
+    } catch { return new Set() }
+  }
+  const [collapsedCols, setCollapsedCols] = React.useState(() => readCollapsed(selectedCompanyId))
+  // Ao trocar de empresa, recarrega o estado salvo daquela empresa.
+  const lastCompanyRef = React.useRef(selectedCompanyId)
+  React.useEffect(() => {
+    if (lastCompanyRef.current === selectedCompanyId) return
+    lastCompanyRef.current = selectedCompanyId
+    setCollapsedCols(readCollapsed(selectedCompanyId))
+  }, [selectedCompanyId])
+  const toggleCollapse = React.useCallback((stage) => {
+    setCollapsedCols((prev) => {
+      const next = new Set(prev)
+      if (next.has(stage.id)) next.delete(stage.id); else next.add(stage.id)
+      try { localStorage.setItem(collapseKey(selectedCompanyId), JSON.stringify([...next])) } catch { /* ignora quota/modo privado */ }
+      return next
+    })
+  }, [selectedCompanyId])
   const emptyFilters = { q: '', assignee: 'all', priority: 'all', overdue: false, mine: false, label: 'all' }
   const [filters, setFilters] = React.useState(emptyFilters)
   const notify = (msg, severity = 'success') => setToast({ msg, severity, key: Date.now() })
@@ -2200,6 +2285,7 @@ export default function TasksPage() {
                     key={s.id} stage={s} nodes={colNodes(s.id)} perms={perms} showProgress={s.id !== firstOpenStageId}
                     onOpenNode={setOpenNodeId} onRename={setRenameStage} onDelete={handleDeleteStage} onSortByPriority={handleSortByPriority}
                     onChanged={refresh} notify={notify}
+                    collapsed={collapsedCols.has(s.id)} onToggleCollapse={toggleCollapse}
                   />
                 ))}
               </SortableContext>
@@ -2208,6 +2294,7 @@ export default function TasksPage() {
                   key={s.id} stage={s} nodes={colNodes(s.id)} perms={perms}
                   onOpenNode={setOpenNodeId} onRename={setRenameStage} onDelete={handleDeleteStage} onSortByPriority={handleSortByPriority}
                   onChanged={refresh} notify={notify}
+                  collapsed={collapsedCols.has(s.id)} onToggleCollapse={toggleCollapse}
                 />
               ))}
             </Stack>

@@ -8,6 +8,7 @@ const express = require('express')
 const cors = require('cors')
 const helmet = require('helmet')
 const rateLimit = require('express-rate-limit')
+const { userIdFromRequest } = require('./routes/auth')
 const { initDb } = require('./db/index')
 const app = express()
 
@@ -52,7 +53,23 @@ app.use(cors({
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 
-app.use('/api', rateLimit({ windowMs: 15 * 60 * 1000, limit: 300 }))
+// Rate limit por USUÁRIO autenticado (não por IP): cada usuário logado tem o próprio
+// balde, então N pessoas atrás do mesmo IP público (NAT do escritório, 4G/CGNAT) não
+// dividem o mesmo limite e não tomam 429 em conjunto. Sem token válido (anônimo:
+// login/signup/webhook/status) cai no IP — as rotas sensíveis já têm limiters estritos
+// próprios abaixo. Limite generoso porque um SPA (React Query com polling + várias
+// queries por tela) faz muitas chamadas por minuto de forma legítima.
+app.use('/api', rateLimit({
+  windowMs: 5 * 60 * 1000, // 5 min
+  limit: 1200,             // por usuário autenticado (~240/min); anônimos, por IP
+  standardHeaders: true,   // envia RateLimit-* para o cliente saber quando desacelerar
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const uid = userIdFromRequest(req)
+    return uid ? `u:${uid}` : `ip:${req.ip}`
+  },
+  message: { error: 'Muitas requisições. Aguarde um instante e tente novamente.' },
+}))
 
 // Limite mais estrito para o login (mitiga brute force). Fica ANTES do mount de
 // /api/auth para valer só nas rotas de autenticação.

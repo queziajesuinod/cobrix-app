@@ -191,8 +191,9 @@ async function isGestorReq(req) {
   return perms.includes('tasks.gestor');
 }
 
-// Usuário comum só acessa a tarefa se algum nó da subárvore for atribuído/criado por ele,
-// ou se ele foi mencionado num comentário da subárvore. Gestor/master: sempre.
+// Usuário comum só acessa a tarefa se algum nó da subárvore for atribuído a ele, ou se
+// ele foi mencionado num comentário da subárvore. Criar a tarefa NÃO dá acesso.
+// Gestor/master: sempre.
 async function canAccessNode(req, node) {
   if (await isGestorReq(req)) return true;
   const uid = req.user.id;
@@ -203,7 +204,7 @@ async function canAccessNode(req, node) {
        SELECT c.id, c.assignee_id, c.created_by FROM ${SCHEMA}.task_nodes c JOIN tree t ON c.parent_id=t.id
      )
      SELECT
-       EXISTS(SELECT 1 FROM tree WHERE assignee_id=$2 OR created_by=$2) AS mine,
+       EXISTS(SELECT 1 FROM tree WHERE assignee_id=$2) AS mine,
        EXISTS(SELECT 1 FROM tree t
                 JOIN ${SCHEMA}.task_comments cm ON cm.node_id=t.id
                 JOIN ${SCHEMA}.task_comment_mentions m ON m.comment_id=cm.id
@@ -428,8 +429,9 @@ router.get('/board', ...view, async (req, res) => {
          FROM ${SCHEMA}.task_groups WHERE company_id=$1 ORDER BY position, name`,
       [req.companyId]
     );
-    // Visibilidade: gestor/master veem tudo; comum só o que é dele (atribuído/criado)
-    // ou onde foi mencionado — considerando a subárvore. `sub_links` agrega os
+    // Visibilidade: gestor/master veem tudo; comum só o que é dele — atribuído a ele
+    // ou onde foi mencionado, considerando a subárvore. Criar a tarefa NÃO dá acesso:
+    // ao atribuir a outra pessoa, ela sai do quadro de quem criou. `sub_links` agrega os
     // clientes/contratos da subárvore (para a busca casar vínculos só de subtarefas).
     const gestor = await isGestorReq(req);
     const uid = req.user.id;
@@ -447,7 +449,7 @@ router.get('/board', ...view, async (req, res) => {
        ),
        agg AS (
          SELECT t.root_id,
-                bool_or(t.assignee_id=$2 OR t.created_by=$2) AS mine,
+                bool_or(t.assignee_id=$2) AS mine,
                 bool_or(mnj.node_id IS NOT NULL) AS mentioned,
                 string_agg(DISTINCT NULLIF(TRIM(COALESCE(cli.name,'')||' '||COALESCE(con.description,'')),''), ' | ') AS sub_links,
                 -- Progresso = itens checáveis (não-título) em TODA a subárvore, em qualquer
@@ -557,12 +559,12 @@ router.post('/nodes', ...base, async (req, res) => {
     // Subitem herda o responsável do pai; tarefa de topo usa o padrão da rotina.
     let assigneeId = req.body?.assignee_id !== undefined ? optId(req.body.assignee_id)
       : (parent ? parent.assignee_id : (group?.default_assignee_id || null));
-    // Quem NÃO pode atribuir a outros (sem tasks.task.assign e não é gestor/master) só
-    // delega para SI MESMO: toda tarefa que criar fica sob sua responsabilidade (nunca
-    // "sem responsável"). Assim ela entra em "Minhas tarefas" e respeita a visibilidade
-    // restrita (comum só vê o que é delegado a ele). Tentar atribuir a OUTRO cai no 403 abaixo.
-    const canAssignOthers = (await hasPerm(req, 'tasks.task.assign')) || (await hasPerm(req, 'tasks.gestor'));
-    if (!canAssignOthers && !assigneeId) assigneeId = req.user.id;
+    // Toda tarefa criada nasce sob a responsabilidade de QUEM A CRIOU quando nenhum
+    // responsável foi definido (nem informado, nem herdado do pai, nem padrão da rotina).
+    // Assim ela aparece no quadro/"Minhas tarefas" do criador; ao reatribuir a outra
+    // pessoa, sai do quadro dele (a visibilidade é por responsável). Atribuir a OUTRO na
+    // criação continua exigindo tasks.task.assign (checado no 403 abaixo).
+    if (!assigneeId) assigneeId = req.user.id;
     const priority = req.body?.priority != null ? parsePriority(req.body.priority) : (group ? group.default_priority : 'media');
     // Vínculo opcional cliente/contrato é só da tarefa: explícito > herdado do pai (subitem).
     const clientId = req.body?.client_id !== undefined ? optId(req.body.client_id) : (parent ? parent.client_id : null);
@@ -801,7 +803,7 @@ router.get('/trash', ...gestor, async (req, res) => {
 // Concluídas: tarefas de TOPO já finalizadas (status='done') — inclusive as
 // ocorrências recorrentes que SOMEM do quadro ao concluir. Serve para consultar o
 // histórico e REABRIR (regredir) uma tarefa. Respeita a visibilidade: gestor vê tudo;
-// os demais veem as próprias (atribuídas/criadas).
+// os demais veem as próprias (atribuídas a ele ou onde foi mencionado).
 router.get('/completed', ...view, async (req, res) => {
   try {
     const gestor = await isGestorReq(req);
@@ -818,7 +820,10 @@ router.get('/completed', ...view, async (req, res) => {
          LEFT JOIN ${SCHEMA}.contracts co ON co.id = n.contract_id
         WHERE n.company_id=$1 AND n.parent_id IS NULL AND n.is_template=false
           AND n.deleted_at IS NULL AND n.status='done'
-          AND ($2::boolean OR n.assignee_id=$3 OR n.created_by=$3)
+          AND ($2::boolean OR n.assignee_id=$3
+               OR EXISTS(SELECT 1 FROM ${SCHEMA}.task_comments cm
+                           JOIN ${SCHEMA}.task_comment_mentions m ON m.comment_id=cm.id
+                          WHERE cm.node_id=n.id AND m.user_id=$3))
         ORDER BY n.done_at DESC NULLS LAST, n.id DESC
         LIMIT 300`,
       [req.companyId, gestor, uid]
@@ -1225,7 +1230,7 @@ router.put('/nodes/:id/labels', ...view, async (req, res) => {
 // Definições recorrentes (ocultas do board). Cada uma gera ocorrências por período.
 router.get('/templates', ...view, async (req, res) => {
   try {
-    // Mesma visibilidade do board: comum só vê rotinas suas/atribuídas/mencionadas.
+    // Mesma visibilidade do board: comum só vê rotinas atribuídas a ele ou mencionadas.
     const gestor = await isGestorReq(req);
     const uid = req.user.id;
     const r = await query(
@@ -1241,7 +1246,7 @@ router.get('/templates', ...view, async (req, res) => {
            JOIN ${SCHEMA}.task_comment_mentions m ON m.comment_id=cm.id WHERE m.user_id=$2
        ),
        vis AS (
-         SELECT t.root_id, bool_or(t.assignee_id=$2 OR t.created_by=$2 OR mnj.node_id IS NOT NULL) AS ok
+         SELECT t.root_id, bool_or(t.assignee_id=$2 OR mnj.node_id IS NOT NULL) AS ok
            FROM ttree t LEFT JOIN mn mnj ON mnj.node_id=t.id GROUP BY t.root_id
        )
        SELECT n.id, n.title, n.description, n.priority, n.recurrence, n.recurrence_day, n.recurrence_month, n.recurrence_paused,

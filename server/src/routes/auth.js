@@ -259,7 +259,25 @@ router.get("/verify", requireAuth, async (req, res) => {
   res.json({ ok: true, user: req.user });
 });
 
+// Extrai o id do usuário de um request a partir do Bearer token VERIFICADO (mesma
+// assinatura/segredo do requireAuth). Usado pelo rate limiter para dar um balde por
+// USUÁRIO em vez de por IP — assim vários usuários atrás do mesmo IP (NAT do escritório,
+// 4G/CGNAT) não compartilham o mesmo limite. Só conta com assinatura válida (token
+// forjado não vira uma chave nova); sem token válido retorna null e o limiter cai no IP.
+function userIdFromRequest(req) {
+  const auth = req.headers.authorization || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
+    return payload?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 module.exports = router;
 module.exports.requireAuth = requireAuth;
 module.exports.companyScope = companyScope;
+module.exports.userIdFromRequest = userIdFromRequest;
 module.exports.maybeAuth = maybeAuth;
