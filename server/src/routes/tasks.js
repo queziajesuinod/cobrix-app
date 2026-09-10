@@ -490,12 +490,31 @@ router.get('/board', ...view, async (req, res) => {
               a.sub_links, a.sub_total, a.sub_done
          FROM ${SCHEMA}.task_nodes n
          JOIN agg a ON a.root_id=n.id
+         LEFT JOIN ${SCHEMA}.task_nodes tpl ON tpl.id = n.source_node_id
         WHERE n.company_id=$1 AND n.parent_id IS NULL AND n.is_template=false AND n.deleted_at IS NULL
           AND ($3::boolean OR a.mine OR a.mentioned)
-          -- Ocorrência recorrente CONCLUÍDA FICA no quadro (estilo de concluída) na sua
-          -- coluna até o ciclo virar. Ela só some quando já existe uma ocorrência MAIS
-          -- NOVA da mesma rotina (due_date maior) — aí a antiga fica só no histórico e a
-          -- nova (zerada) toma o lugar. "Substitui no lugar".
+          -- Ocorrência recorrente PRÉ-GERADA adiantada (herança do sistema antigo, que ao
+          -- concluir já criava a próxima): esconde do quadro a que o PERÍODO ainda NÃO começou
+          -- (1º dia do mês/ano futuro; semanal/quinzenal = o próprio dia) E que tenha uma
+          -- ocorrência anterior (não é a "base"). Assim as rotinas ANTIGAS passam a se comportar
+          -- como as novas: a concluída do ciclo atual fica, e a próxima só aparece quando o
+          -- período começa. A base (sem irmã mais velha) nunca some.
+          AND NOT (
+            n.source_node_id IS NOT NULL AND n.due_date IS NOT NULL
+            AND (CASE tpl.recurrence
+                   WHEN 'monthly' THEN date_trunc('month', n.due_date)::date
+                   WHEN 'yearly'  THEN date_trunc('year',  n.due_date)::date
+                   ELSE n.due_date END) > CURRENT_DATE
+            AND EXISTS (
+              SELECT 1 FROM ${SCHEMA}.task_nodes s
+               WHERE s.source_node_id = n.source_node_id AND s.parent_id IS NULL
+                 AND s.is_template = false AND s.deleted_at IS NULL AND s.due_date < n.due_date
+            )
+          )
+          -- Ocorrência recorrente CONCLUÍDA FICA no quadro (estilo de concluída) na sua coluna
+          -- até o ciclo virar. Só some quando já existe uma ocorrência MAIS NOVA da mesma rotina
+          -- cujo PERÍODO já começou (due_date maior E período iniciado) — aí a antiga fica só no
+          -- histórico e a nova (zerada) toma o lugar. "Substitui no lugar".
           AND NOT (
             n.status = 'done' AND n.source_node_id IS NOT NULL
             AND EXISTS (
@@ -503,6 +522,10 @@ router.get('/board', ...view, async (req, res) => {
                WHERE o.source_node_id = n.source_node_id
                  AND o.parent_id IS NULL AND o.is_template = false AND o.deleted_at IS NULL
                  AND o.id <> n.id AND o.due_date > n.due_date
+                 AND (CASE tpl.recurrence
+                        WHEN 'monthly' THEN date_trunc('month', o.due_date)::date
+                        WHEN 'yearly'  THEN date_trunc('year',  o.due_date)::date
+                        ELSE o.due_date END) <= CURRENT_DATE
             )
           )
         ORDER BY n.position, n.id`,

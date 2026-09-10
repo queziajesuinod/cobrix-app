@@ -600,6 +600,13 @@ function TaskCard({ node, perms, showProgress = false, onOpen, onChanged, notify
     onSuccess: () => onChanged(),
     onError: (e) => notify(e?.response?.data?.error || 'Falha ao excluir.', 'error'),
   })
+  // Duplicar direto no card (ação rápida): cria uma cópia zerada (avulsa, sem
+  // recorrência/prazo) em "A fazer" — ou na coluna de origem, se for coluna criada.
+  const dupMut = useMutation({
+    mutationFn: () => tasksService.duplicateNode(node.id),
+    onSuccess: () => { onChanged(); notify('Tarefa duplicada.') },
+    onError: (e) => notify(e?.response?.data?.error || 'Falha ao duplicar.', 'error'),
+  })
   const handleDelete = async () => {
     const ok = await confirm({
       title: 'Excluir tarefa',
@@ -677,6 +684,11 @@ function TaskCard({ node, perms, showProgress = false, onOpen, onChanged, notify
             )}
             <LabelChips labels={node.labels} sx={{ mt: 0.5 }} />
           </Box>
+          {perms?.createTask && (
+            <Tooltip title="Duplicar tarefa (cópia zerada em 'A fazer' ou na coluna de origem)">
+              <IconButton size="small" onClick={(e) => { e.stopPropagation(); dupMut.mutate() }} disabled={dupMut.isPending} sx={{ p: 0.25 }}><ContentCopyIcon fontSize="small" /></IconButton>
+            </Tooltip>
+          )}
           {perms?.deleteTask && (
             <IconButton size="small" color="error" onClick={handleDelete} sx={{ p: 0.25 }}><DeleteOutlineIcon fontSize="small" /></IconButton>
           )}
