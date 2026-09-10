@@ -4,7 +4,7 @@ const { requireAuth, companyScope } = require('./auth');
 const { requirePermission, getEffectivePermissions } = require('../services/permissions');
 const { respondError } = require('../utils/http-error');
 const { createNotification } = require('../services/notifications');
-const { generateOccurrences, rollNextOccurrence } = require('../jobs/tasks-cron');
+const { generateOccurrences } = require('../jobs/tasks-cron');
 
 const SCHEMA = process.env.DB_SCHEMA || 'public';
 const router = express.Router();
@@ -92,7 +92,7 @@ async function ensureStages(companyId) {
   const defaults = [['A fazer', false], ['Em andamento', false], ['Concluído', true]];
   for (let i = 0; i < defaults.length; i++) {
     await query(
-      `INSERT INTO ${SCHEMA}.task_stages (company_id, name, position, is_done) VALUES ($1,$2,$3,$4)`,
+      `INSERT INTO ${SCHEMA}.task_stages (company_id, name, position, is_done, is_system) VALUES ($1,$2,$3,$4,true)`,
       [companyId, defaults[i][0], i, defaults[i][1]]
     );
   }
@@ -235,6 +235,24 @@ async function cloneSubtreeAsTemplate(srcParentId, destParentId, companyId) {
       [companyId, k.group_id, destParentId, k.stage_id, k.kind, k.title, k.description, k.assignee_id, k.priority, k.client_id, k.contract_id, k.position, k.created_by, k.is_heading]
     );
     await cloneSubtreeAsTemplate(k.id, r.rows[0].id, companyId);
+  }
+}
+
+// Clona a subárvore (srcParentId) sob newParentId como tarefas REAIS novas e ZERADAS:
+// avulsas (recurrence 'none', sem template/source_node_id), status 'open', sem prazo nem
+// marcações de conclusão. Preserva título/descrição/responsável/prioridade/vínculo/tipo
+// (is_heading) e a ordem (position). Usado pelo "Duplicar".
+async function cloneSubtreeReset(srcParentId, newParentId, companyId, createdBy) {
+  const kids = await query(`SELECT * FROM ${SCHEMA}.task_nodes WHERE parent_id=$1 AND deleted_at IS NULL ORDER BY position, id`, [srcParentId]);
+  for (const k of kids.rows) {
+    const r = await query(
+      `INSERT INTO ${SCHEMA}.task_nodes
+         (company_id, group_id, parent_id, stage_id, kind, title, description, assignee_id, priority, due_date,
+          recurrence, is_template, source_node_id, client_id, contract_id, position, created_by, is_heading, status)
+       VALUES ($1,NULL,$2,NULL,$3,$4,$5,$6,$7,NULL,'none',false,NULL,$8,$9,$10,$11,$12,'open') RETURNING id`,
+      [companyId, newParentId, k.kind, k.title, k.description, k.assignee_id, k.priority, k.client_id, k.contract_id, k.position, createdBy, k.is_heading]
+    );
+    await cloneSubtreeReset(k.id, r.rows[0].id, companyId, createdBy);
   }
 }
 
@@ -423,6 +441,10 @@ router.get('/board', ...view, async (req, res) => {
     await ensureStages(req.companyId);
     await ensureUnifiedColumns(req.companyId);
     await ensureDoneLast(req.companyId);
+    // Materializa as ocorrências cujo período já virou, para que a nova apareça assim
+    // que a usuária abre o quadro no novo ciclo (e a concluída anterior saia — filtro
+    // abaixo). Idempotente e limitado ao nº de rotinas; best-effort.
+    try { await generateOccurrences(req.companyId, new Date()); } catch (e) { console.error('[tasks] geração (board):', e.message); }
     const stages = await query(`SELECT id, name, position, is_done FROM ${SCHEMA}.task_stages WHERE company_id=$1 ORDER BY position, id`, [req.companyId]);
     const groups = await query(
       `SELECT id, name, description, recurring, default_assignee_id, default_priority, position
@@ -470,9 +492,19 @@ router.get('/board', ...view, async (req, res) => {
          JOIN agg a ON a.root_id=n.id
         WHERE n.company_id=$1 AND n.parent_id IS NULL AND n.is_template=false AND n.deleted_at IS NULL
           AND ($3::boolean OR a.mine OR a.mentioned)
-          -- Ocorrência recorrente CONCLUÍDA some do quadro: ela não vai para "Concluído",
-          -- fica só no histórico/produtividade; o que aparece é a PRÓXIMA ocorrência.
-          AND NOT (n.status = 'done' AND n.source_node_id IS NOT NULL)
+          -- Ocorrência recorrente CONCLUÍDA FICA no quadro (estilo de concluída) na sua
+          -- coluna até o ciclo virar. Ela só some quando já existe uma ocorrência MAIS
+          -- NOVA da mesma rotina (due_date maior) — aí a antiga fica só no histórico e a
+          -- nova (zerada) toma o lugar. "Substitui no lugar".
+          AND NOT (
+            n.status = 'done' AND n.source_node_id IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM ${SCHEMA}.task_nodes o
+               WHERE o.source_node_id = n.source_node_id
+                 AND o.parent_id IS NULL AND o.is_template = false AND o.deleted_at IS NULL
+                 AND o.id <> n.id AND o.due_date > n.due_date
+            )
+          )
         ORDER BY n.position, n.id`,
       [req.companyId, uid, gestor]
     );
@@ -897,12 +929,10 @@ router.post('/nodes/:id/move', ...view, async (req, res) => {
         );
       } catch (e) { console.error('[tasks] fixar coluna do template (move):', e.message); }
     }
-    // Ocorrência recorrente concluída → materializa a próxima (mês/ano seguinte).
-    let rolledId = null;
-    if (enteringDone && node.parent_id == null && node.source_node_id) {
-      try { rolledId = (await rollNextOccurrence(req.companyId, node)) || null; } catch (e) { console.error('[tasks] roll (move):', e.message); }
-    }
-    res.json({ ...r.rows[0], rolled_node_id: rolledId });
+    // Ocorrência recorrente concluída: NÃO materializa a próxima aqui. Ela fica CONCLUÍDA
+    // na coluna (o quadro a mantém visível até o ciclo virar) e a próxima só nasce quando
+    // o período começar (generateOccurrences). Por isso rolled_node_id é sempre null.
+    res.json({ ...r.rows[0], rolled_node_id: null });
   } catch (e) { respondError(res, e); }
 });
 
@@ -951,13 +981,52 @@ router.patch('/nodes/:id/done', ...view, async (req, res) => {
       [done, req.user.id, node.id, stageId, prevStageId]
     );
     await logActivity(node.id, req.user.id, done ? 'done' : 'reopened', null);
-    // Ocorrência recorrente concluída → materializa a próxima (mês/ano seguinte) e
-    // devolve o id dela para o detalhe TROCAR automaticamente p/ a nova (sem refresh).
-    let rolledId = null;
-    if (done && node.parent_id == null && node.source_node_id) {
-      try { rolledId = (await rollNextOccurrence(req.companyId, node)) || null; } catch (e) { console.error('[tasks] roll (done):', e.message); }
+    // Ocorrência recorrente concluída: NÃO rola a próxima aqui — fica concluída na coluna
+    // e a próxima só nasce quando o período virar (generateOccurrences). rolled_node_id
+    // sempre null → o detalhe permanece mostrando a ocorrência concluída (não troca).
+    res.json({ ...r.rows[0], rolled_node_id: null });
+  } catch (e) { respondError(res, e); }
+});
+
+// Duplicar uma tarefa de TOPO (com toda a subárvore) como tarefa AVULSA nova e ZERADA:
+// sem marcações, sem recorrência, sem prazo (a cópia de uma concluída nasceria vencida).
+// Destino: a coluna "casa" da tarefa mãe (prev_stage_id se ela foi p/ "Concluído", senão
+// stage_id) QUANDO for uma coluna CRIADA pelo usuário (aberta, is_system=false) — aí a
+// cópia nasce nessa mesma coluna. Caso contrário (fluxo padrão), vai p/ a 1ª coluna
+// aberta padrão ("A fazer"). Exige poder criar tarefa.
+router.post('/nodes/:id/duplicate', ...view, async (req, res) => {
+  try {
+    const node = await getAccessibleNode(req, Number(req.params.id));
+    if (node.parent_id != null || node.is_template) err('Só é possível duplicar uma tarefa principal.');
+    await ensurePerm(req, 'tasks.task.create');
+    // Coluna "casa": de onde a tarefa veio/vive (prev_stage_id preenchido quando foi p/ Concluído).
+    const homeStageId = node.prev_stage_id || node.stage_id;
+    let destStageId = null;
+    if (homeStageId) {
+      const s = await query(
+        `SELECT id, is_done, is_system FROM ${SCHEMA}.task_stages WHERE id=$1 AND company_id=$2`,
+        [homeStageId, req.companyId]
+      );
+      const st = s.rows[0];
+      if (st && !st.is_done && !st.is_system) destStageId = st.id; // coluna criada → nasce nela
     }
-    res.json({ ...r.rows[0], rolled_node_id: rolledId });
+    if (!destStageId) destStageId = await firstOpenStageId(req.companyId);
+    const pos = await query(
+      `SELECT COALESCE(MAX(position),-1)+1 AS p FROM ${SCHEMA}.task_nodes
+        WHERE company_id=$1 AND stage_id=$2 AND parent_id IS NULL AND is_template=false AND deleted_at IS NULL`,
+      [req.companyId, destStageId]
+    );
+    const ins = await query(
+      `INSERT INTO ${SCHEMA}.task_nodes
+         (company_id, group_id, parent_id, stage_id, kind, title, description, assignee_id, priority, due_date,
+          recurrence, is_template, source_node_id, client_id, contract_id, position, created_by, is_heading, status)
+       VALUES ($1,NULL,NULL,$2,$3,$4,$5,$6,$7,NULL,'none',false,NULL,$8,$9,$10,$11,$12,'open') RETURNING *`,
+      [req.companyId, destStageId, node.kind, node.title, node.description, node.assignee_id, node.priority, node.client_id, node.contract_id, pos.rows[0].p, req.user.id, node.is_heading]
+    );
+    const newId = ins.rows[0].id;
+    await cloneSubtreeReset(node.id, newId, req.companyId, req.user.id);
+    await logActivity(newId, req.user.id, 'created', `Duplicada de #${node.id} "${node.title}"`);
+    res.json(ins.rows[0]);
   } catch (e) { respondError(res, e); }
 });
 

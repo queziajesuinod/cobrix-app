@@ -141,10 +141,10 @@ async function ensureOccurrence(t, dueISO, src = null) {
 }
 
 // Modelo "roll-forward": cria a 1ª ocorrência quando não há nenhuma; e avança para a
-// PRÓXIMA quando (a) a última foi CONCLUÍDA (mesmo ainda no mês atual) OU (b) o
-// PERÍODO da próxima já começou ("virou o mês"), mesmo com a atual em aberto. NÃO
-// avança só por estar vencida (não cria o mês seguinte adiantado). Idempotente por
-// (source_node_id, due_date). A conclusão também dispara na hora via rollNextOccurrence.
+// PRÓXIMA SOMENTE quando o PERÍODO dela já começou ("virou a semana/mês/ano"). Concluir
+// a ocorrência NÃO cria a próxima (ela fica concluída na coluna até o ciclo virar) — a
+// usuária quer que a recorrente permaneça no quadro com estilo de concluída e só seja
+// "atualizada" quando o ciclo acabar. Idempotente por (source_node_id, due_date).
 async function generateOccurrences(companyId, now = new Date()) {
   const tps = await query(
     `SELECT * FROM ${SCHEMA}.task_nodes WHERE company_id=$1 AND is_template=true AND recurrence<>'none' AND recurrence_paused=false AND deleted_at IS NULL`,
@@ -162,10 +162,11 @@ async function generateOccurrences(companyId, now = new Date()) {
     const latestISO = formatISODate(latest.due_date);
     if (!latestISO) continue;
     const nextISO = nextOccurrenceISO(t, latestISO);
-    // Cria a PRÓXIMA quando: (a) a atual foi CONCLUÍDA (ainda no mês atual, pode já
-    // criar a do próximo); OU (b) o período da próxima já COMEÇOU ("virou o mês"),
-    // mesmo com a atual ainda em aberto. NÃO cria adiantado só por estar vencida.
-    if (latest.status === 'done' || periodStarted(t, nextISO, now)) {
+    // Cria a PRÓXIMA APENAS quando o período dela já COMEÇOU ("virou a semana/mês/ano"),
+    // independentemente da atual estar concluída ou não. Concluir não adianta o ciclo:
+    // a ocorrência concluída fica no quadro até virar o período; então a próxima nasce
+    // (zerada) e a antiga sai do quadro (fica no histórico/produtividade).
+    if (periodStarted(t, nextISO, now)) {
       // Clona a próxima a partir da ocorrência ANTERIOR (estrutura completa), não do template.
       const full = await query(`SELECT * FROM ${SCHEMA}.task_nodes WHERE id=$1`, [latest.id]);
       if (await ensureOccurrence(t, nextISO, full.rows[0] || null)) count += 1;

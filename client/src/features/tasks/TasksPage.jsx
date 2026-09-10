@@ -15,6 +15,7 @@ import RepeatIcon from '@mui/icons-material/Repeat'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
 import ViewKanbanIcon from '@mui/icons-material/ViewKanban'
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined'
+import ContentCopyIcon from '@mui/icons-material/ContentCopy'
 import SubdirectoryArrowRightIcon from '@mui/icons-material/SubdirectoryArrowRight'
 import HistoryIcon from '@mui/icons-material/History'
 import AutorenewIcon from '@mui/icons-material/Autorenew'
@@ -650,6 +651,9 @@ function TaskCard({ node, perms, showProgress = false, onOpen, onChanged, notify
                 lado a lado — data + quantidade cabem numa linha só (estilo Trello). */}
             <Stack direction="row" sx={{ mt: 0.5, flexWrap: 'wrap', gap: 0.5, alignItems: 'center' }}>
               <Chip size="small" label={p.label} color={p.color} sx={{ height: 18, fontWeight: 600, fontSize: 10, '& .MuiChip-label': { px: 0.75 } }} />
+              {/* Recorrente concluída FICA no quadro (na coluna de trabalho, entre cards
+                  abertos) até o ciclo virar — chip deixa o estado claro. */}
+              {done && node.source_node_id && <Chip size="small" icon={<CheckCircleIcon sx={{ fontSize: 12 }} />} label="Concluída" color="success" variant="outlined" sx={{ height: 18, fontSize: 10, fontWeight: 600, '& .MuiChip-label': { px: 0.5 }, '& .MuiChip-icon': { ml: 0.5, mr: -0.25, fontSize: 12 } }} />}
               {di && <Chip size="small" icon={<CalendarMonthIcon sx={{ fontSize: 12 }} />} label={di.label} color={di.color} variant={di.variant} sx={{ height: 18, fontSize: 10, fontWeight: di.alert ? 700 : 500, '& .MuiChip-label': { px: 0.5 }, '& .MuiChip-icon': { ml: 0.5, mr: -0.25, fontSize: 12 } }} />}
               {node.sub_total > 0 && <Chip size="small" icon={<ChecklistIcon sx={{ fontSize: 12 }} />} label={`${node.sub_done}/${node.sub_total}`} variant="outlined" sx={{ height: 18, fontSize: 10, '& .MuiChip-label': { px: 0.5 }, '& .MuiChip-icon': { ml: 0.5, mr: -0.25, fontSize: 12 } }} />}
               {node.assignee_name && <Typography variant="caption" color="text.secondary" noWrap sx={{ fontSize: 10 }}>{node.assignee_name}</Typography>}
@@ -1401,6 +1405,8 @@ function TaskDetailDialog({ nodeId, users, stages, perms, currentUserId, labels 
   }, [allSubDone, node?.status]) // eslint-disable-line react-hooks/exhaustive-deps
   const edit = useMutation({ mutationFn: (payload) => tasksService.updateNode(nodeId, payload), onSuccess: () => { setEditing(false); refreshAll() }, onError: (e) => notify(e?.response?.data?.error || 'Falha ao salvar.', 'error') })
   const addTop = useMutation({ mutationFn: (payload) => tasksService.createNode({ ...payload, parent_id: nodeId }), onSuccess: () => { setAddingTop(false); refreshAll() }, onError: (e) => notify(e?.response?.data?.error || 'Falha ao adicionar.', 'error') })
+  // Duplicar: cria uma cópia zerada (avulsa, sem recorrência/prazo) e abre a nova.
+  const dup = useMutation({ mutationFn: () => tasksService.duplicateNode(nodeId), onSuccess: (created) => { onChanged(); notify('Tarefa duplicada.'); if (created?.id && onRolled) onRolled(created.id) }, onError: (e) => notify(e?.response?.data?.error || 'Falha ao duplicar.', 'error') })
   const sortTopAZ = useMutation({ mutationFn: () => tasksService.reorderChildren(nodeId, sortNodesAZ(topKids).map((n) => n.id)), onSuccess: refreshAll, onError: (e) => notify(e?.response?.data?.error || 'Falha ao ordenar.', 'error') })
   const addCommentMut = useMutation({ mutationFn: ({ body, ids }) => tasksService.addComment(nodeId, body, ids), onSuccess: () => q.refetch(), onError: (e) => notify(e?.response?.data?.error || 'Falha ao comentar.', 'error') })
   // Deep-link de menção: rola até o comentário e realça por alguns segundos.
@@ -1426,8 +1432,15 @@ function TaskDetailDialog({ nodeId, users, stages, perms, currentUserId, labels 
         <DialogContent><Typography color="text.secondary">Carregando…</Typography></DialogContent>
       ) : (
         <>
-          <DialogTitle sx={{ fontWeight: 700, pr: 6 }}>
+          <DialogTitle sx={{ fontWeight: 700, pr: canEditThis ? 12 : 6 }}>
             {node.title}
+            {perms?.createTask && !node.is_template && node.parent_id == null && (
+              <Tooltip title="Duplicar tarefa — cria uma cópia zerada (sem recorrência) em 'A fazer', ou na coluna de origem se ela pertence a uma coluna criada">
+                <span style={{ position: 'absolute', right: canEditThis ? 52 : 12, top: 12 }}>
+                  <IconButton onClick={() => dup.mutate()} disabled={dup.isPending}><ContentCopyIcon /></IconButton>
+                </span>
+              </Tooltip>
+            )}
             {canEditThis && (
               <IconButton onClick={() => setEditing(true)} sx={{ position: 'absolute', right: 12, top: 12 }}><EditOutlinedIcon /></IconButton>
             )}

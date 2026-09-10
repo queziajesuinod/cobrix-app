@@ -869,6 +869,15 @@ async function initDb() {
     await c.query(`CREATE INDEX IF NOT EXISTS idx_task_nodes_parent ON ${schema}.task_nodes (parent_id);`);
     await c.query(`CREATE INDEX IF NOT EXISTS idx_task_nodes_assignee ON ${schema}.task_nodes (assignee_id, status);`);
     await c.query(`CREATE INDEX IF NOT EXISTS idx_task_stages_company ON ${schema}.task_stages (company_id, position);`);
+    // is_system = coluna PADRÃO do quadro (A fazer / Em andamento / Concluído), criada
+    // pelo sistema. Distingue das colunas CRIADAS pelo usuário (rotinas/departamentos).
+    // Usado no "Duplicar": a cópia vai p/ a 1ª coluna aberta padrão ("A fazer"), salvo
+    // quando a tarefa mãe vive numa coluna criada — aí a cópia nasce nessa mesma coluna.
+    await c.query(`ALTER TABLE ${schema}.task_stages ADD COLUMN IF NOT EXISTS is_system BOOLEAN NOT NULL DEFAULT false;`);
+    // Backfill p/ empresas já existentes: a de conclusão (is_done) e, por nome, as duas
+    // abertas padrão. Colunas criadas pelo usuário permanecem is_system=false.
+    await c.query(`UPDATE ${schema}.task_stages SET is_system=true WHERE is_done=true AND is_system=false;`);
+    await c.query(`UPDATE ${schema}.task_stages SET is_system=true WHERE name IN ('A fazer','Em andamento') AND is_system=false;`);
     await c.query(`CREATE INDEX IF NOT EXISTS idx_task_node_activity ON ${schema}.task_node_activity (node_id, created_at DESC);`);
     await c.query(`CREATE INDEX IF NOT EXISTS idx_task_comments_node ON ${schema}.task_comments (node_id, created_at);`);
     // Menções (@) num comentário → concede acesso à tarefa e gera notificação pessoal.

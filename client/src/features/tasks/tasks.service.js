@@ -19,6 +19,7 @@ export const tasksService = {
   createNode: async (payload) => (await api.post('/tasks/nodes', payload)).data,
   updateNode: async (id, payload) => (await api.put(`/tasks/nodes/${id}`, payload)).data,
   deleteNode: async (id) => (await api.delete(`/tasks/nodes/${id}`)).data,
+  duplicateNode: async (id) => (await api.post(`/tasks/nodes/${id}/duplicate`)).data,
   moveNode: async (id, toStageId) => (await api.post(`/tasks/nodes/${id}/move`, { to_stage_id: toStageId })).data,
   toggleNode: async (id, done) => (await api.patch(`/tasks/nodes/${id}/done`, { done })).data,
   expand: async (id, payload) => (await api.post(`/tasks/nodes/${id}/expand`, payload)).data,
